@@ -3,7 +3,7 @@
 @prefix sh: <http://www.w3.org/ns/shacl#> .
 @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
 
-# A tiny shapes graph: all `schema:Person` must have a string `schema:name` and an integer `schema:age`.
+# A focused shapes graph: all `schema:Person` must have a string `schema:name` and an integer `schema:age`.
 
 ex:PersonShape
   a sh:NodeShape ;
@@ -18,4 +18,3 @@ ex:PersonShape
     sh:datatype xsd:integer ;
     sh:minCount 1 ;
   ] .
-

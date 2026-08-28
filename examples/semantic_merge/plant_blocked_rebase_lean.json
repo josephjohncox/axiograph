@@ -1,0 +1,88 @@
+{
+  "version": "semantic_vcs_lean_rebase_plan_v1",
+  "source": {
+    "anchor": {
+      "accepted_ref": "heads/review/simulation-safety",
+      "accepted_snapshot_id": "axi:snapshot:v2:sha256:3d8d1ab71667f3439aee1e50a6448bf3fb56d2b8cd86049bb31b2f6c61f96234",
+      "kernel_ir_digest": "axi:object-blob:v2:sha256:252eefd980a59ea00248d05a014c6f753f5d3671b43414dbbdbf6f41c4688fe2",
+      "context_id": "plant-simulation",
+      "world_id": "review"
+    },
+    "refs": [
+      {
+        "kind": "relation_object",
+        "id": "PlantSimulation.OptimizerEvaluatesScenario"
+      },
+      {
+        "kind": "theory_obligation",
+        "id": "SimulationRules.OptimizerEvaluatesScenario.key"
+      }
+    ]
+  },
+  "onto": {
+    "anchor": {
+      "accepted_ref": "heads/main",
+      "accepted_snapshot_id": "axi:snapshot:v2:sha256:4c7425a62d13c3a5fbfb5a1148b8bccf922d58e0720d8eb0e77ddee87acae51d",
+      "kernel_ir_digest": "axi:object-blob:v2:sha256:ddb0377ad90a9bf2902e4eda2552d0583122d274171e9fbd85a50dcc8368a2fa",
+      "context_id": "plant-procurement",
+      "world_id": "accepted"
+    },
+    "refs": [
+      {
+        "kind": "schema_object",
+        "id": "PlantProcurement.CertifiedIncomingLot"
+      },
+      {
+        "kind": "relation_object",
+        "id": "PlantProcurement.ReleaseDocumentForLot"
+      }
+    ]
+  },
+  "result": {
+    "anchor": {
+      "accepted_ref": "heads/review/simulation-safety",
+      "accepted_snapshot_id": "axi:snapshot:v2:sha256:f627f33434e63b472b3eb15cecbe86e7a768fbe89c7fe7244cd881fd1daca294",
+      "kernel_ir_digest": "axi:object-blob:v2:sha256:6dc6b9228616a73ec145e30f85a75899e19f05fe56e19559eeebe23f2c3b23d3",
+      "context_id": "plant-simulation",
+      "world_id": "review"
+    },
+    "refs": [
+      {
+        "kind": "relation_object",
+        "id": "PlantSimulation.OptimizerEvaluatesScenario"
+      },
+      {
+        "kind": "theory_obligation",
+        "id": "SimulationRules.OptimizerEvaluatesScenario.key"
+      },
+      {
+        "kind": "schema_object",
+        "id": "PlantProcurement.CertifiedIncomingLot"
+      },
+      {
+        "kind": "relation_object",
+        "id": "PlantProcurement.ReleaseDocumentForLot"
+      }
+    ]
+  },
+  "transport_items": [
+    {
+      "source_ref": {
+        "kind": "relation_object",
+        "id": "PlantSimulation.OptimizerEvaluatesScenario"
+      },
+      "status": "blocked",
+      "required": true
+    }
+  ],
+  "blockers": [
+    "residual_obligation"
+  ],
+  "resolver_steps": [],
+  "residual_obligations": [
+    {
+      "kind": "theory_obligation",
+      "id": "transport.missing_target_image.PlantSimulation.OptimizerEvaluatesScenario"
+    }
+  ]
+}

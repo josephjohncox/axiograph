@@ -1,3 +1,4 @@
+---
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -16,20 +17,38 @@ spec:
         app: axiograph-db
     spec:
       securityContext:
+        runAsNonRoot: true
         runAsUser: 10001
-        runAsGroup: 0
-        fsGroup: 0
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
       containers:
         - name: axiograph
           image: ghcr.io/axiograph/axiograph:latest
           imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
           args:
             - db
             - serve
             - --dir
-            - /data/accepted
+            - /data/store
+            - --materialization
+            - $(AXIOGRAPH_MATERIALIZATION_ID)
             - --listen
             - 0.0.0.0:7878
+          env:
+            - name: AXIOGRAPH_MATERIALIZATION_ID
+              value: "REPLACE_WITH_MATERIALIZATION_ID_V2"
           ports:
             - name: http
               containerPort: 7878
@@ -48,6 +67,8 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /data
+            - name: tmp
+              mountPath: /tmp
   volumeClaimTemplates:
     - metadata:
         name: data

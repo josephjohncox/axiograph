@@ -1,0 +1,21 @@
+{
+  "description": "Generic MCP host config for the unified workspace-aware rmcp authoring adapter.",
+  "mcpServers": {
+    "axiograph-authoring": {
+      "command": "axiograph",
+      "args": [
+        "authoring",
+        "mcp",
+        "--workspace",
+        "."
+      ],
+      "env": {}
+    }
+  },
+  "notes": [
+    "Run the host with the repository as its working directory, or replace `.` with an absolute workspace root.",
+    "The canonical generated contract is `axiograph authoring integration-manifest --workspace <root>`.",
+    "The server publishes one read-only `axiograph_authoring_workspace` tool using authoring_workspace_request_v1 and authoring_workspace_report_v1.",
+    "Accepted-state writes require a separate AxiStore PromotionPlan workflow."
+  ]
+}

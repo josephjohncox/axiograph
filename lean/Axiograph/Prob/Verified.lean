@@ -15,8 +15,8 @@ Instead, a probability is represented in **fixed-point** form:
 * `Precision = 1_000_000`
 * a probability is `numerator / Precision` where `numerator ∈ [0, Precision]`
 
-This mirrors `idris/Axiograph/Prob/Verified.idr`, but uses Lean/mathlib lemmas to
-avoid unsafe casts (`believe_me`) and to keep proofs readable.
+The trusted checker uses Lean/mathlib lemmas to avoid unsafe casts and keep
+proofs readable.
 -/
 
 namespace Axiograph.Prob
@@ -82,7 +82,10 @@ Multiplication of probabilities (fixed-point):
 
 `(a/P) * (b/P) = (a*b/P) / P`  (integer division rounds down).
 
-The result is still within `[0, P]`, and we prove that bound.
+The result is still within `[0, P]`, and we prove that bound. Because rounding
+happens at every call, this operation is commutative but not associative. It is
+valid for deterministic, syntax-directed folds; it must not be treated as a
+monoid operation or transported across path-associativity equivalences.
 -/
 def vMult (p1 p2 : VProb) : VProb :=
   let leftNumerator := toNat p1
@@ -95,6 +98,14 @@ def vMult (p1 p2 : VProb) : VProb :=
   have scaledBound : scaledNumerator ≤ Precision :=
     Nat.div_le_of_le_mul (m := leftNumerator * rightNumerator) (k := Precision) (n := Precision) productBound
   ofNat scaledNumerator scaledBound
+
+/-- Concrete regression showing that per-step fixed-point rounding is not associative. -/
+theorem vMult_not_associative_regression :
+    toNat (vMult (vMult (ofNat 98_781 (by decide)) (ofNat 427_863 (by decide)))
+      (ofNat 382_808 (by decide))) = 16_178 ∧
+    toNat (vMult (ofNat 98_781 (by decide))
+      (vMult (ofNat 427_863 (by decide)) (ofNat 382_808 (by decide)))) = 16_179 := by
+  decide
 
 /-| Safe multiplication that also returns the (trivial) bound witness. -/
 def vMultSafe (leftProbability rightProbability : VProb) :
@@ -120,35 +131,32 @@ def sumNumerators {n : Nat} (ps : Fin n → VProb) : Nat :=
 A discrete distribution over `n` outcomes.
 
 We keep the sum constraint as an inequality because fixed-point rounding makes
-exact equality awkward (and not needed for most invariants).
+exact equality awkward (and not needed for most invariants). Total represented
+mass may be below one, but it may never exceed one.
 -/
 structure VDist (n : Nat) where
   probs : Fin n → VProb
-  sumValid : sumNumerators probs ≤ Precision + 1
+  sumValid : sumNumerators probs ≤ Precision
 
 /-|
 Uniform distribution.
 
-Each entry is `Precision / n`, so the total numerator sum is at most `Precision`
-(and therefore ≤ `Precision + 1`).
+Each entry is `Precision / n`, so the total numerator sum is at most `Precision`.
 -/
 def uniform (n : Nat) (_hn : 0 < n) : VDist n :=
   let probVal := Precision / n
   have probBound : probVal ≤ Precision := Nat.div_le_self _ _
   let single : VProb := ofNat probVal probBound
-  have sumBound : sumNumerators (n := n) (fun _ => single) ≤ Precision + 1 := by
+  have sumBound : sumNumerators (n := n) (fun _ => single) ≤ Precision := by
     classical
     -- `∑ i : Fin n, c = n * c`
     have hsum : sumNumerators (n := n) (fun _ => single) = n * toNat single := by
       simp [sumNumerators]
-    have hle : sumNumerators (n := n) (fun _ => single) ≤ Precision := by
-      -- `n * (Precision / n) ≤ Precision`
-      -- and `toNat single = Precision / n` by construction.
-      have : n * toNat single ≤ Precision := by
-        -- `toNat single = Precision / n` by construction.
-        simpa [single, probVal, toNat] using Nat.mul_div_le Precision n
-      simpa [hsum] using this
-    exact Nat.le_trans hle (Nat.le_succ Precision)
+    -- `n * (Precision / n) ≤ Precision`
+    -- and `toNat single = Precision / n` by construction.
+    have : n * toNat single ≤ Precision := by
+      simpa [single, probVal, toNat] using Nat.mul_div_le Precision n
+    simpa [hsum] using this
   { probs := fun _ => single, sumValid := sumBound }
 
 -- =============================================================================
@@ -403,10 +411,6 @@ def computeCredibility (tr : TrackRecord) : VProb :=
       exact Nat.div_le_of_le_mul (m := tr.correct * Precision) (k := total) (n := Precision) (by
         simpa [Nat.mul_assoc] using hmul)
     ofNat ratio hratio
-
--- TODO: prove monotonicity with rounding; Idris currently axiomatizes this.
-axiom moreCorrectBetter (tr : TrackRecord) :
-    toNat (computeCredibility tr) ≤ toNat (computeCredibility { correct := tr.correct + 1, incorrect := tr.incorrect })
 
 -- =============================================================================
 -- Runtime Assertions (for untrusted inputs)

@@ -20,7 +20,7 @@ import { makeGraphRenderer } from "./render/graph";
 import { initServerControls as initServerControlsView } from "./server/controls";
 import { initLlmTab } from "./tabs/llm";
 import { initQueryTab } from "./tabs/query";
-import { initWorldModelTab } from "./tabs/world_model";
+import { initPredictiveProposalTab } from "./tabs/predictive_proposals";
 import { initAddTab } from "./tabs/add";
 import { initStatus } from "./core/status";
 import { initDraft } from "./core/draft";
@@ -80,21 +80,21 @@ export function initApp(graph: any) {
     llmCitationsEl,
     llmDebugEl,
 
-    wmGoalsEl,
-    wmMaxNewEl,
-    wmSeedEl,
-    wmStepsEl,
-    wmRolloutsEl,
-    wmGuardrailProfileEl,
-    wmGuardrailPlaneEl,
-    wmIncludeGuardrailEl,
-    wmTaskCostsEl,
-    wmAutoCommitEl,
-    wmCommitStepwiseEl,
-    wmProposeBtn,
-    wmPlanBtn,
-    wmStatusEl,
-    wmOutputEl,
+    proposalGoalsEl,
+    proposalMaxNewEl,
+    proposalSeedEl,
+    proposalStepsEl,
+    proposalRolloutsEl,
+    proposalGuardrailProfileEl,
+    proposalGuardrailPlaneEl,
+    proposalIncludeGuardrailEl,
+    proposalTaskCostsEl,
+    proposalAutoCommitEl,
+    proposalCommitStepwiseEl,
+    proposalProposeBtn,
+    proposalPlanBtn,
+    proposalStatusEl,
+    proposalOutputEl,
 
     axqlQueryEl,
     axqlRunBtn,
@@ -227,21 +227,21 @@ const appCtx = {
   llmChatEl,
   llmCitationsEl,
   llmDebugEl,
-  wmGoalsEl,
-  wmMaxNewEl,
-  wmSeedEl,
-  wmStepsEl,
-  wmRolloutsEl,
-  wmGuardrailProfileEl,
-  wmGuardrailPlaneEl,
-  wmIncludeGuardrailEl,
-  wmTaskCostsEl,
-  wmAutoCommitEl,
-  wmCommitStepwiseEl,
-  wmProposeBtn,
-  wmPlanBtn,
-  wmStatusEl,
-  wmOutputEl,
+  proposalGoalsEl,
+  proposalMaxNewEl,
+  proposalSeedEl,
+  proposalStepsEl,
+  proposalRolloutsEl,
+  proposalGuardrailProfileEl,
+  proposalGuardrailPlaneEl,
+  proposalIncludeGuardrailEl,
+  proposalTaskCostsEl,
+  proposalAutoCommitEl,
+  proposalCommitStepwiseEl,
+  proposalProposeBtn,
+  proposalPlanBtn,
+  proposalStatusEl,
+  proposalOutputEl,
   axqlQueryEl,
   axqlRunBtn,
   axqlCertBtn,
@@ -326,7 +326,7 @@ const tabPanels = {
   explore: document.getElementById("tab_explore"),
   query: document.getElementById("tab_query"),
   llm: document.getElementById("tab_llm"),
-  world_model: document.getElementById("tab_world_model"),
+  predictive_proposals: document.getElementById("tab_predictive_proposals"),
   review: document.getElementById("tab_review"),
   add: document.getElementById("tab_add"),
 };
@@ -505,8 +505,8 @@ function prefillAddFromToolLoop(outcome) {
     if (
       s.tool !== "propose_relation_proposals"
       && s.tool !== "propose_relations_proposals"
-      && s.tool !== "world_model_propose"
-      && s.tool !== "world_model_plan"
+      && s.tool !== "predictive_proposal"
+      && s.tool !== "proposal_rollout_plan"
     ) continue;
     const r = s.result || null;
     if (!r || !r.proposals_json) continue;
@@ -611,7 +611,6 @@ async function certifySelectedPath(verify) {
       start: ui.pathStart,
       relation_ids: relationIds,
       verify: !!verify,
-      include_anchor: false,
     };
     if (snapshot) body.snapshot = snapshot;
     const resp = await fetch("/cert/reachability", {
@@ -652,8 +651,8 @@ Object.assign(appCtx, queryApi);
 const llmApi = initLlmTab(appCtx);
 Object.assign(appCtx, llmApi);
 
-const worldModelApi = initWorldModelTab(appCtx);
-Object.assign(appCtx, worldModelApi);
+const predictiveProposalApi = initPredictiveProposalTab(appCtx);
+Object.assign(appCtx, predictiveProposalApi);
 
 const addApi = initAddTab(appCtx);
 Object.assign(appCtx, addApi);

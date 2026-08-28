@@ -1,0 +1,62 @@
+[package]
+name = "axiograph-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+rust-version = "1.88"
+
+[package.metadata]
+cargo-fuzz = true
+
+[workspace]
+members = ["."]
+resolver = "2"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[dependencies]
+libfuzzer-sys = "0.4"
+serde_json = "1"
+tempfile = "3"
+axiograph-cli = { path = "../crates/axiograph-cli", default-features = false }
+axiograph-dsl = { path = "../crates/axiograph-dsl" }
+axiograph-kernel = { path = "../crates/axiograph-kernel" }
+axiograph-pathdb = { path = "../crates/axiograph-pathdb" }
+axiograph-security = { path = "../crates/axiograph-security" }
+axiograph-store = { path = "../crates/axiograph-store" }
+
+[[bin]]
+name = "axi_parser"
+path = "fuzz_targets/axi_parser.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "certificate_json"
+path = "fuzz_targets/certificate_json.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "repl_command"
+path = "fuzz_targets/repl_command.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "proposal_adapter_json"
+path = "fuzz_targets/proposal_adapter_json.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "axpd_bytes"
+path = "fuzz_targets/axpd_bytes.rs"
+test = false
+doc = false
+bench = false

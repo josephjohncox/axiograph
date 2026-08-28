@@ -1,0 +1,234 @@
+{
+  "version": "tooling_overlay_bundle_v1",
+  "fddd_context_map": {
+    "context_id": "bounded-context:order-fulfillment",
+    "label": "Order fulfillment software overlay",
+    "summary": "Tooling overlay that maps the pure order-fulfillment ontology to fDDD contexts, implementation surfaces, behavior coverage, and codegen planning.",
+    "scopes": [
+      {
+        "kind": "relation",
+        "schema": "OrderFulfillment",
+        "name": "OrderHasReservation"
+      },
+      {
+        "kind": "relation",
+        "schema": "OrderFulfillment",
+        "name": "OrderEligibleForShipment"
+      },
+      {
+        "kind": "relation",
+        "schema": "OrderFulfillment",
+        "name": "ProcessRequiresInvariant"
+      }
+    ],
+    "bounded_contexts": [
+      {
+        "binding_id": "bounded-context:order-fulfillment",
+        "label": "Order fulfillment",
+        "summary": "Owns checkout reservation and shipment-eligibility decisions.",
+        "ontology_refs": [
+          {
+            "kind": "schema",
+            "schema": "OrderFulfillment",
+            "name": "OrderFulfillment"
+          }
+        ]
+      }
+    ],
+    "aggregates": [
+      {
+        "binding_id": "aggregate:order",
+        "label": "Order aggregate",
+        "ontology_refs": [
+          {
+            "kind": "object",
+            "schema": "OrderFulfillment",
+            "name": "Order"
+          }
+        ]
+      }
+    ],
+    "processes": [
+      {
+        "binding_id": "process:reserve-credit",
+        "label": "Reserve credit process",
+        "summary": "Reserve credit for an accepted order and turn it into payment evidence.",
+        "ontology_refs": [
+          {
+            "kind": "object",
+            "schema": "OrderFulfillment",
+            "name": "FulfillmentProcess"
+          },
+          {
+            "kind": "relation",
+            "schema": "OrderFulfillment",
+            "name": "OrderHasReservation"
+          },
+          {
+            "kind": "relation",
+            "schema": "OrderFulfillment",
+            "name": "ReservationApprovesPayment"
+          }
+        ]
+      },
+      {
+        "binding_id": "process:shipment-eligibility",
+        "label": "Shipment eligibility process",
+        "summary": "Determine whether an accepted paid order can be released to shipment.",
+        "ontology_refs": [
+          {
+            "kind": "relation",
+            "schema": "OrderFulfillment",
+            "name": "PaymentAuthorizesShipment"
+          },
+          {
+            "kind": "relation",
+            "schema": "OrderFulfillment",
+            "name": "OrderEligibleForShipment"
+          }
+        ]
+      }
+    ],
+    "functions": [
+      {
+        "binding_id": "function:checkout-reserve-credit",
+        "label": "Checkout reserve-credit function",
+        "summary": "Application function that should implement the reserve-credit process.",
+        "ontology_refs": [
+          {
+            "kind": "relation",
+            "schema": "OrderFulfillment",
+            "name": "OrderHasReservation"
+          }
+        ]
+      }
+    ],
+    "business_rules": [
+      {
+        "binding_id": "rule:shipment-eligibility",
+        "label": "Shipment eligibility business rule",
+        "summary": "A shipment is eligible only when the accepted payment authorizes it.",
+        "ontology_refs": [
+          {
+            "kind": "relation",
+            "schema": "OrderFulfillment",
+            "name": "OrderEligibleForShipment"
+          },
+          {
+            "kind": "relation",
+            "schema": "OrderFulfillment",
+            "name": "PaymentAuthorizesShipment"
+          },
+          {
+            "kind": "equation",
+            "schema": "OrderFulfillment",
+            "name": "paid_order_authorizes_shipment"
+          }
+        ]
+      }
+    ],
+    "notes": [
+      "This overlay is a tooling layer over canonical IR ids. It is not ontology representation."
+    ]
+  },
+  "implementation_surfaces": {
+    "surfaces": [
+      {
+        "surface_id": "endpoint:checkout:reserve-credit",
+        "kind": "endpoint",
+        "label": "Checkout reserve-credit endpoint",
+        "ontology_refs": [
+          {
+            "kind": "relation",
+            "schema": "OrderFulfillment",
+            "name": "OrderHasReservation"
+          },
+          {
+            "kind": "relation",
+            "schema": "OrderFulfillment",
+            "name": "ReservationApprovesPayment"
+          }
+        ],
+        "code_refs": [
+          "services/orders/internal/credit/reserve_credit.go",
+          "apps/checkout/src/reserve-credit.ts"
+        ],
+        "test_refs": [
+          "tests/behavior-cases/reserve-credit.spec.ts"
+        ],
+        "languages": [
+          "go",
+          "typescript"
+        ],
+        "notes": [
+          "The example does not claim these files already exist; strict coverage can fail closed on that."
+        ]
+      },
+      {
+        "surface_id": "worker:shipping:eligibility",
+        "kind": "job",
+        "label": "Shipping eligibility worker",
+        "ontology_refs": [
+          {
+            "kind": "relation",
+            "schema": "OrderFulfillment",
+            "name": "OrderEligibleForShipment"
+          }
+        ],
+        "code_refs": [
+          "workers/shipping/src/eligibility.rs",
+          "services/pricing/policies/shipment_eligibility.py"
+        ],
+        "test_refs": [
+          "tests/behavior_cases/test_shipping_eligibility.py"
+        ],
+        "languages": [
+          "rust",
+          "python"
+        ]
+      }
+    ],
+    "coverage_edges": [
+      {
+        "surface_id": "endpoint:checkout:reserve-credit",
+        "rule_id": "schema/orderfulfillment/relation/orderhasreservation/rule/key/0",
+        "status": "tested"
+      },
+      {
+        "surface_id": "endpoint:checkout:reserve-credit",
+        "rule_id": "schema/orderfulfillment/relation/reservationapprovespayment/rule/key/0",
+        "status": "implemented"
+      },
+      {
+        "surface_id": "worker:shipping:eligibility",
+        "rule_id": "schema/orderfulfillment/relation/ordereligibleforshipment/rule/key/0",
+        "status": "tested"
+      }
+    ]
+  },
+  "coverage_policy": {
+    "coverage_mode": "advisory",
+    "require_codegen_languages": [
+      "rust",
+      "typescript",
+      "python",
+      "go"
+    ],
+    "strict_coverage": false,
+    "require_code_refs": false,
+    "require_runtime_theory": false,
+    "fail_on_unresolved_obligations": false
+  },
+  "codegen_plan": {
+    "languages": [
+      "rust",
+      "typescript",
+      "python",
+      "go"
+    ],
+    "test_name": "software_authoring_reserve_credit",
+    "notes": [
+      "Preview skeletons only; materialization remains a CLI action and accepted ontology mutation remains semantic-VCS gated."
+    ]
+  }
+}

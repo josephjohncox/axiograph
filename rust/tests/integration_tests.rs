@@ -1,9 +1,9 @@
 //! Integration tests for the complete Axiograph pipeline
 //!
 //! These tests verify end-to-end functionality across crates:
-//! - DSL parsing → Compiler → Idris output
+//! - canonical `.axi` parsing → compiled runtime surfaces
 //! - Storage → PathDB → Query
-//! - LLM Sync → Storage → Both formats
+//! - LLM/evidence sync → storage materialization → grounding context
 //!
 //! Run with: cargo test --test integration_tests
 
@@ -64,14 +64,19 @@ fn test_axi_v1_parse_schema_module() {
 
 #[test]
 fn test_storage_pathdb_sync() {
-    use axiograph_storage::{ChangeSource, StorableFact, StorageConfig, UnifiedStorage};
+    use axiograph_storage::{
+        ChangeSource, ReviewPolicy, StorableFact, StorageConfig, UnifiedStorage,
+    };
 
     let dir = tempdir().unwrap();
     let config = StorageConfig {
         axi_dir: dir.path().to_path_buf(),
-        pathdb_path: dir.path().join("test.axpd"),
-        changelog_path: dir.path().join("changelog.json"),
         watch_files: false,
+        require_review: ReviewPolicy {
+            constraints: false,
+            low_confidence_threshold: None,
+            schema_changes: false,
+        },
         ..Default::default()
     };
 
@@ -112,23 +117,26 @@ fn test_storage_pathdb_sync() {
     storage
         .add_facts(facts, ChangeSource::UserEdit { user_id: None })
         .unwrap();
-    storage.flush().unwrap();
+    let applied = storage.flush().unwrap();
 
     // Verify in PathDB
-    let pathdb = storage.pathdb();
-    let db = pathdb.read();
+    let db = storage.pathdb();
 
     assert!(db.find_by_type("Material").is_some());
     assert!(db.find_by_type("Tool").is_some());
     assert!(db.find_by_type("TacitKnowledge").is_some());
 
-    // Verify .axi file
-    let axi_path = dir.path().join("user_edits.axi");
-    assert!(axi_path.exists());
-    let content = std::fs::read_to_string(axi_path).unwrap();
-    assert!(content.contains("Ti6Al4V"));
-    assert!(content.contains("CarbideEndMill"));
-    assert!(content.contains("usedWith"));
+    // Generated `.axi` remains a review proposal; staging does not persist it.
+    let proposed_axi = applied
+        .iter()
+        .flat_map(|result| result.axi_lines.iter())
+        .cloned()
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(proposed_axi.contains("Ti6Al4V"));
+    assert!(proposed_axi.contains("CarbideEndMill"));
+    assert!(proposed_axi.contains("usedWith"));
+    assert!(!dir.path().join("user_edits.axi").exists());
 
     // Verify changelog
     let changelog = storage.changelog();
@@ -183,8 +191,6 @@ async fn test_llm_sync_storage_integration() {
     let dir = tempdir().unwrap();
     let config = StorageConfig {
         axi_dir: dir.path().to_path_buf(),
-        pathdb_path: dir.path().join("test.axpd"),
-        changelog_path: dir.path().join("changelog.json"),
         watch_files: false,
         ..Default::default()
     };
@@ -200,7 +206,8 @@ async fn test_llm_sync_storage_integration() {
             name: "test".to_string(),
             endpoint: "local".to_string(),
         },
-    );
+    )
+    .expect("valid sync configuration");
 
     // Machinist conversation
     let conversation = vec![ConversationTurn {
@@ -233,7 +240,7 @@ async fn test_llm_sync_storage_integration() {
 
     // Stats
     let stats = sync.stats();
-    println!("Integration test stats: {:?}", stats);
+    println!("Integration test stats: {stats:?}");
 }
 
 // ============================================================================
@@ -263,12 +270,11 @@ async fn test_complete_pipeline() {
     let module = parse_axi_v1(schema_source).unwrap();
     let module_name = module.module_name.clone();
     assert_eq!(module_name, "MachiningKnowledge");
+    std::fs::write(dir.path().join("MachiningKnowledge.axi"), schema_source).unwrap();
 
     // Step 2: Create storage
     let config = StorageConfig {
         axi_dir: dir.path().to_path_buf(),
-        pathdb_path: dir.path().join("machining.axpd"),
-        changelog_path: dir.path().join("changelog.json"),
         watch_files: false,
         ..Default::default()
     };
@@ -298,7 +304,8 @@ async fn test_complete_pipeline() {
             name: "test".to_string(),
             endpoint: "local".to_string(),
         },
-    );
+    )
+    .expect("valid sync configuration");
 
     let conversation = vec![ConversationTurn {
         role: Role::Assistant,
@@ -312,8 +319,7 @@ async fn test_complete_pipeline() {
         .unwrap();
 
     // Step 5: Query the combined knowledge
-    let pathdb = storage.pathdb();
-    let db = pathdb.read();
+    let db = storage.pathdb();
     let materials = db.find_by_type("Material");
     assert!(materials.is_some());
 
@@ -335,81 +341,25 @@ async fn test_complete_pipeline() {
 }
 
 // ============================================================================
-// Persistence Tests
-// ============================================================================
-
-#[tokio::test]
-async fn test_persistence_across_restarts() {
-    use axiograph_storage::{ChangeSource, StorableFact, StorageConfig, UnifiedStorage};
-
-    let dir = tempdir().unwrap();
-    let pathdb_path = dir.path().join("persistent.axpd");
-    let changelog_path = dir.path().join("changelog.json");
-
-    // First session: add data
-    {
-        let config = StorageConfig {
-            axi_dir: dir.path().to_path_buf(),
-            pathdb_path: pathdb_path.clone(),
-            changelog_path: changelog_path.clone(),
-            watch_files: false,
-            ..Default::default()
-        };
-
-        let storage = UnifiedStorage::new(config).unwrap();
-
-        storage
-            .add_facts(
-                vec![StorableFact::Entity {
-                    name: "PersistentEntity".to_string(),
-                    entity_type: "Test".to_string(),
-                    attributes: vec![("key".to_string(), "value".to_string())],
-                }],
-                ChangeSource::UserEdit { user_id: None },
-            )
-            .unwrap();
-        storage.flush().unwrap();
-    }
-
-    // Second session: verify data persisted
-    {
-        let config = StorageConfig {
-            axi_dir: dir.path().to_path_buf(),
-            pathdb_path: pathdb_path.clone(),
-            changelog_path: changelog_path.clone(),
-            watch_files: false,
-            ..Default::default()
-        };
-
-        let storage = UnifiedStorage::new(config).unwrap();
-
-        // PathDB should have the entity
-        let pathdb = storage.pathdb();
-        let db = pathdb.read();
-        let entities = db.find_by_type("Test");
-        assert!(entities.is_some(), "Entity should persist");
-
-        // Changelog should exist
-        let changelog = storage.changelog();
-        assert!(!changelog.is_empty(), "Changelog should persist");
-    }
-}
-
-// ============================================================================
 // Concurrent Access Tests
 // ============================================================================
 
 #[tokio::test]
 async fn test_concurrent_writes() {
-    use axiograph_storage::{ChangeSource, StorableFact, StorageConfig, UnifiedStorage};
+    use axiograph_storage::{
+        ChangeSource, ReviewPolicy, StorableFact, StorageConfig, UnifiedStorage,
+    };
     use tokio::task::JoinSet;
 
     let dir = tempdir().unwrap();
     let config = StorageConfig {
         axi_dir: dir.path().to_path_buf(),
-        pathdb_path: dir.path().join("concurrent.axpd"),
-        changelog_path: dir.path().join("changelog.json"),
         watch_files: false,
+        require_review: ReviewPolicy {
+            constraints: false,
+            low_confidence_threshold: None,
+            schema_changes: false,
+        },
         ..Default::default()
     };
 
@@ -424,12 +374,12 @@ async fn test_concurrent_writes() {
             storage_clone
                 .add_facts(
                     vec![StorableFact::Entity {
-                        name: format!("ConcurrentEntity{}", i),
+                        name: format!("ConcurrentEntity{i}"),
                         entity_type: "Test".to_string(),
                         attributes: vec![],
                     }],
                     ChangeSource::System {
-                        reason: format!("task {}", i),
+                        reason: format!("task {i}"),
                     },
                 )
                 .unwrap();
@@ -445,8 +395,7 @@ async fn test_concurrent_writes() {
     storage.flush().unwrap();
 
     // Verify all entities
-    let pathdb = storage.pathdb();
-    let db = pathdb.read();
+    let db = storage.pathdb();
     let entities = db.find_by_type("Test");
     assert!(entities.is_some());
     assert_eq!(entities.unwrap().len(), 10);
@@ -475,8 +424,6 @@ async fn test_empty_sync() {
     let dir = tempdir().unwrap();
     let config = StorageConfig {
         axi_dir: dir.path().to_path_buf(),
-        pathdb_path: dir.path().join("test.axpd"),
-        changelog_path: dir.path().join("changelog.json"),
         watch_files: false,
         ..Default::default()
     };
@@ -489,7 +436,8 @@ async fn test_empty_sync() {
             name: "test".to_string(),
             endpoint: "local".to_string(),
         },
-    );
+    )
+    .expect("valid sync configuration");
 
     // Empty conversation should not panic
     let result = sync.sync_from_conversation(&[], None).await.unwrap();

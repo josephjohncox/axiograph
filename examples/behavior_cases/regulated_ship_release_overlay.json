@@ -1,0 +1,112 @@
+{
+  "version": "tooling_overlay_bundle_v1",
+  "fddd_context_map": {
+    "context_id": "bounded-context:regulated-line-release",
+    "label": "Regulated line release to ship",
+    "summary": "Connects ERP order lineage, work-order release, inspection, shipment, PLC/HMI, and ERP implementation surfaces.",
+    "scopes": [
+      {
+        "kind": "relation",
+        "schema": "RegulatedLine",
+        "name": "ShipmentFulfills"
+      },
+      {
+        "kind": "relation",
+        "schema": "RegulatedLine",
+        "name": "InspectionDecision"
+      }
+    ],
+    "processes": [
+      {
+        "binding_id": "process:release-to-ship",
+        "label": "Release-to-ship process",
+        "ontology_refs": [
+          {
+            "kind": "relation",
+            "schema": "RegulatedLine",
+            "name": "WorkOrderForSalesOrder"
+          },
+          {
+            "kind": "relation",
+            "schema": "RegulatedLine",
+            "name": "InspectionDecision"
+          },
+          {
+            "kind": "relation",
+            "schema": "RegulatedLine",
+            "name": "ShipmentFulfills"
+          }
+        ]
+      }
+    ],
+    "business_rules": [
+      {
+        "binding_id": "rule:released-shipment-has-work-order",
+        "label": "Released shipment has a concrete work order",
+        "ontology_refs": [
+          {
+            "kind": "relation",
+            "schema": "RegulatedLine",
+            "name": "ShipmentFulfills"
+          }
+        ]
+      }
+    ],
+    "notes": [
+      "Industrial implementation surfaces are overlay/tooling concepts, not default domain representation."
+    ]
+  },
+  "implementation_surfaces": {
+    "surfaces": [
+      {
+        "surface_id": "workflow:regulated-line:release-to-ship",
+        "kind": "workflow",
+        "label": "Release-to-ship workflow",
+        "ontology_refs": [
+          {
+            "kind": "relation",
+            "schema": "RegulatedLine",
+            "name": "ShipmentFulfills"
+          }
+        ],
+        "code_refs": [
+          "plc/charge_sequence.st",
+          "hmi/blend_overview.tsx",
+          "services/erp/src/release_to_ship.rs"
+        ],
+        "languages": [
+          "rust",
+          "typescript",
+          "structured_text"
+        ],
+        "notes": [
+          "Pedagogical target refs; not a claim that those files exist in this repo."
+        ]
+      }
+    ],
+    "coverage_edges": [
+      {
+        "surface_id": "workflow:regulated-line:release-to-ship",
+        "rule_id": "schema/regulatedline/relation/shipmentfulfills/rule/key/0",
+        "status": "tested"
+      }
+    ]
+  },
+  "coverage_policy": {
+    "coverage_mode": "advisory",
+    "require_codegen_languages": [
+      "rust",
+      "typescript"
+    ],
+    "strict_coverage": false,
+    "require_code_refs": false,
+    "require_runtime_theory": false,
+    "fail_on_unresolved_obligations": false
+  },
+  "codegen_plan": {
+    "languages": [
+      "rust",
+      "typescript"
+    ]
+  }
+}

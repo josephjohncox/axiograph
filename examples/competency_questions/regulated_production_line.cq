@@ -1,0 +1,40 @@
+version competency_question_bundle_v1
+
+question work_order_has_recipe:
+  ask: Find a work order linked to a sales order and recipe.
+  expect: exists RegulatedLine.WorkOrderForSalesOrder(work_order=?wo, order=?so, recipe=?r, ctx=?c, time=?t)
+  min_rows: 1
+  weight: 2.0
+
+question lot_has_certificate:
+  ask: Find a consumed material lot with a supplier certificate.
+  expect: exists RegulatedLine.LotHasCertificate(lot=?lot, cert=?cert)
+  min_rows: 1
+  weight: 2.0
+
+question step_has_plc_hmi_sop:
+  ask: Find a process step linked to PLC, HMI, and SOP surfaces.
+  expect: exists RegulatedLine.StepControlledBy(step=?step, plc=?plc)
+  expect: exists RegulatedLine.StepDisplayedOn(step=?step, hmi=?hmi)
+  expect: exists RegulatedLine.StepGovernedBy(step=?step, sop=?sop)
+  min_rows: 1
+  weight: 2.0
+
+question inspection_releases_work_order:
+  ask: Find an inspection decision for a work order step.
+  expect: exists RegulatedLine.InspectionForWorkOrder(inspection=?i, work_order=?wo, step=?step, ctx=?c, time=?t)
+  expect: exists RegulatedLine.InspectionDecision(inspection=?i, decision=?d, ctx=?c2, time=?t2)
+  min_rows: 1
+  weight: 2.0
+
+question shipment_traces_to_order_and_work_order:
+  ask: Find a shipment that fulfills both sales order and work order lineage.
+  expect: exists RegulatedLine.ShipmentFulfills(shipment=?s, order=?so, work_order=?wo, ctx=?c, time=?t)
+  min_rows: 1
+  weight: 2.0
+
+question delivery_commitment_has_price:
+  ask: Find a delivery commitment with a price term.
+  expect: exists RegulatedLine.DeliveryCommitment(order=?so, window=?w, price=?p, ctx=?c, time=?t)
+  min_rows: 1
+  weight: 1.5

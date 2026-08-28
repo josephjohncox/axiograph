@@ -2,20 +2,18 @@
 //!
 //! `axi_v1` is the **single canonical** `.axi` surface language entrypoint.
 //!
-//! For the initial Rust+Lean-only release we intentionally keep exactly one
-//! concrete surface syntax:
-//! - `axi_schema_v1` → `schema_v1::SchemaV1Module`
+//! The concrete schema/theory/instance parser currently lives in
+//! `schema_v1::SchemaV1Module`, but that is an internal module name rather than
+//! a second end-user dialect.
 //!
-//! Historical note: the repo previously carried a separate `axi_learning_v1`
-//! dialect. We removed that split in favor of a single schema/theory/instance
-//! syntax so:
+//! We intentionally keep one canonical authoring surface so:
 //! - PathDB import/export has one canonical `.axi` plane
 //! - certificates can be anchored to a single parser/AST
-//! - Rust and Lean stay in lockstep without dialect detection
+//! - Rust and Lean stay in lockstep without end-user dialect drift
 
-pub use crate::schema_v1::{SchemaV1Module as AxiV1Module, SchemaV1ParseError as AxiV1ParseError};
+use crate::schema_v1::{SchemaV1Module, SchemaV1ParseError};
 
-pub fn parse_axi_v1(text: &str) -> Result<AxiV1Module, AxiV1ParseError> {
+pub fn parse_axi_v1(text: &str) -> Result<SchemaV1Module, SchemaV1ParseError> {
     crate::schema_v1::parse_schema_v1(text)
 }
 
@@ -40,7 +38,7 @@ mod tests {
         ] {
             let text = std::fs::read_to_string(repo_root().join(path)).expect("read .axi");
             let module = parse_axi_v1(&text).expect("parse axi_v1");
-            assert_eq!(module.module_name.is_empty(), false);
+            assert!(!module.module_name.is_empty());
         }
     }
 }

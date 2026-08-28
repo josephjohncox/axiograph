@@ -1,0 +1,25 @@
+# Axiograph REPL script: bounded proposal planning walkthrough
+#
+# Run (from repo root):
+#   make binaries
+#   ./bin/axiograph repl --script examples/repl_scripts/bounded_proposal_rollout_demo.repl
+#
+# Or (if installed to PATH):
+#   axiograph repl --script examples/repl_scripts/bounded_proposal_rollout_demo.repl
+#
+# Notes:
+# - This script demonstrates the bounded proposal-planning surface in offline
+#   mode. The `stub` predictive-proposal backend is deterministic and returns no
+#   proposals, so the walkthrough is safe for docs and CI.
+# - For an LLM-backed run, replace `proposal use stub` with:
+#     proposal use llm
+#   and configure one of:
+#     export PREDICTIVE_PROPOSAL_BACKEND=openai   export OPENAI_API_KEY=...
+#     export PREDICTIVE_PROPOSAL_BACKEND=anthropic export ANTHROPIC_API_KEY=...
+#     export PREDICTIVE_PROPOSAL_BACKEND=ollama   (ollama serve)
+
+import_axi examples/Family.axi
+proposal use stub
+proposal plan build/bounded_proposal_rollout_demo_plan.json --steps 2 --rollouts 2 --goal "predict missing parent links" --axi examples/Family.axi --cq-file examples/competency_questions/family_parent.cq
+
+# Save the bounded proposal rollout snapshot for inspection.

@@ -1,17 +1,16 @@
-//! Verified Binary Format with CBOR, Schemas, and Checksums
+//! Integrity-Checked CBOR Format With Schemas And Checksums
 //!
 //! This module provides a robust serialization format that:
 //! 1. Uses CBOR for compact, schema-aware encoding
 //! 2. Includes checksums for integrity verification
 //! 3. Supports schema evolution with version negotiation
-//! 4. Validates data against the formal spec invariants (Lean-checked semantics)
+//! 4. Validates envelope integrity and schema-version invariants. Semantic
+//!    claims still require the Axiograph certificate/trust boundary.
 
 #![allow(unused_imports)]
 
-use crate::reconciliation::*;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::io::{Read, Write};
 
 // ============================================================================
 // Format Header with Checksum
@@ -22,6 +21,10 @@ pub const MAGIC: [u8; 4] = [0x41, 0x58, 0x56, 0x46]; // "AXVF"
 
 /// Current format version (semantic versioning packed)
 pub const VERSION: u32 = 0x00_01_00_00; // 1.0.0
+/// Hard envelope bound applied before CBOR parsing or allocation.
+pub const MAX_VERIFIED_FORMAT_BYTES: usize = 16 * 1024 * 1024;
+/// Explicit stack bound for every untrusted CBOR value.
+pub const MAX_CBOR_RECURSION: usize = 64;
 
 /// Header with integrity verification
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -56,12 +59,12 @@ impl VerifiedHeader {
 
     fn compute_header_checksum(&self) -> [u8; 32] {
         let mut hasher = Sha256::new();
-        hasher.update(&self.magic);
-        hasher.update(&self.version.to_le_bytes());
-        hasher.update(&self.schema_version.to_le_bytes());
-        hasher.update(&self.flags.to_le_bytes());
-        hasher.update(&self.content_length.to_le_bytes());
-        hasher.update(&self.content_checksum);
+        hasher.update(self.magic);
+        hasher.update(self.version.to_le_bytes());
+        hasher.update(self.schema_version.to_le_bytes());
+        hasher.update(self.flags.to_le_bytes());
+        hasher.update(self.content_length.to_le_bytes());
+        hasher.update(self.content_checksum);
         hasher.finalize().into()
     }
 
@@ -71,12 +74,16 @@ impl VerifiedHeader {
             return Err(FormatError::InvalidMagic);
         }
 
-        // Check version compatibility
-        if !is_version_compatible(self.version, VERSION) {
+        // This greenfield format has one exact reader. Old minor versions are
+        // not a compatibility channel.
+        if self.version != VERSION {
             return Err(FormatError::IncompatibleVersion {
                 file_version: self.version,
                 reader_version: VERSION,
             });
+        }
+        if self.flags != 0 {
+            return Err(FormatError::UnsupportedFlags(self.flags));
         }
 
         // Verify header checksum
@@ -111,37 +118,6 @@ fn compute_sha256(data: &[u8]) -> [u8; 32] {
     hasher.finalize().into()
 }
 
-fn is_version_compatible(file_version: u32, reader_version: u32) -> bool {
-    let file_major = (file_version >> 24) & 0xFF;
-    let reader_major = (reader_version >> 24) & 0xFF;
-
-    // Major version must match
-    if file_major != reader_major {
-        return false;
-    }
-
-    let file_minor = (file_version >> 16) & 0xFF;
-    let reader_minor = (reader_version >> 16) & 0xFF;
-
-    // Reader must support at least the file's minor version
-    reader_minor >= file_minor
-}
-
-// ============================================================================
-// Feature Flags
-// ============================================================================
-
-pub mod flags {
-    pub const MODAL_LOGIC: u64 = 1 << 0;
-    pub const PROBABILISTIC: u64 = 1 << 1;
-    pub const TEMPORAL: u64 = 1 << 2;
-    pub const EPISTEMIC: u64 = 1 << 3;
-    pub const DEONTIC: u64 = 1 << 4;
-    pub const HOTT: u64 = 1 << 5;
-    pub const COMPRESSED: u64 = 1 << 6;
-    pub const ENCRYPTED: u64 = 1 << 7;
-}
-
 // ============================================================================
 // CBOR Serialization
 // ============================================================================
@@ -156,6 +132,12 @@ pub fn serialize_verified<T: Serialize>(
     let mut content = Vec::new();
     ciborium::into_writer(data, &mut content)
         .map_err(|e| FormatError::SerializationError(e.to_string()))?;
+    if content.len() > MAX_VERIFIED_FORMAT_BYTES {
+        return Err(FormatError::LimitExceeded {
+            limit: MAX_VERIFIED_FORMAT_BYTES,
+            actual: content.len(),
+        });
+    }
 
     // Create header
     let header = VerifiedHeader::new(&content, schema_version, flags);
@@ -165,6 +147,12 @@ pub fn serialize_verified<T: Serialize>(
     ciborium::into_writer(&header, &mut output)
         .map_err(|e| FormatError::SerializationError(e.to_string()))?;
     output.extend_from_slice(&content);
+    if output.len() > MAX_VERIFIED_FORMAT_BYTES {
+        return Err(FormatError::LimitExceeded {
+            limit: MAX_VERIFIED_FORMAT_BYTES,
+            actual: output.len(),
+        });
+    }
 
     Ok(output)
 }
@@ -173,11 +161,18 @@ pub fn serialize_verified<T: Serialize>(
 pub fn deserialize_verified<T: for<'de> Deserialize<'de>>(
     data: &[u8],
 ) -> Result<(T, VerifiedHeader), FormatError> {
+    if data.len() > MAX_VERIFIED_FORMAT_BYTES {
+        return Err(FormatError::LimitExceeded {
+            limit: MAX_VERIFIED_FORMAT_BYTES,
+            actual: data.len(),
+        });
+    }
     let mut cursor = std::io::Cursor::new(data);
 
     // Read header
-    let header: VerifiedHeader = ciborium::from_reader(&mut cursor)
-        .map_err(|e| FormatError::DeserializationError(e.to_string()))?;
+    let header: VerifiedHeader =
+        ciborium::de::from_reader_with_recursion_limit(&mut cursor, MAX_CBOR_RECURSION)
+            .map_err(|e| FormatError::DeserializationError(e.to_string()))?;
 
     // Verify header
     header.verify()?;
@@ -189,9 +184,17 @@ pub fn deserialize_verified<T: for<'de> Deserialize<'de>>(
     // Verify content
     header.verify_content(content)?;
 
-    // Deserialize content
-    let value: T = ciborium::from_reader(content)
-        .map_err(|e| FormatError::DeserializationError(e.to_string()))?;
+    // Deserialize exactly one content value. Trailing values or bytes are not a
+    // compatibility channel and are rejected.
+    let mut content_cursor = std::io::Cursor::new(content);
+    let value: T =
+        ciborium::de::from_reader_with_recursion_limit(&mut content_cursor, MAX_CBOR_RECURSION)
+            .map_err(|e| FormatError::DeserializationError(e.to_string()))?;
+    if content_cursor.position() != content.len() as u64 {
+        return Err(FormatError::TrailingData {
+            remaining: content.len() - content_cursor.position() as usize,
+        });
+    }
 
     Ok((value, header))
 }
@@ -229,222 +232,22 @@ pub enum FormatError {
     #[error("Schema validation error: {0}")]
     SchemaError(String),
 
+    #[error("Unsupported verified-format flags: {0:#x}")]
+    UnsupportedFlags(u64),
+
+    #[error("Verified format exceeds {limit} bytes (actual {actual})")]
+    LimitExceeded { limit: usize, actual: usize },
+
+    #[error("Verified format contains {remaining} trailing bytes")]
+    TrailingData { remaining: usize },
+
     #[error("IO error: {0}")]
     IoError(#[from] std::io::Error),
-}
-
-// ============================================================================
-// Verified Types (match the Lean spec)
-// ============================================================================
-
-/// Fixed-point probability matching Lean `VProb`
-/// Value is in range [0, 1_000_000]
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-pub struct FixedProb(u32);
-
-impl FixedProb {
-    pub const PRECISION: u32 = 1_000_000;
-
-    pub fn new(value: u32) -> Result<Self, FormatError> {
-        if value > Self::PRECISION {
-            return Err(FormatError::SchemaError(format!(
-                "Probability {} exceeds precision {}",
-                value,
-                Self::PRECISION
-            )));
-        }
-        Ok(Self(value))
-    }
-
-    pub fn from_f64(value: f64) -> Result<Self, FormatError> {
-        if value < 0.0 || value > 1.0 {
-            return Err(FormatError::SchemaError(format!(
-                "Probability {} out of range [0, 1]",
-                value
-            )));
-        }
-        let fixed = (value * Self::PRECISION as f64).round() as u32;
-        Self::new(fixed)
-    }
-
-    pub fn to_f64(&self) -> f64 {
-        self.0 as f64 / Self::PRECISION as f64
-    }
-
-    pub fn raw(&self) -> u32 {
-        self.0
-    }
-
-    /// Multiply two probabilities (with proper scaling)
-    pub fn multiply(&self, other: &Self) -> Self {
-        let product = (self.0 as u64 * other.0 as u64) / Self::PRECISION as u64;
-        Self(product.min(Self::PRECISION as u64) as u32)
-    }
-}
-
-// ============================================================================
-// Reconciliation State (CBOR-Serializable)
-// ============================================================================
-
-/// Reconciliation state with verified serialization
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct VerifiedReconciliationState {
-    pub version: u32,
-    pub sources: Vec<VerifiedSource>,
-    pub facts: Vec<VerifiedFact>,
-    pub conflicts: Vec<VerifiedConflict>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct VerifiedSource {
-    pub id: String,
-    pub credibility: FixedProb,
-    pub track_record: (u32, u32), // (correct, incorrect)
-    pub domain_expertise: Vec<(String, FixedProb)>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct VerifiedFact {
-    pub id: [u8; 16], // UUID bytes
-    pub weight: FixedProb,
-    pub upvotes: u32,
-    pub downvotes: u32,
-    pub sources: Vec<String>,
-    pub content_type: u8,
-    pub content: Vec<u8>, // CBOR-encoded content
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct VerifiedConflict {
-    pub new_fact_id: [u8; 16],
-    pub existing_fact_id: [u8; 16],
-    pub conflict_type: u8,
-    pub resolution: u8,
-    pub weights: Option<(FixedProb, FixedProb)>,
-    pub timestamp_ms: i64,
-}
-
-// ============================================================================
-// Conversion from Runtime Types
-// ============================================================================
-
-impl VerifiedReconciliationState {
-    pub fn from_runtime(
-        state: &crate::reconciliation_format::ReconciliationState,
-    ) -> Result<Self, FormatError> {
-        let sources = state
-            .sources
-            .iter()
-            .map(|s| {
-                Ok(VerifiedSource {
-                    id: s.source_id.clone(),
-                    credibility: FixedProb::from_f64(s.base_credibility.value() as f64)?,
-                    track_record: (s.track_record.correct, s.track_record.incorrect),
-                    domain_expertise: s
-                        .domain_expertise
-                        .iter()
-                        .map(|(k, v)| Ok((k.clone(), FixedProb::from_f64(v.value() as f64)?)))
-                        .collect::<Result<Vec<_>, FormatError>>()?,
-                })
-            })
-            .collect::<Result<Vec<_>, FormatError>>()?;
-
-        let facts = state
-            .facts
-            .iter()
-            .map(|f| {
-                Ok(VerifiedFact {
-                    id: *f.fact_id.as_bytes(),
-                    weight: FixedProb::from_f64(f.weight.value() as f64)?,
-                    upvotes: f.upvotes,
-                    downvotes: f.downvotes,
-                    sources: f.sources.clone(),
-                    content_type: 0, // TODO: proper type encoding
-                    content: {
-                        let mut out = Vec::new();
-                        ciborium::into_writer(&f.content, &mut out)
-                            .map_err(|e| FormatError::SerializationError(e.to_string()))?;
-                        out
-                    },
-                })
-            })
-            .collect::<Result<Vec<_>, FormatError>>()?;
-
-        let conflicts = state
-            .conflicts
-            .iter()
-            .map(|c| {
-                Ok(VerifiedConflict {
-                    new_fact_id: *c.new_fact_id.as_bytes(),
-                    existing_fact_id: *c.existing_fact_id.as_bytes(),
-                    conflict_type: crate::reconciliation_format::conflict_type_to_byte(
-                        &c.conflict_type,
-                    ),
-                    resolution: crate::reconciliation_format::resolution_to_byte(&c.resolution),
-                    weights: match &c.resolution {
-                        crate::Resolution::Merge { weights } => Some((
-                            FixedProb::from_f64(weights.0 as f64)?,
-                            FixedProb::from_f64(weights.1 as f64)?,
-                        )),
-                        _ => None,
-                    },
-                    timestamp_ms: c.timestamp.timestamp_millis(),
-                })
-            })
-            .collect::<Result<Vec<_>, FormatError>>()?;
-
-        Ok(Self {
-            version: 1,
-            sources,
-            facts,
-            conflicts,
-        })
-    }
-
-    /// Save to file with verification
-    pub fn save(&self, path: &std::path::Path) -> Result<(), FormatError> {
-        let data = serialize_verified(
-            self,
-            1, // schema version
-            flags::PROBABILISTIC,
-        )?;
-        std::fs::write(path, data)?;
-        Ok(())
-    }
-
-    /// Load from file with verification
-    pub fn load(path: &std::path::Path) -> Result<Self, FormatError> {
-        let data = std::fs::read(path)?;
-        let (state, _header) = deserialize_verified(&data)?;
-        Ok(state)
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_fixed_prob_precision() {
-        let p = FixedProb::from_f64(0.123456).unwrap();
-        assert!((p.to_f64() - 0.123456).abs() < 0.000001);
-    }
-
-    #[test]
-    fn test_fixed_prob_bounds() {
-        assert!(FixedProb::from_f64(-0.1).is_err());
-        assert!(FixedProb::from_f64(1.1).is_err());
-        assert!(FixedProb::from_f64(0.0).is_ok());
-        assert!(FixedProb::from_f64(1.0).is_ok());
-    }
-
-    #[test]
-    fn test_fixed_prob_multiply() {
-        let a = FixedProb::from_f64(0.5).unwrap();
-        let b = FixedProb::from_f64(0.5).unwrap();
-        let c = a.multiply(&b);
-        assert!((c.to_f64() - 0.25).abs() < 0.000001);
-    }
 
     #[test]
     fn test_header_verification() {
@@ -457,23 +260,61 @@ mod tests {
     }
 
     #[test]
-    fn test_roundtrip() {
-        let state = VerifiedReconciliationState {
-            version: 1,
-            sources: vec![VerifiedSource {
-                id: "test".to_string(),
-                credibility: FixedProb::from_f64(0.9).unwrap(),
-                track_record: (10, 1),
-                domain_expertise: vec![],
-            }],
-            facts: vec![],
-            conflicts: vec![],
-        };
+    fn oversized_envelope_rejects_before_cbor_parsing() {
+        let data = vec![0_u8; MAX_VERIFIED_FORMAT_BYTES + 1];
+        let error = deserialize_verified::<serde_json::Value>(&data)
+            .expect_err("oversized CBOR envelope must reject");
+        assert!(matches!(error, FormatError::LimitExceeded { .. }));
+    }
 
-        let data = serialize_verified(&state, 1, 0).unwrap();
-        let (restored, _): (VerifiedReconciliationState, _) = deserialize_verified(&data).unwrap();
+    #[test]
+    fn verified_content_rejects_trailing_cbor_value() {
+        let mut content = Vec::new();
+        ciborium::into_writer(&1_u8, &mut content).unwrap();
+        ciborium::into_writer(&2_u8, &mut content).unwrap();
+        let header = VerifiedHeader::new(&content, 1, 0);
+        let mut data = Vec::new();
+        ciborium::into_writer(&header, &mut data).unwrap();
+        data.extend_from_slice(&content);
+        let error = deserialize_verified::<u8>(&data).expect_err("trailing CBOR value must reject");
+        assert!(matches!(error, FormatError::TrailingData { .. }));
+    }
 
-        assert_eq!(restored.sources.len(), 1);
-        assert_eq!(restored.sources[0].id, "test");
+    #[test]
+    fn obsolete_format_versions_and_flags_reject() {
+        let mut old = VerifiedHeader::new(b"x", 1, 0);
+        old.version = VERSION.saturating_sub(1);
+        old.header_checksum = old.compute_header_checksum();
+        assert!(matches!(
+            old.verify(),
+            Err(FormatError::IncompatibleVersion { .. })
+        ));
+
+        let flagged = VerifiedHeader::new(b"x", 1, 1);
+        assert!(matches!(
+            flagged.verify(),
+            Err(FormatError::UnsupportedFlags(1))
+        ));
+    }
+
+    #[test]
+    fn deeply_nested_cbor_rejects_at_explicit_recursion_limit() {
+        let mut content = vec![0x81; MAX_CBOR_RECURSION + 1];
+        content.push(0);
+        let header = VerifiedHeader::new(&content, 1, 0);
+        let mut data = Vec::new();
+        ciborium::into_writer(&header, &mut data).unwrap();
+        data.extend_from_slice(&content);
+        let error = deserialize_verified::<serde_json::Value>(&data)
+            .expect_err("deep CBOR must reject before building an allocation tree");
+        assert!(matches!(error, FormatError::DeserializationError(_)));
+    }
+
+    #[test]
+    fn verified_format_roundtrip() {
+        let value = serde_json::json!({"sources": ["test"], "version": 1});
+        let data = serialize_verified(&value, 1, 0).unwrap();
+        let (restored, _): (serde_json::Value, _) = deserialize_verified(&data).unwrap();
+        assert_eq!(restored, value);
     }
 }

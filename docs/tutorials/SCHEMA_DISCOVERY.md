@@ -5,27 +5,33 @@
 
 This document describes Axiograph’s **schema discovery** loop: turning untrusted
 evidence-plane artifacts (`proposals.json`) into a **candidate**, readable
-canonical `.axi` module that you can iterate on interactively.
+canonical `.axi` module that you can iterate on interactively, validate with
+typed reports, and promote through semantic VCS review.
 
 The guiding architecture remains:
 
 - Rust computes candidates (fast, heuristic, untrusted).
 - Lean checks certificates for anything promoted into “certified” answers.
 - `.axi` is the human-reviewable canonical source plane.
+- PathDB is the derived execution/query substrate, not the semantic authority.
+- Promotion emits typed previews/reports and advances semantic VCS history.
 
 ## Why schema discovery exists
 
-AxQL and PathDB become much more useful when a PathDB contains the `.axi`
-**meta-plane** (schema + theory metadata):
+Typed query/report tooling and REPL exploration become more useful after a
+reviewed `.axi` module is materialized into a derived PathDB snapshot with the
+canonical **meta-plane** (schema + theory metadata):
 
 - AxQL planning can auto-add **implied type constraints** from relation field types.
 - Keys/functionals can be used as **join planning hints** and (for fact atoms) candidate pruning.
 - Fact atoms benefit from PathDB’s **FactIndex** for fast `axi_relation` filtering.
+- Machine/report flows compile `query_ir_v1` as `CompiledFiniteQuery` and carry
+  typed metadata, trust contracts, and refinement handles.
 
 But many ingestion sources start in the evidence plane:
 
 - SQL DDL
-- proto descriptor sets
+- proto descriptor sets as optional evidence adapters
 - JSON payloads
 - repo/code analysis + extracted mentions
 
@@ -33,18 +39,19 @@ They produce `proposals.json` first, because that’s our generic, reviewable ev
 
 Schema discovery is the bridge that drafts a canonical `.axi` module so you can:
 
-1) import it into PathDB,
-2) query it with schema-directed AxQL,
-3) iterate/refine it (possibly with LLM assistance),
-4) promote reviewed changes into your accepted `.axi` modules.
+1) validate and inspect it with typed reports,
+2) query it with `CompiledFiniteQuery`-backed tooling or schema-directed AxQL,
+3) apply refinement handles and iterate on the candidate,
+4) promote reviewed changes into accepted `.axi` modules through semantic VCS,
+5) materialize derived PathDB/query/viz artifacts from the accepted plane.
 
 ## CLI: draft a module from proposals
 
 Command:
 
 ```bash
-cd rust
-cargo run -p axiograph-cli -- discover draft-module <proposals.json> --out <module.axi>
+cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- \
+  discover draft-module <proposals.json> --out <module.axi>
 ```
 
 Key flags:
@@ -57,9 +64,9 @@ Key flags:
 Example:
 
 ```bash
-cd rust
-cargo run -p axiograph-cli -- discover draft-module ../build/ingest_proposals.json \
-  --out ../build/Discovered.proposals.axi \
+cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- \
+  discover draft-module build/ingest_proposals.json \
+  --out build/Discovered.proposals.axi \
   --module Discovered_Proposals \
   --schema Discovered \
   --instance DiscoveredInstance \
@@ -89,8 +96,7 @@ Non-goals:
 Once you have a drafted `.axi`:
 
 ```bash
-cd rust
-cargo run -p axiograph-cli -- repl
+cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- repl
 ```
 
 Then:
@@ -130,11 +136,11 @@ The discovery pipeline can ask an LLM to suggest `schema_hint` updates that rout
 proposals into one of the canonical example domains (still untrusted):
 
 ```bash
-cd rust
-cargo run -p axiograph-cli -- discover augment-proposals ../build/repo_proposals.json \
-  --out ../build/repo_proposals.aug.json \
-  --trace ../build/repo_proposals.aug.trace.json \
-  --chunks ../build/repo_chunks.json \
+cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- \
+  discover augment-proposals build/repo_proposals.json \
+  --out build/repo_proposals.aug.json \
+  --trace build/repo_proposals.aug.trace.json \
+  --chunks build/repo_chunks.json \
   --llm-ollama \
   --llm-model nemotron-3-nano
 ```
@@ -172,9 +178,9 @@ When drafting a candidate module, you can ask an LLM to suggest:
 - candidate relation constraints (`symmetric`, `transitive`).
 
 ```bash
-cd rust
-cargo run -p axiograph-cli -- discover draft-module ../build/repo_proposals.aug.json \
-  --out ../build/Discovered.proposals.axi \
+cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- \
+  discover draft-module build/repo_proposals.aug.json \
+  --out build/Discovered.proposals.axi \
   --module Discovered_Proposals \
   --schema Discovered \
   --instance DiscoveredInstance \
@@ -199,84 +205,53 @@ into your accepted `.axi` plane, run a small gate:
 Example:
 
 ```bash
-cd rust
-
 # 1) Rust gate: parse + typecheck
-cargo run -p axiograph-cli -- check validate build/Discovered.proposals.axi
+cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- \
+  check validate build/Discovered.proposals.axi
 
 # 2) Emit a typecheck certificate (anchored to the module digest)
-cargo run -p axiograph-cli -- cert typecheck build/Discovered.proposals.axi \
+cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- \
+  cert typecheck build/Discovered.proposals.axi \
   --out build/Discovered.typecheck_cert.json
 
 # 3) Lean gate: verify the certificate against the anchored input
-cd ..
 make verify-lean-cert AXI=build/Discovered.proposals.axi CERT=build/Discovered.typecheck_cert.json
 ```
 
-If the gate succeeds, you can promote the module into your **accepted plane**.
-This creates an append-only audit log and a content-derived snapshot id.
+If the gate succeeds, build a typed `PromotionPlan` from the exact reviewed
+module bytes and complete gate closure, then call `AxiStore::promote` with the
+current generation. Promotion appends authenticated audit lineage and advances
+the protected accepted ref atomically. The removed `db accept` command and
+filesystem `HEAD` are not compatibility paths; follow
+`docs/howto/SNAPSHOT_STORE.md`.
 
-```bash
-cd rust
+The accepted `.axi` closure and AxiStore semantic ref remain the meaning plane.
+Derived query state is built from explicit accepted snapshot/tree, ordered
+module closure, kernel, fact-log, configuration, and overlay anchors. The result
+is an immutable SQLite image and receipt under AxiStore, addressed by
+`MaterializationIdV2`.
 
-# Promote a reviewed module into the accepted plane (append-only).
-# Prints the new snapshot id to stdout.
-snapshot_id="$(cargo run -p axiograph-cli -- db accept promote ../build/Discovered.proposals.axi \
-  --dir ../build/accepted_plane \
-  --message \"reviewed: initial discovered schema\")"
+Do not append discovery chunks to a PathDB WAL or reverse-export a materialized
+image. Keep chunks as typed evidence until review promotes canonical changes.
 
-echo "accepted snapshot: $snapshot_id"
-```
+For query-facing tooling, compile to `query_ir_v1`, prepare
+`CompiledFiniteQuery`, inspect the typed metadata/report envelope, and use envelope
+V3 / `query_result_v4` witnesses when a certified result is required.
 
-Then build derived artifacts (PathDB snapshot + viz):
+## Materialization Checks
 
-```bash
-# Rebuild a `.axpd` snapshot from the accepted-plane snapshot id.
-cargo run -p axiograph-cli -- db accept build-pathdb \
-  --dir ../build/accepted_plane \
-  --snapshot "$snapshot_id" \
-  --out ../build/Discovered.accepted.axpd
-
-# Optional: commit doc/code chunks as an extension-layer overlay (append-only PathDB WAL).
-# This enables `fts(...)` / evidence navigation in the REPL without changing the canonical `.axi`.
-#
-# Note: this overlay is *not* part of the certified core unless you explicitly promote it
-# into canonical `.axi` and re-run the acceptance gate.
-cargo run -p axiograph-cli -- db accept pathdb-commit \
-  --dir ../build/accepted_plane \
-  --accepted-snapshot "$snapshot_id" \
-  --chunks ../build/ingest_chunks.json \
-  --message "discovery overlay: import chunks"
-
-cargo run -p axiograph-cli -- db accept pathdb-build \
-  --dir ../build/accepted_plane \
-  --snapshot latest \
-  --out ../build/Discovered.accepted_with_chunks.axpd
-
-# Export a reversible snapshot `.axi` (PathDBExportV1) for certificate anchoring.
-cargo run -p axiograph-cli -- db pathdb export-axi ../build/Discovered.accepted.axpd \
-  --out ../build/Discovered.snapshot_export_v1.axi
-
-# Meta-plane visualization (schema/theory)
-cargo run -p axiograph-cli -- tools viz ../build/Discovered.accepted.axpd \
-  --out ../build/Discovered.meta.html \
-  --format html --plane meta --focus-name Discovered --hops 3
-
-# Data-plane visualization (instances)
-cargo run -p axiograph-cli -- tools viz ../build/Discovered.accepted.axpd \
-  --out ../build/Discovered.data.html \
-  --format html --plane data --hops 2
-```
+Use the deterministic/authenticated SQLite gates documented in
+`docs/howto/TESTING.md` and `docs/explanation/PATHDB_DESIGN.md`.
+Do not teach this as the promotion, query, certificate, or semantic interchange
+path. It is a reversible storage/debug format only.
 
 ## Included demo assets
 
-- Example proposals: `examples/schema_discovery/sql_schema_proposals.json`
+- Example proposals: `examples/schema_discovery/inputs/sql_schema_proposals.json`
 - Drafted module: `examples/schema_discovery/SqlSchema.proposals.axi`
 - REPL script: `examples/repl_scripts/sql_schema_discovery_axi_demo.repl`
-- Example proposals (proto toy): `examples/schema_discovery/proto_api_proposals.json`
-- Drafted module (proto toy): `examples/schema_discovery/ProtoApi.proposals.axi`
-- REPL script (proto toy): `examples/repl_scripts/proto_schema_discovery_axi_demo.repl`
+- Example proposal inputs (proto/API evidence adapter): `examples/schema_discovery/inputs/proto_api_proposals.json`
+- Drafted module from proto evidence: `examples/schema_discovery/ProtoApi.proposals.axi`
+- Guided REPL review script for proto evidence: `examples/repl_scripts/proto_schema_discovery_axi_demo.repl`
 - Shell demo: `scripts/schema_discovery_sql_demo.sh`
 - Shell demo (LLM semantic + structural discovery via Ollama): `scripts/ontology_engineering_ollama_discovery_demo.sh`
-- Shell demo (Proto evolution over time, LLM augmentation via Ollama): `scripts/ontology_engineering_proto_evolution_ollama_demo.sh`
-- Shell demo (Physics, LLM grounded expansion via Ollama): `scripts/physics_discovery_ollama_grounded_demo.sh`

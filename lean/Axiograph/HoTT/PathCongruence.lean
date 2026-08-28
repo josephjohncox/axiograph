@@ -6,8 +6,7 @@ import Axiograph.HoTT.FreeGroupoid
 This module records “obvious but essential” congruence principles for Axiograph’s
 path semantics.
 
-In the Idris2 prototype, these appeared as explicit constructors/lemmas for the
-path-equivalence (2-cell) layer: equivalence must be stable under:
+Equivalence must be stable under:
 
 * composition (whiskering left/right), and
 * inversion.
@@ -36,6 +35,12 @@ open CategoryTheory
 denote the same morphism in the free groupoid. -/
 def PathExprEquiv {a b : Nat} (p q : PathExpr a b) : Prop :=
   denote p = denote q
+
+/-!
+`PathExprEquiv` contains no confidence field. Fixed-point confidence is a
+separate syntax-directed fold and is not transported through this equality:
+per-composition rounding is non-associative.
+-/
 
 theorem pathExprEquiv_refl {a b : Nat} (p : PathExpr a b) : PathExprEquiv p p := by
   rfl
@@ -68,7 +73,39 @@ theorem pathExprEquiv_congr_left {a b c : Nat} (r : PathExpr a b) {p q : PathExp
 theorem pathExprEquiv_congr_inv {a b : Nat} {p q : PathExpr a b} :
     PathExprEquiv p q → PathExprEquiv (.inv p) (.inv q) := by
   intro h
-  -- `Groupoid.inv` respects equality.
-  simpa [PathExprEquiv, denote] using congrArg Groupoid.inv h
+  simpa [PathExprEquiv] using denote_congr_inv h
+
+theorem pathExprEquiv_id_left {a b : Nat} (p : PathExpr a b) :
+    PathExprEquiv (.trans (.refl a) p) p :=
+  denote_id_left p
+
+theorem pathExprEquiv_id_right {a b : Nat} (p : PathExpr a b) :
+    PathExprEquiv (.trans p (.refl b)) p :=
+  denote_id_right p
+
+theorem pathExprEquiv_assoc {a b c d : Nat} (p : PathExpr a b)
+    (q : PathExpr b c) (r : PathExpr c d) :
+    PathExprEquiv (.trans (.trans p q) r) (.trans p (.trans q r)) :=
+  denote_assoc p q r
+
+theorem pathExprEquiv_inv_left {a b : Nat} (p : PathExpr a b) :
+    PathExprEquiv (.trans p (.inv p)) (.refl a) :=
+  denote_inv_left p
+
+theorem pathExprEquiv_inv_right {a b : Nat} (p : PathExpr a b) :
+    PathExprEquiv (.trans (.inv p) p) (.refl b) :=
+  denote_inv_right p
+
+theorem pathExprEquiv_inv_refl (a : Nat) :
+    PathExprEquiv (.inv (.refl a)) (.refl a) :=
+  denote_inv_refl a
+
+theorem pathExprEquiv_inv_inv {a b : Nat} (p : PathExpr a b) :
+    PathExprEquiv (.inv (.inv p)) p :=
+  denote_inv_inv p
+
+theorem pathExprEquiv_inv_trans {a b c : Nat} (p : PathExpr a b) (q : PathExpr b c) :
+    PathExprEquiv (.inv (.trans p q)) (.trans (.inv q) (.inv p)) :=
+  denote_inv_trans p q
 
 end Axiograph.HoTT

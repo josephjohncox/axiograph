@@ -1,0 +1,19 @@
+version competency_question_bundle_v1
+
+question released_shipment_has_certificate:
+  ask: Which released shipment has a reviewed certificate of analysis?
+  expect: exists RegulatedShipment.ShipmentHasCertificate(shipment=Shipment_RX_1007, certificate=CoA_RX_42, ctx=Released, time=T1)
+  min_rows: 1
+  weight: 1.0
+
+question released_shipment_has_release_authorization:
+  ask: Which shipment has a release authorization in the released context?
+  expect: exists RegulatedShipment.ShipmentReleasedBy(shipment=Shipment_RX_1007, release=Release_RX_42, ctx=Released, time=T1)
+  min_rows: 1
+  weight: 1.0
+
+question blocked_shipment_retains_temperature_excursion_evidence:
+  ask: Does the blocked shipment retain its temperature excursion evidence?
+  expect: exists RegulatedShipment.ShipmentHasTemperatureRecord(shipment=Shipment_RX_1008, record=TempLog_RX_1008, band=Excursion_Above_8C, ctx=Evidence, time=T2)
+  min_rows: 1
+  weight: 1.0

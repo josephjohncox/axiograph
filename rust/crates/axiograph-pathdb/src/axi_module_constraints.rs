@@ -15,7 +15,7 @@
 //! - `constraint at_most N Rel.field -> Rel.field [param (...)]`
 //! - `constraint symmetric Rel`
 //! - `constraint symmetric Rel where Rel.field in {A, B, ...}`
-//! - `constraint transitive Rel` (closure-compatibility for keys/functionals on carrier fields)
+//! - `constraint transitive Rel` (certified transitive-closure checks for keys/functionals on carrier fields)
 //! - `constraint typing Rel: rule_name` (small builtin rule set)
 //!
 //! Carrier fields for closure constraints (`symmetric`/`transitive`):
@@ -40,6 +40,7 @@ use axiograph_dsl::schema_v1::{
     CarrierFieldsV1, ConstraintV1, SchemaV1Instance, SchemaV1Module, SetItemV1,
 };
 
+use crate::axi_module_typecheck::{Module, WellTypedModuleState};
 use crate::certificate::AxiConstraintsOkProofV1;
 
 #[derive(Debug, Clone)]
@@ -142,14 +143,12 @@ fn gather_core_constraints(module: &SchemaV1Module) -> Vec<CoreConstraint<'_>> {
                     relation,
                     carriers,
                     params,
-                } => {
-                    out.push(CoreConstraint::Symmetric {
-                        schema: &th.schema,
-                        relation,
-                        carriers: carriers.as_ref(),
-                        params: params.as_deref(),
-                    })
-                }
+                } => out.push(CoreConstraint::Symmetric {
+                    schema: &th.schema,
+                    relation,
+                    carriers: carriers.as_ref(),
+                    params: params.as_deref(),
+                }),
                 ConstraintV1::Transitive {
                     relation,
                     carriers,
@@ -199,7 +198,9 @@ impl RelationFieldIndex {
             return Err(anyhow!("unknown schema `{schema}`"));
         };
         let Some(fields) = rels.get(relation) else {
-            return Err(anyhow!("unknown relation `{relation}` in schema `{schema}`"));
+            return Err(anyhow!(
+                "unknown relation `{relation}` in schema `{schema}`"
+            ));
         };
         Ok(fields.as_slice())
     }
@@ -214,7 +215,7 @@ fn relation_tuples<'a>(
         .filter(move |a| a.name == relation_name)
         .flat_map(|a| a.value.items.iter())
         .filter_map(|it| match it {
-            SetItemV1::Tuple { fields } => Some(fields),
+            SetItemV1::Tuple { fields, .. } => Some(fields),
             _ => None,
         })
 }
@@ -320,6 +321,7 @@ fn check_functional_on_tuples(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn check_at_most_on_tuples(
     inst_name: &str,
     relation_name: &str,
@@ -384,7 +386,8 @@ fn check_at_most_on_tuples(
     Ok(())
 }
 
-fn check_symmetric_closure_compatible_with_keys_and_functionals(
+#[allow(clippy::too_many_arguments)]
+fn check_symmetric_closure_admissible_with_keys_and_functionals(
     inst: &SchemaV1Instance,
     schema_name: &str,
     relation_name: &str,
@@ -425,7 +428,12 @@ fn check_symmetric_closure_compatible_with_keys_and_functionals(
                     c.left_field
                 ));
             }
-            (c.left_field.as_str(), c.right_field.as_str(), left_idx, right_idx)
+            (
+                c.left_field.as_str(),
+                c.right_field.as_str(),
+                left_idx,
+                right_idx,
+            )
         }
         None => (
             relation_fields[0].as_str(),
@@ -493,7 +501,8 @@ fn check_symmetric_closure_compatible_with_keys_and_functionals(
                 "internal error: symmetric carriers missing from projection fields"
             ));
         };
-        let Some(swap_right_proj) = projection_fields.iter().position(|x| x == carrier_right) else {
+        let Some(swap_right_proj) = projection_fields.iter().position(|x| x == carrier_right)
+        else {
             return Err(anyhow!(
                 "internal error: symmetric carriers missing from projection fields"
             ));
@@ -625,7 +634,7 @@ fn check_symmetric_closure_compatible_with_keys_and_functionals(
     Ok(())
 }
 
-fn check_transitive_closure_compatible_with_keys_and_functionals(
+fn check_transitive_closure_admissible_with_keys_and_functionals(
     inst: &SchemaV1Instance,
     schema_name: &str,
     relation_name: &str,
@@ -663,7 +672,12 @@ fn check_transitive_closure_compatible_with_keys_and_functionals(
                     c.left_field
                 ));
             }
-            (c.left_field.as_str(), c.right_field.as_str(), left_idx, right_idx)
+            (
+                c.left_field.as_str(),
+                c.right_field.as_str(),
+                left_idx,
+                right_idx,
+            )
         }
         None => (
             relation_fields[0].as_str(),
@@ -712,7 +726,7 @@ fn check_transitive_closure_compatible_with_keys_and_functionals(
         }
     }
 
-    // We only certify "closure compatibility" when keys/functionals are present,
+    // We only certify supported closure checks when keys/functionals are present,
     // and only for constraints that talk about the carrier fields (and optional
     // param fields, when `param (...)` is present).
     let mut has_relevant_checks = false;
@@ -745,7 +759,7 @@ fn check_transitive_closure_compatible_with_keys_and_functionals(
                     && *dst_field != carrier1
                 {
                     return Err(anyhow!(
-                        "transitive `{schema_name}.{relation_name}`: functional constraint mentions non-carrier fields (`{src_field}` -> `{dst_field}`); only `{carrier0}` and `{carrier1}` are supported for transitive closure-compatibility checks",
+                        "transitive `{schema_name}.{relation_name}`: functional constraint mentions non-carrier fields (`{src_field}` -> `{dst_field}`); only `{carrier0}` and `{carrier1}` are supported for certified transitive-closure checks",
                     ));
                 }
                 if *src_field != carrier0 && *src_field != carrier1 {
@@ -767,18 +781,82 @@ fn check_transitive_closure_compatible_with_keys_and_functionals(
         return Ok(());
     }
 
-    let (closure_relation_fields, closure_tuples): (Vec<String>, Vec<Vec<String>>) =
-        if param_idxs.is_empty() {
-            // Build transitive closure on the carrier pair (global).
-            let mut adj: HashMap<String, Vec<String>> = HashMap::new();
-            for tuple in relation_tuples(inst, relation_name) {
-                let vals =
-                    tuple_values_in_order(&inst.name, relation_name, tuple, relation_fields)?;
-                let src = vals[carrier0_idx].clone();
-                let dst = vals[carrier1_idx].clone();
-                adj.entry(src).or_default().push(dst);
-            }
+    let (closure_relation_fields, closure_tuples): (Vec<String>, Vec<Vec<String>>) = if param_idxs
+        .is_empty()
+    {
+        // Build transitive closure on the carrier pair (global).
+        let mut adj: HashMap<String, Vec<String>> = HashMap::new();
+        for tuple in relation_tuples(inst, relation_name) {
+            let vals = tuple_values_in_order(&inst.name, relation_name, tuple, relation_fields)?;
+            let src = vals[carrier0_idx].clone();
+            let dst = vals[carrier1_idx].clone();
+            adj.entry(src).or_default().push(dst);
+        }
 
+        let mut closure: std::collections::HashSet<(String, String)> =
+            std::collections::HashSet::new();
+        let sources: Vec<String> = adj.keys().cloned().collect();
+        for src in sources {
+            let mut visited: std::collections::HashSet<String> = std::collections::HashSet::new();
+            let mut queue: std::collections::VecDeque<String> = std::collections::VecDeque::new();
+            if let Some(neigh) = adj.get(&src) {
+                for v in neigh {
+                    queue.push_back(v.clone());
+                }
+            }
+            while let Some(v) = queue.pop_front() {
+                if !visited.insert(v.clone()) {
+                    continue;
+                }
+                closure.insert((src.clone(), v.clone()));
+                if let Some(more) = adj.get(&v) {
+                    for w in more {
+                        queue.push_back(w.clone());
+                    }
+                }
+            }
+        }
+
+        let closure_pairs: Vec<Vec<String>> =
+            closure.into_iter().map(|(a, b)| vec![a, b]).collect();
+        let carrier_fields = vec![carrier0.to_string(), carrier1.to_string()];
+        (carrier_fields, closure_pairs)
+    } else {
+        // Build transitive closure per fiber (parameter fields fixed).
+        let mut projection_fields: Vec<String> = Vec::new();
+        for f in relation_fields.iter() {
+            if allowed_fields.contains(f.as_str()) {
+                projection_fields.push(f.clone());
+            }
+        }
+
+        // Map param field name -> index in the `params` list / `param_key` tuple.
+        let mut param_pos: HashMap<&str, usize> = HashMap::new();
+        if let Some(params) = params {
+            for (i, p) in params.iter().enumerate() {
+                param_pos.insert(p.as_str(), i);
+            }
+        }
+
+        let mut adj_by_param: HashMap<Vec<String>, HashMap<String, Vec<String>>> = HashMap::new();
+        for tuple in relation_tuples(inst, relation_name) {
+            let vals = tuple_values_in_order(&inst.name, relation_name, tuple, relation_fields)?;
+            let mut pkey: Vec<String> = Vec::with_capacity(param_idxs.len());
+            for idx in param_idxs.iter() {
+                pkey.push(vals[*idx].clone());
+            }
+            let src = vals[carrier0_idx].clone();
+            let dst = vals[carrier1_idx].clone();
+            adj_by_param
+                .entry(pkey)
+                .or_default()
+                .entry(src)
+                .or_default()
+                .push(dst);
+        }
+
+        let mut closure_tuples: Vec<Vec<String>> = Vec::new();
+        for (pkey, adj) in adj_by_param.into_iter() {
             let mut closure: std::collections::HashSet<(String, String)> =
                 std::collections::HashSet::new();
             let sources: Vec<String> = adj.keys().cloned().collect();
@@ -805,97 +883,27 @@ fn check_transitive_closure_compatible_with_keys_and_functionals(
                 }
             }
 
-            let closure_pairs: Vec<Vec<String>> = closure
-                .into_iter()
-                .map(|(a, b)| vec![a, b])
-                .collect();
-            let carrier_fields = vec![carrier0.to_string(), carrier1.to_string()];
-            (carrier_fields, closure_pairs)
-        } else {
-            // Build transitive closure per fiber (parameter fields fixed).
-            let mut projection_fields: Vec<String> = Vec::new();
-            for f in relation_fields.iter() {
-                if allowed_fields.contains(f.as_str()) {
-                    projection_fields.push(f.clone());
-                }
-            }
-
-            // Map param field name -> index in the `params` list / `param_key` tuple.
-            let mut param_pos: HashMap<&str, usize> = HashMap::new();
-            if let Some(params) = params {
-                for (i, p) in params.iter().enumerate() {
-                    param_pos.insert(p.as_str(), i);
-                }
-            }
-
-            let mut adj_by_param: HashMap<Vec<String>, HashMap<String, Vec<String>>> =
-                HashMap::new();
-            for tuple in relation_tuples(inst, relation_name) {
-                let vals =
-                    tuple_values_in_order(&inst.name, relation_name, tuple, relation_fields)?;
-                let mut pkey: Vec<String> = Vec::with_capacity(param_idxs.len());
-                for idx in param_idxs.iter() {
-                    pkey.push(vals[*idx].clone());
-                }
-                let src = vals[carrier0_idx].clone();
-                let dst = vals[carrier1_idx].clone();
-                adj_by_param
-                    .entry(pkey)
-                    .or_default()
-                    .entry(src)
-                    .or_default()
-                    .push(dst);
-            }
-
-            let mut closure_tuples: Vec<Vec<String>> = Vec::new();
-            for (pkey, adj) in adj_by_param.into_iter() {
-                let mut closure: std::collections::HashSet<(String, String)> =
-                    std::collections::HashSet::new();
-                let sources: Vec<String> = adj.keys().cloned().collect();
-                for src in sources {
-                    let mut visited: std::collections::HashSet<String> =
-                        std::collections::HashSet::new();
-                    let mut queue: std::collections::VecDeque<String> =
-                        std::collections::VecDeque::new();
-                    if let Some(neigh) = adj.get(&src) {
-                        for v in neigh {
-                            queue.push_back(v.clone());
-                        }
-                    }
-                    while let Some(v) = queue.pop_front() {
-                        if !visited.insert(v.clone()) {
-                            continue;
-                        }
-                        closure.insert((src.clone(), v.clone()));
-                        if let Some(more) = adj.get(&v) {
-                            for w in more {
-                                queue.push_back(w.clone());
-                            }
-                        }
-                    }
-                }
-
-                for (a, b) in closure.into_iter() {
-                    let mut tup: Vec<String> = Vec::with_capacity(projection_fields.len());
-                    for f in projection_fields.iter() {
-                        if f == carrier0 {
-                            tup.push(a.clone());
-                        } else if f == carrier1 {
-                            tup.push(b.clone());
-                        } else if let Some(i) = param_pos.get(f.as_str()) {
-                            tup.push(pkey[*i].clone());
-                        } else {
-                            return Err(anyhow!(
+            for (a, b) in closure.into_iter() {
+                let mut tup: Vec<String> = Vec::with_capacity(projection_fields.len());
+                for f in projection_fields.iter() {
+                    if f == carrier0 {
+                        tup.push(a.clone());
+                    } else if f == carrier1 {
+                        tup.push(b.clone());
+                    } else if let Some(i) = param_pos.get(f.as_str()) {
+                        tup.push(pkey[*i].clone());
+                    } else {
+                        return Err(anyhow!(
                                 "internal error: transitive closure projection field `{f}` is neither a carrier nor a param",
                             ));
-                        }
                     }
-                    closure_tuples.push(tup);
                 }
+                closure_tuples.push(tup);
             }
+        }
 
-            (projection_fields, closure_tuples)
-        };
+        (projection_fields, closure_tuples)
+    };
 
     // Re-check keys/functionals for this relation on the transitive closure of the carrier fields.
     for c in all_constraints.iter() {
@@ -1010,6 +1018,7 @@ fn check_typing_rule_preserves_manifold_and_increments_degree(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn check_typing_rule_preserves_manifold_and_adds_degree(
     _inst: &SchemaV1Instance,
     left: &str,
@@ -1091,6 +1100,7 @@ fn check_typing_rule_preserves_manifold_and_adds_degree(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn check_typing_rule_depends_on_metric_and_dualizes_degree(
     _inst: &SchemaV1Instance,
     metric: &str,
@@ -1367,10 +1377,23 @@ fn check_typing_constraint(
     }
 }
 
-/// Check that a canonical `.axi` module satisfies its core constraints.
+/// Check that a well-typed canonical `.axi` module satisfies its core constraints.
+///
+/// ```compile_fail
+/// use axiograph_dsl::axi_v1::parse_axi_v1;
+/// use axiograph_pathdb::axi_module_constraints::check_axi_constraints_ok_v1;
+///
+/// let raw = parse_axi_v1(
+///     "module Demo\nschema S:\n  object A\ninstance I of S:\n  A = {a0}\n"
+/// ).unwrap();
+/// let _ = check_axi_constraints_ok_v1(&raw);
+/// ```
 ///
 /// Returns an `AxiConstraintsOkProofV1` summary suitable for certificate emission.
-pub fn check_axi_constraints_ok_v1(module: &SchemaV1Module) -> Result<AxiConstraintsOkProofV1> {
+pub fn check_axi_constraints_ok_v1<S: WellTypedModuleState>(
+    module: &Module<S>,
+) -> Result<AxiConstraintsOkProofV1> {
+    let module = module.module();
     // Fail-closed: `axi_constraints_ok_v1` is a conservative gate intended to
     // be meaningful under a well-specified constraint semantics. If the module
     // contains truly unknown/unsupported constraints, we refuse to certify it
@@ -1442,9 +1465,12 @@ pub fn check_axi_constraints_ok_v1(module: &SchemaV1Module) -> Result<AxiConstra
                         &inst.name,
                         relation,
                         relation_fields,
-                        relation_tuples(inst, relation).map(|t| {
-                            tuple_values_in_order(&inst.name, relation, t, relation_fields)
-                        }).collect::<Result<Vec<_>>>()?.into_iter(),
+                        relation_tuples(inst, relation)
+                            .map(|t| {
+                                tuple_values_in_order(&inst.name, relation, t, relation_fields)
+                            })
+                            .collect::<Result<Vec<_>>>()?
+                            .into_iter(),
                         fields,
                     )?;
                 }
@@ -1459,9 +1485,12 @@ pub fn check_axi_constraints_ok_v1(module: &SchemaV1Module) -> Result<AxiConstra
                         &inst.name,
                         relation,
                         relation_fields,
-                        relation_tuples(inst, relation).map(|t| {
-                            tuple_values_in_order(&inst.name, relation, t, relation_fields)
-                        }).collect::<Result<Vec<_>>>()?.into_iter(),
+                        relation_tuples(inst, relation)
+                            .map(|t| {
+                                tuple_values_in_order(&inst.name, relation, t, relation_fields)
+                            })
+                            .collect::<Result<Vec<_>>>()?
+                            .into_iter(),
                         src_field,
                         dst_field,
                     )?;
@@ -1479,9 +1508,12 @@ pub fn check_axi_constraints_ok_v1(module: &SchemaV1Module) -> Result<AxiConstra
                         &inst.name,
                         relation,
                         relation_fields,
-                        relation_tuples(inst, relation).map(|t| {
-                            tuple_values_in_order(&inst.name, relation, t, relation_fields)
-                        }).collect::<Result<Vec<_>>>()?.into_iter(),
+                        relation_tuples(inst, relation)
+                            .map(|t| {
+                                tuple_values_in_order(&inst.name, relation, t, relation_fields)
+                            })
+                            .collect::<Result<Vec<_>>>()?
+                            .into_iter(),
                         src_field,
                         dst_field,
                         *max,
@@ -1495,7 +1527,7 @@ pub fn check_axi_constraints_ok_v1(module: &SchemaV1Module) -> Result<AxiConstra
                     ..
                 } => {
                     let relation_fields = field_index.relation_fields(&inst.schema, relation)?;
-                    check_symmetric_closure_compatible_with_keys_and_functionals(
+                    check_symmetric_closure_admissible_with_keys_and_functionals(
                         inst,
                         &inst.schema,
                         relation,
@@ -1516,7 +1548,7 @@ pub fn check_axi_constraints_ok_v1(module: &SchemaV1Module) -> Result<AxiConstra
                     ..
                 } => {
                     let relation_fields = field_index.relation_fields(&inst.schema, relation)?;
-                    check_symmetric_closure_compatible_with_keys_and_functionals(
+                    check_symmetric_closure_admissible_with_keys_and_functionals(
                         inst,
                         &inst.schema,
                         relation,
@@ -1535,7 +1567,7 @@ pub fn check_axi_constraints_ok_v1(module: &SchemaV1Module) -> Result<AxiConstra
                     ..
                 } => {
                     let relation_fields = field_index.relation_fields(&inst.schema, relation)?;
-                    check_transitive_closure_compatible_with_keys_and_functionals(
+                    check_transitive_closure_admissible_with_keys_and_functionals(
                         inst,
                         &inst.schema,
                         relation,
@@ -1545,9 +1577,7 @@ pub fn check_axi_constraints_ok_v1(module: &SchemaV1Module) -> Result<AxiConstra
                         &constraints,
                     )?;
                 }
-                CoreConstraint::Typing {
-                    relation, rule, ..
-                } => {
+                CoreConstraint::Typing { relation, rule, .. } => {
                     check_typing_constraint(inst, &inst.schema, relation, rule, &field_index)?;
                 }
             }
@@ -1567,6 +1597,11 @@ pub fn check_axi_constraints_ok_v1(module: &SchemaV1Module) -> Result<AxiConstra
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn validated_module(text: &str) -> crate::axi_module_typecheck::Module<crate::Validated> {
+        let module = axiograph_dsl::schema_v1::parse_schema_v1(text).expect("parse module");
+        crate::axi_module_typecheck::validate_axi_v1_module(module).expect("typecheck module")
+    }
 
     #[test]
     fn transitive_param_allows_keys_over_carriers_and_params() {
@@ -1593,7 +1628,7 @@ instance Demo of S:
   }
 "#;
 
-        let module = axiograph_dsl::schema_v1::parse_schema_v1(text).expect("parse module");
+        let module = validated_module(text);
         check_axi_constraints_ok_v1(&module).expect("axi_constraints_ok_v1 should pass");
     }
 
@@ -1624,7 +1659,7 @@ instance Demo of S:
   }
 "#;
 
-        let module = axiograph_dsl::schema_v1::parse_schema_v1(text).expect("parse module");
+        let module = validated_module(text);
         let err = check_axi_constraints_ok_v1(&module).expect_err("should fail");
         let msg = err.to_string();
         assert!(
@@ -1655,7 +1690,7 @@ instance Demo of S:
   }
 "#;
 
-        let module = axiograph_dsl::schema_v1::parse_schema_v1(text).expect("parse module");
+        let module = validated_module(text);
         check_axi_constraints_ok_v1(&module).expect("axi_constraints_ok_v1 should pass");
     }
 
@@ -1682,9 +1717,12 @@ instance Demo of S:
   }
 "#;
 
-        let module = axiograph_dsl::schema_v1::parse_schema_v1(text).expect("parse module");
+        let module = validated_module(text);
         let err = check_axi_constraints_ok_v1(&module).expect_err("should fail");
         let msg = err.to_string();
-        assert!(msg.contains("at_most violation") && msg.contains("Parent"), "err={msg}");
+        assert!(
+            msg.contains("at_most violation") && msg.contains("Parent"),
+            "err={msg}"
+        );
     }
 }

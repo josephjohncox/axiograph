@@ -47,7 +47,7 @@ pub struct LearningEdge {
     pub rel_type: String,
     pub from: AxiTypedEntity,
     pub to: AxiTypedEntity,
-    /// PathDB relation id (useful for anchored certificates via `PathDBExportV1`).
+    /// PathDB relation id for execution/debug correlation, not semantic authority.
     pub relation_id: Option<u32>,
     pub confidence: f32,
 }

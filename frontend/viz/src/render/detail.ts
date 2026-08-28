@@ -1,5 +1,7 @@
 // @ts-nocheck
 
+import { entityTypeDisplayLabel, kindDisplayLabel } from "../util/labels";
+
 export function makeDetailRenderer(ctx) {
   const {
     graph,
@@ -116,12 +118,12 @@ function renderTargetsGrouped(targetIds, options) {
     const shown = g.nodes.slice(0, limit);
     const rows = shown.map(n => {
       const disp = nodeDisplayName(n) || nodeTitle(n);
-      return `<tr><td><a class="link" href="#" data-id="${n.id}">${escapeHtml(disp)}</a></td><td class="muted">${escapeHtml(n.kind || "entity")}</td></tr>`;
+      return `<tr><td><a class="link" href="#" data-id="${n.id}">${escapeHtml(disp)}</a></td><td class="muted">${escapeHtml(kindDisplayLabel(n.kind || "entity"))}</td></tr>`;
     }).join("");
     const more = g.nodes.length > limit ? `<div class="muted" style="margin-top:6px;">showing ${limit} of ${g.nodes.length} (increase viz max_nodes/hops for more)</div>` : "";
     parts.push(`
       <details open style="margin-top:10px;">
-        <summary><strong>${escapeHtml(g.entityType)}</strong><span class="muted" style="margin-left:6px;">${escapeHtml(g.kind)} • ${g.nodes.length}</span></summary>
+        <summary><strong>${escapeHtml(g.entityType)}</strong><span class="muted" style="margin-left:6px;">${escapeHtml(kindDisplayLabel(g.kind))} • ${g.nodes.length}</span></summary>
         <table style="margin-top:8px;"><thead><tr><th>node</th><th>kind</th></tr></thead><tbody>${rows}</tbody></table>
         ${more}
       </details>
@@ -257,7 +259,7 @@ function renderDetail(id) {
       return `
         <div style="margin-bottom:10px;">
           ${tupleSummaryText ? `<div><code>${escapeHtml(tupleSummaryText)}</code></div>` : ""}
-          <div class="muted" style="margin-top:6px;">Tuple nodes are reified n-ary facts. Some are additionally tagged as <code>Morphism</code> or <code>Homotopy</code> (so arrows/equivalences are first-class objects). This is how we attach context/time/provenance/constraints and later certificates to the *assertion itself*.</div>
+          <div class="muted" style="margin-top:6px;">Tuple nodes are reified n-ary facts. Some are additionally tagged as <code>Morphism</code> or as path-equivalence witnesses, so arrows and equivalences can stay first-class objects. This is how we attach context, time, provenance, constraints, and later certificates to the assertion itself.</div>
         </div>
         ${sig ? `<div class="muted" style="margin-bottom:6px;">signature: <code>${escapeHtml(sig)}</code></div>` : ""}
         ${constraints ? `<div class="muted" style="margin-bottom:10px;">constraints: <code>${escapeHtml(constraints)}</code></div>` : ""}
@@ -404,7 +406,8 @@ function renderDetail(id) {
 
   const overviewHtml = (() => {
     const plane = n.plane ? String(n.plane) : "";
-    const kind = n.kind ? String(n.kind) : "entity";
+    const kind = kindDisplayLabel(n.kind ? String(n.kind) : "entity");
+    const entityType = entityTypeDisplayLabel(n.entity_type);
     const overviewExtra = (() => {
       if (n.entity_type === "ProposalRun") {
         const visible = outgoing.filter(e => String(e.label || "") === "run_has_proposal").length;
@@ -459,9 +462,9 @@ function renderDetail(id) {
       }
       return "";
     })();
-    return `
+      return `
       <div style="margin-bottom:10px;">
-        <div class="muted">type: <code>${escapeHtml(n.entity_type)}</code> • id: <code>${n.id}</code> • kind: <code>${escapeHtml(kind)}</code>${plane ? ` • plane: <code>${escapeHtml(plane)}</code>` : ""}</div>
+        <div class="muted">type: <code>${escapeHtml(entityType)}</code> • id: <code>${n.id}</code> • kind: <code>${escapeHtml(kind)}</code>${plane ? ` • plane: <code>${escapeHtml(plane)}</code>` : ""}</div>
         ${summaryText ? `<div class="muted" style="margin-top:6px;">summary: <code>${escapeHtml(summaryText)}</code></div>` : ""}
       </div>
       ${overviewExtra || ""}

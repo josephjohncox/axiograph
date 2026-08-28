@@ -12,8 +12,8 @@ schema Demo:
   object Context
   object Time
 
-  relation Parent(child: Person, parent: Person) @context Context @temporal Time
-  relation Spouse(a: Person, b: Person) @context Context
+  relation Parent(child: Person, parent: Person, ctx: Context @context, time: Time @temporal)
+  relation Spouse(a: Person, b: Person, ctx: Context @context)
 
 theory DemoRules on Demo:
   constraint key Parent(child, parent, ctx, time)
@@ -23,9 +23,6 @@ instance DemoInst of Demo:
   Person = {P0, P1, P2, P3, P4, P5}
   Context = {C0, C1}
   Time = {T0, T1}
-
-  Parent = {}
-  Spouse = {}
 "#;
 
 fn demo_db() -> PathDB {
@@ -48,7 +45,8 @@ fn naive_fact_nodes_by_relation(db: &PathDB, relation_name: &str) -> RoaringBitm
     let Some(relation_id) = db.interner.id_of(relation_name) else {
         return RoaringBitmap::new();
     };
-    db.entities.entities_with_attr_value(rel_attr_id, relation_id)
+    db.entities
+        .entities_with_attr_value(rel_attr_id, relation_id)
 }
 
 fn naive_fact_nodes_by_schema_relation(db: &PathDB, schema: &str, relation: &str) -> RoaringBitmap {
@@ -60,7 +58,9 @@ fn naive_fact_nodes_by_schema_relation(db: &PathDB, schema: &str, relation: &str
     };
 
     let facts = naive_fact_nodes_by_relation(db, relation);
-    let in_schema = db.entities.entities_with_attr_value(schema_attr_id, schema_id);
+    let in_schema = db
+        .entities
+        .entities_with_attr_value(schema_attr_id, schema_id);
     facts & in_schema
 }
 

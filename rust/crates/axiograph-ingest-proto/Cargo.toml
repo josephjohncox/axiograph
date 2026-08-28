@@ -2,15 +2,19 @@
 name = "axiograph-ingest-proto"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
 description = "Ingestion for Protobuf/gRPC APIs via buf descriptor sets"
 
+[lints]
+workspace = true
+
 [dependencies]
 anyhow.workspace = true
+prost-reflect.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 
 axiograph-ingest-docs = { path = "../axiograph-ingest-docs" }
-

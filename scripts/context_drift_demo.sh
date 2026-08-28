@@ -13,7 +13,6 @@ OUT_DIR="$ROOT_DIR/build/context_drift_demo"
 mkdir -p "$OUT_DIR"
 
 AXI="$ROOT_DIR/examples/Family.axi"
-AXPD="$OUT_DIR/family.axpd"
 
 echo "== Context drift demo =="
 echo "axi:  $AXI"
@@ -23,27 +22,24 @@ echo ""
 echo "-- Build (via Makefile)"
 make binaries
 
-AXIOGRAPH="$ROOT_DIR/bin/axiograph-cli"
+AXIOGRAPH="$ROOT_DIR/bin/axiograph"
 if [ ! -x "$AXIOGRAPH" ]; then
-  AXIOGRAPH="$ROOT_DIR/bin/axiograph"
-fi
-if [ ! -x "$AXIOGRAPH" ]; then
-  echo "error: expected executable at $ROOT_DIR/bin/axiograph-cli or $ROOT_DIR/bin/axiograph"
-  exit 2
+	echo "error: expected executable at $ROOT_DIR/bin/axiograph"
+	exit 2
 fi
 
-echo "== A) Import .axi → .axpd =="
-"$AXIOGRAPH" db pathdb import-axi "$AXI" --out "$AXPD"
+echo "== A) Validate canonical .axi =="
+"$AXIOGRAPH" check validate "$AXI"
 
 echo ""
-echo "== B) Analyze drift between contexts =="
+echo "== B) Analyze drift over process-local derived query state =="
 echo "(CensusData vs FamilyTree)"
-"$AXIOGRAPH" tools analyze context-drift "$AXPD" \
-  --ctx-a CensusData \
-  --ctx-b FamilyTree \
-  --metric js \
-  --alpha 1.0 \
-  --top 25
+"$AXIOGRAPH" tools analyze context-drift "$AXI" \
+	--ctx-a CensusData \
+	--ctx-b FamilyTree \
+	--metric js \
+	--alpha 1.0 \
+	--top 25
 
 echo ""
 echo "Done."

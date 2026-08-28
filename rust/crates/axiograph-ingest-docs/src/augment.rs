@@ -167,7 +167,7 @@ pub fn augment_proposals_v1(
             else {
                 continue;
             };
-            let agg = roles.entry(role).or_insert_with(RoleAggregate::default);
+            let agg = roles.entry(role).or_default();
             agg.mentions.push(entity_id.clone());
             agg.confidence = agg.confidence.max(meta.confidence);
             agg.evidence.extend(meta.evidence.iter().cloned());
@@ -201,7 +201,7 @@ pub fn augment_proposals_v1(
             let role_entity = ProposalV1::Entity {
                 meta: ProposalMetaV1 {
                     proposal_id: role_entity_id.clone(),
-                    confidence: agg.confidence.max(0.70).min(0.95),
+                    confidence: agg.confidence.clamp(0.70, 0.95),
                     evidence: evidence.clone(),
                     public_rationale: format!(
                         "Observed mention role `{}` across {} extracted mentions; representing it explicitly as an entity.",
@@ -244,7 +244,7 @@ pub fn augment_proposals_v1(
                         proposal_id: rel_id.clone(),
                         confidence: 0.85,
                         evidence: evidence.clone(),
-                        public_rationale: format!("Mention `{}` has role `{}`.", mention_id, role),
+                        public_rationale: format!("Mention `{mention_id}` has role `{role}`."),
                         metadata: HashMap::new(),
                         schema_hint: agg.schema_hint.clone(),
                     },
@@ -384,8 +384,7 @@ pub fn augment_proposals_v1(
                             confidence: 0.70,
                             evidence,
                             public_rationale: format!(
-                                "TODO text mentions `{}`; linking to symbol defined in the same file {}.",
-                                sym_name, file_id
+                                "TODO text mentions `{sym_name}`; linking to symbol defined in the same file {file_id}."
                             ),
                             metadata: {
                                 let mut m = HashMap::new();
@@ -536,7 +535,7 @@ fn text_mentions_identifier(text: &str, ident: &str) -> bool {
     let needle = ident;
     let hay = text;
     if let Some(i) = hay.find(needle) {
-        let before = hay[..i].chars().rev().next();
+        let before = hay[..i].chars().next_back();
         let after = hay[i + needle.len()..].chars().next();
         let ok_before = before
             .map(|c| !c.is_alphanumeric() && c != '_')

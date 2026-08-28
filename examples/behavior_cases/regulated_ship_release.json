@@ -1,0 +1,38 @@
+{
+  "version": "behavior_case_check_request_v1",
+  "behavior_case": {
+    "case_id": "industrial.ship_released_order",
+    "title": "Released work order can fulfill the customer shipment",
+    "summary": "Domain-only BDD case for the regulated production line release flow. DDD/fDDD and implementation surfaces are supplied by an overlay.",
+    "given": {
+      "snapshot_label": "accepted regulated line seed",
+      "world": "main",
+      "facts": [
+        "SalesOrderForProduct(order=SalesOrder_1001, product=SolventBlend_A, customer=Customer_Alpha, ctx=Plan, time=T0)",
+        "WorkOrderForSalesOrder(work_order=WorkOrder_5001, order=SalesOrder_1001, recipe=Recipe_Blend_A, ctx=Released, time=T1)",
+        "InspectionDecision(inspection=Inspection_9001, decision=ReleasedForShipment, ctx=Audit, time=T1)"
+      ]
+    },
+    "when": {
+      "kind": "query",
+      "label": "Check shipment fulfillment for the released work order"
+    },
+    "then": {
+      "expected_outcomes": [
+        "Shipment_7001 fulfills SalesOrder_1001 through WorkOrder_5001 in the Released context."
+      ],
+      "rule_scopes": [
+        {
+          "schema": "RegulatedLine",
+          "scope_class": "relation",
+          "relation": "ShipmentFulfills"
+        }
+      ],
+      "trust_target": "strong"
+    },
+    "notes": [
+      "This example demonstrates BehaviorCaseV1 as a domain-only JSON import surface. Gherkin can be an import/export view later."
+    ]
+  },
+  "lifecycle_state": "accepted"
+}

@@ -1,443 +1,199 @@
-# PathDB: Efficient Binary Path-Indexed Knowledge Graph
+# PathDB: Authenticated SQLite Execution Substrate
 
 **Diataxis:** Explanation  
 **Audience:** contributors
 
-PathDB is Axiograph's high-performance storage and query engine for knowledge graphs. It combines techniques from database research, succinct data structures, and graph algorithms.
-
-For distributed-system evolution (replication, sharding, snapshot-scoped certificates, and literature), see `docs/explanation/DISTRIBUTED_PATHDB.md`.
-
-## Research Foundation
-
-PathDB draws from several areas of research:
-
-### 1. Graph Database Query Optimization
-- **Gubichev et al. (2013)**: "Query Processing and Optimization in Graph Databases" - Path indexing strategies
-- **Zhao & Han (2010)**: "On Graph Query Optimization in Large Networks" - 531 citations, landmark paper on graph query optimization
-
-### 2. Succinct Data Structures
-- **Jacobson (1989)**: Succinct static data structures - compact representations with constant-time operations
-- **Navarro (2016)**: "Compact Data Structures: A Practical Approach" - modern treatment
-
-### 3. Bitmap Indexing
-- **Lemire et al. (2016)**: "Roaring Bitmaps" - compressed bitmaps for fast set operations
-- Used by: Apache Spark, Netflix, Pinot, Druid
-
-### 4. Zero-Copy Serialization
-- **rkyv**: Zero-copy deserialization for Rust
-- **FlatBuffers/Cap'n Proto**: Efficient binary formats
-
-## Architecture
-
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                              PathDB Architecture                             │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                              │
-│  ┌──────────────────┐   ┌──────────────────┐   ┌──────────────────────────┐ │
-│  │  String Interner │   │  Entity Store    │   │   Relation Store         │ │
-│  │                  │   │  (Columnar)      │   │   (Edge-List + Index)    │ │
-│  │  "Person" → 0    │   │                  │   │                          │ │
-│  │  "knows" → 1     │   │  types: [0,0,0]  │   │  Forward: (src,rel)→tgts │ │
-│  │  "Alice" → 2     │   │  attrs: {...}    │   │  Backward: (tgt,rel)→srcs│ │
-│  │  ...             │   │  type_idx: {...} │   │  Type: rel→bitmap        │ │
-│  └────────┬─────────┘   └────────┬─────────┘   └────────────┬─────────────┘ │
-│           │                      │                          │               │
-│           └──────────────────────┼──────────────────────────┘               │
-│                                  │                                          │
-│                                  ▼                                          │
-│                    ┌───────────────────────────┐                            │
-│                    │       Path Index          │                            │
-│                    │                           │                            │
-│                    │  PathSig → (start → bitmap)│                           │
-│                    │  [knows] → {0 → {1,2}}   │                            │
-│                    │  [knows,knows] → {0 → {3}}│                           │
-│                    └───────────────────────────┘                            │
-│                                                                              │
-│                    ┌───────────────────────────┐                            │
-│                    │    Equivalence Index      │                            │
-│                    │                           │                            │
-│                    │  entity → [(equiv, type)] │                            │
-│                    └───────────────────────────┘                            │
-│                                                                              │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
-
-## Binary Format
-
-```
-┌────────────────────────────────────────────────────────┐
-│ Header (32 bytes)                                       │
-│ ├─ Magic: "AXPD" (4 bytes)                             │
-│ ├─ Version: u32 (4 bytes)                              │
-│ ├─ String table offset: u64 (8 bytes)                  │
-│ ├─ Entity table offset: u64 (8 bytes)                  │
-│ └─ Relation table offset: u64 (8 bytes)                │
-├────────────────────────────────────────────────────────┤
-│ String Table                                            │
-│ ├─ Count: u32                                          │
-│ ├─ Offsets: [u32; count]                               │
-│ └─ Data: concatenated strings                          │
-├────────────────────────────────────────────────────────┤
-│ Entity Table (Columnar)                                 │
-│ ├─ Count: u32                                          │
-│ ├─ Types: [StrId; count]                               │
-│ ├─ Attr count per entity: [u16; count]                 │
-│ └─ Attrs: [(StrId, StrId); total_attrs]                │
-├────────────────────────────────────────────────────────┤
-│ Relation Table                                          │
-│ ├─ Count: u32                                          │
-│ ├─ Relations: [(StrId, u32, u32, f32); count]          │
-│ │             (type, source, target, confidence)        │
-│ ├─ Forward Index: serialized HashMap                   │
-│ └─ Backward Index: serialized HashMap                  │
-├────────────────────────────────────────────────────────┤
-│ Path Index                                              │
-│ ├─ Sig count: u32                                      │
-│ ├─ For each signature:                                 │
-│ │   ├─ Path length: u8                                 │
-│ │   ├─ Path: [StrId; length]                           │
-│ │   ├─ Entry count: u32                                │
-│ │   └─ Entries: [(u32, RoaringBitmap); entry_count]    │
-├────────────────────────────────────────────────────────┤
-│ Equivalence Index                                       │
-│ └─ HashMap<u32, Vec<(u32, StrId)>>                     │
-└────────────────────────────────────────────────────────┘
-```
-
-## Text snapshot export (`.axi`)
-
-`.axpd` is optimized for performance and compactness. For **reviewability**, **diffability**, and
-long-term audit trails, PathDB also supports a *reversible* textual snapshot format in `.axi`.
-
-## Snapshot management (accepted plane + WAL)
-
-For the single-node “append-only accepted `.axi` snapshots + derived PathDB WAL snapshots” store
-used by the CLI, see `docs/howto/SNAPSHOT_STORE.md`.
-
-### A) Lossless snapshot export (engine interchange): `PathDBExportV1`
-
-This is a *reversible*, deterministic `.axi` representation of the **entire** PathDB state
-(interned strings, entity ids, relation ids, confidences, etc).
-
-- Export: `axiograph db pathdb export-axi <knowledge.axpd> -o <snapshot_export_v1.axi>`
-- Import: `axiograph db pathdb import-axi <snapshot_export_v1.axi> -o <knowledge.axpd>`
-- Rust↔Lean parse parity (exported snapshot): `make verify-pathdb-export-axi-v1`
-
-The snapshot uses a fixed schema named `PathDBExportV1` and is designed to round-trip exactly:
-
-- Interned strings are stored as a stable table (`StringId_N ↔ StrUtf8Hex_<utf8-bytes-as-hex>`).
-- Entity ids (`Entity_N`) and relation ids (`Relation_N`) are preserved.
-- Relation confidences are stored as `F32Hex_<ieee754-bits>` so there is no float parsing/rounding.
-
-This snapshot schema is an *engineering interchange* format (for storage and verification pipelines),
-distinct from the canonical domain `.axi` examples in `examples/`.
-
-### B) Canonical module export (human-readable): `axi_v1` schema/theory/instance
-
-If PathDB contains the `.axi` **meta-plane** produced by importing a canonical module, we can export
-that module back into canonical `.axi` syntax:
-
-- Export: `axiograph db pathdb export-module <knowledge.axpd> -o <module.axi> [--module <name>]`
-
-This is the format you usually want for:
-- review / version control diffs of accepted knowledge
-- treating `.axi` as the canonical “meaning plane”
-
-It is intentionally **not** lossless for arbitrary PathDB engine state; keep `.axpd` and/or
-`PathDBExportV1` for full engine interchange when needed.
-
-## Key Optimizations
-
-### 1. String Interning
-
-All strings are stored exactly once and referenced by 4-byte IDs:
-
-```rust
-// Before: 24+ bytes per String
-struct Entity { type: String, ... }  // "Person" = 24 bytes
-
-// After: 4 bytes per reference
-struct Entity { type: StrId, ... }   // StrId(0) = 4 bytes
-```
-
-**Memory savings**: 80%+ for string-heavy data
-
-### 2. Columnar Entity Storage
-
-Entities stored column-wise for cache efficiency:
-
-```rust
-// Row-oriented (cache-unfriendly for type scans)
-entities: Vec<Entity>  // Scattered memory access
-
-// Columnar (cache-friendly)
-types: Vec<StrId>       // Sequential access
-attrs: HashMap<StrId, HashMap<u32, StrId>>
-```
-
-**Speedup**: 2-5x for type-filtered queries
-
-### 3. Bitmap Joins
-
-Set operations use Roaring bitmaps instead of hash sets:
-
-```rust
-// Hash set intersection: O(min(m,n))
-let result: HashSet = a.intersection(&b).collect();
-
-// Bitmap intersection: O(min(m,n)) but SIMD-accelerated
-let result: RoaringBitmap = &a & &b;
-```
-
-**Speedup**: 10-100x for large sets
-
-### 4. Path Index
-
-Pre-computed reachability for common path lengths:
-
-```rust
-// Without index: O(|V| * |E|) per query
-fn follow_path(start, path) {
-    let mut current = vec![start];
-    for rel in path {
-        current = current.flat_map(|e| neighbors(e, rel));
-    }
-}
-
-// With index: O(1) lookup
-fn follow_path(start, path) {
-    path_index.get(&PathSig(path)).get(&start).clone()
-}
-```
-
-**Speedup**: 100-1000x for indexed paths
-
-### 5. Memory Mapping
-
-Large databases accessed via mmap without full load:
-
-```rust
-// Full load: O(file_size) memory
-let db = PathDB::from_bytes(&std::fs::read("kg.axpd")?)?;
-
-// Memory mapped: O(1) initial, pages loaded on demand
-let mmap = unsafe { Mmap::map(&file)? };
-let db = PathDB::from_mmap(&mmap)?;
-```
-
-**Memory savings**: Only accessed pages loaded
-
-### 6. FactIndex (canonical `.axi` fact nodes)
-
-Canonical `.axi` instances represent n-ary relation tuples like:
-
-```axi
-Flow = { (from=a, to=b), (from=a, to=c) }
-```
-
-PathDB imports these by **reifying** each tuple as a dedicated *fact node* with:
-
-- `axi_relation = "Flow"`
-- `axi_schema = "<schema name>"`
-- edges `fact -from-> a`, `fact -to-> b`, ...
-
-AxQL fact atoms (`Flow(from=a, to=b)`) filter heavily on `axi_relation`, so repeatedly
-scanning the attribute column becomes a bottleneck for interactive workloads.
-
-PathDB therefore maintains a rebuildable in-memory **FactIndex**:
-
-- `(axi_schema, axi_relation) -> {fact nodes}` as Roaring bitmaps
-- `axi_relation -> {fact nodes}` (union across schemas)
-- optional key-based lookup derived from meta-plane key constraints:
-  `(axi_schema, axi_relation, key_fields, key_values) -> {fact nodes}`
-- optional context/world scoping (derived on import when canonical `.axi` uses `@context` / `ctx=...`):
-  - `context_entity_id -> {fact nodes}`
-  - `(context_entity_id, axi_schema, axi_relation) -> {fact nodes}`
-
-Entry points:
-
-- `PathDB::fact_nodes_by_axi_relation`
-- `PathDB::fact_nodes_by_axi_schema_relation`
-- `PathDB::fact_nodes_by_axi_key`
-- `PathDB::fact_nodes_by_context`
-- `PathDB::fact_nodes_by_context_axi_schema_relation`
-
-Implementation: `rust/crates/axiograph-pathdb/src/fact_index.rs` (lazy, invalidated on DB mutation).
-
-#### Example: schema + relation lookup (fast “WHERE axi_relation = …”)
-
-```rust
-use axiograph_pathdb::PathDB;
-
-// ... import a canonical `.axi` module into `db` ...
-let flow_facts = db.fact_nodes_by_axi_schema_relation("S", "Flow");
-for fact in flow_facts.iter().take(5) {
-    println!("Flow fact node id = {fact}");
-}
-```
-
-If you *don’t* know the schema (or don’t care), you can also query by relation only:
-
-```rust
-let flow_facts_any_schema = db.fact_nodes_by_axi_relation("Flow");
-```
-
-#### Example: key lookup (turn some fact atoms into near-index lookups)
-
-If the schema has a meta-plane key constraint like:
-
-```axi
-theory Keys on S:
-  constraint key Flow(from, to)
-```
-
-then you can look up the (typically unique) fact node for a bound key:
-
-```rust
-// `a_id` / `b_id` are entity ids for `a` / `b` (e.g. found via `name` attr).
-let hits = db
-    .fact_nodes_by_axi_key("S", "Flow", &["from", "to"], &[a_id, b_id])
-    .expect("key index exists for Flow(from,to)");
-
-assert!(hits.len() <= 1);
-```
-
-#### Example: AxQL fact atoms benefit automatically
-
-AxQL fact atoms like:
+PathDB is Axiograph's derived query engine. Accepted `.axi` modules and compiled
+`KernelSnapshotIr` define meaning; a `.axpd` file is an immutable, disposable
+SQLite materialization of that accepted state. It is not an ontology kernel,
+review surface, semantic history, or source-recovery format.
+
+## Ownership and trust boundary
+
+There is one persistence family: `axiograph_store::AxiStore`.
+
+- AxiStore owns accepted objects, snapshots, trees, manifests, semantic commits,
+  refs, audit records, and materializations.
+- `AxiStore::publish_axpd` is the only public `.axpd` writer and rejects anchors
+  not found in a manifest that previously reached protected accepted main.
+- `AxiStore::open_axpd` rechecks accepted-manifest membership, an immutable
+  receipt, and the exact SQLite image before exposing rows. Same-repository
+  review/evidence candidates do not qualify.
+- `axiograph_pathdb::materialization::load_verified_pathdb` hydrates the in-memory
+  indexes only after store verification succeeds.
+- PathDB never reconstructs or exports accepted `.axi` text.
+
+The intended flow is:
 
 ```text
-q select ?f where ?f = Flow(from=a, to=b)
+exact accepted .axi closure
+        |
+        v
+KernelSnapshotIr + AcceptedBuildManifest + ordered overlays
+        |
+        v
+AxpdBuildSpec --canonicalize/validate--> SQLite backup image
+        |
+        v
+exact-image + logical digests + semantic anchors
+        |
+        v
+AxiStore/materializations/<MaterializationIdV2>.axpd
+        |
+        v
+verified read-only open --> PathDB hydration --> rebuildable indexes
 ```
 
-expand into an `axi_relation` filter plus field-edge constraints, and the executor:
+## SQLite format
 
-- uses `FactIndex` to avoid scanning the attribute column for `axi_relation`, and
-- when a key constraint is present *and* all key fields are bound to constants,
-  uses a key lookup to aggressively prune the fact-node candidate set.
+`.axpd` is ordinary SQLite with fixed invariants:
 
-### 7. Compiled-query cache (REPL)
+- SQLite `application_id` is `AXPD`;
+- `user_version` is the greenfield Axiograph V2 schema version; V1 rejects;
+- page size and materializer configuration are pinned;
+- the table set is exact (unknown or missing tables reject);
+- every relation is represented by declared foreign keys and explicit row
+  validation;
+- `quick_check` must pass before hydration;
+- the connection opens read-only with bounded SQLite limits; and
+- image and receipt paths must be regular files, never symlinks.
 
-The REPL is optimized for repeated querying of a single snapshot. It keeps a small LRU
-cache of **compiled AxQL queries**, keyed by:
+The logical schema stores:
 
-- query IR digest (`axql_query_ir_digest_v1`), and
-- the REPL's snapshot key (updated on `load` / `import_*` / `gen`)
+- `materialization_meta`: format, versions, configuration digest, semantic
+  anchors, logical digest, exact-image digest, and materialization id;
+- `module_closure`: exact ordered revision digests;
+- `kernel_refs`: canonical compiled-IR references;
+- `entities`: instance/object/value rows with stable keys;
+- `relation_facts`: stable fact and relation ids;
+- `projections`: ordered role values and typed targets;
+- `contexts`: context/world/temporal axes;
+- `equivalences`: reversible generator mappings;
+- `overlays`: ordered, typed, content-digested extension layers.
 
-Cached artifacts include:
+Interned strings, entity ordinals, LRU state, fact indexes, text indexes, and path
+indexes are process-local implementation details. They are never persisted as
+semantic state.
 
-- lowered query
-- candidate bitmaps + join order
-- compiled RPQ automata (plus per-source reachability cache)
+## Identity and authentication
 
-This turns repeated queries into mostly “search only” work.
+A materialization carries two different digests:
 
-## Query Patterns
+1. **Logical digest** — framed SHA-256 over canonical semantic rows and anchors.
+   It is independent of insertion order and SQLite page layout.
+2. **Exact-image digest** — SHA-256 over the final SQLite bytes.
 
-### 1. Type Query (SQL-like)
-```rust
-// SELECT * FROM entities WHERE type = 'Person'
-let persons = db.find_by_type("Person");  // Returns bitmap
-```
+`MaterializationIdV2` binds both digests plus:
 
-### 2. Relation Traversal
-```rust
-// SELECT target FROM relations WHERE source = ? AND type = 'knows'
-let friends = db.follow_one(alice, "knows");
-```
+- repository id;
+- accepted snapshot id;
+- accepted tree id;
+- ordered module closure;
+- kernel IR digest;
+- canonical fact-log digest;
+- overlay order and digests;
+- materializer and SQLite versions;
+- configuration digest.
 
-### 3. Path Query
-```rust
-// Follow path: alice -[knows]-> -[knows]-> ?
-let friends_of_friends = db.follow_path(alice, &["knows", "knows"]);
-```
+The store-family receipt is named by the materialization id and is itself
+revalidated against the image. Changing the receipt and image together does not
+help an attacker: open recomputes the exact digest, logical digest, anchors, and
+materialization id before returning `VerifiedAxpd`.
 
-### 4. Path Discovery
-```rust
-// Find how alice is related to bob
-let paths = db.find_paths(alice, bob, 5);
-// Returns: vec![[knows], [knows, knows], ...]
-```
+## Determinism
 
-### 5. Equivalence Query (HoTT)
-```rust
-// Find equivalent suppliers
-let equivalents = db.find_equivalent(supplier_a);
-// Returns: vec![(supplier_b, "SupplierEquiv"), ...]
-```
+The materializer sorts and validates every logical row family before writing.
+Equivalent semantic input in a different insertion order produces the same
+logical digest and, under the pinned SQLite/materializer configuration, the same
+exact image. A semantic row change must change the logical digest.
 
-### 6. Hybrid Vector + Path Query
-```rust
-// Vector search finds relevant chunks
-let vector_hits = vector_db.search("cutting titanium", 10);
+Determinism is version-scoped. A SQLite or materializer version change yields a
+new materialization identity even if the logical rows are unchanged.
 
-// PathDB filters to those matching path constraints
-let relevant = db.hybrid_query(
-    vector_hits,
-    &PathQuery::FollowPath { 
-        start: titanium_id, 
-        path: vec!["RecommendedFor".into()] 
-    }
-);
-```
+## Bounded validation
 
-## Lean Integration (Certificates)
+Both build and open are bounded. Limits cover:
 
-PathDB is the high-performance **untrusted engine**. The trusted meaning of:
+- file bytes and SQLite pages;
+- module, kernel-reference, entity, fact, projection, context, equivalence, and
+  overlay counts;
+- UTF-8 string bytes;
+- projection fanout;
+- SQLite SQL length, expression depth, column count, compound selects, attached
+  databases, and parameter counts.
 
-- what counts as a valid path witness,
-- how paths rewrite/normalize (groupoid/rewrite semantics),
-- how confidence combines (deterministically),
+Counts are checked at exact N/N+1 boundaries. Arbitrary bytes, old bincode files,
+old sectioned `AXPD` files, truncation, table substitution, anchor mutation,
+logical-row mutation, and digest substitution all fail closed.
 
-is defined in **Lean (mathlib-backed)**. Rust is allowed to be clever and fast, but must emit
-**certificates** that a small Lean checker validates.
+## Publication and recovery
 
-Practically:
+AxiStore publication builds in memory, backs up to a private temporary SQLite
+file, fsyncs it, computes both digests, reopens and verifies it, then performs
+immutable image and receipt renames. Failure injection covers populate, backup,
+validation, image publication, receipt write/fsync, and receipt publication.
+Restart sees no openable materialization until both immutable files validate;
+a completed pair remains reusable even if the caller failed after publication.
 
-- PathDB operations (queries, normalization, migrations) can emit a versioned `CertificateV2`.
-- Lean re-computes the corresponding semantic function and checks “result = recompute(input)”.
-- This keeps the trusted boundary small and deterministic (no floats; fixed-point probabilities).
+`AxiStore::recover_axpd` handles a missing or corrupt derived image:
 
-This also enables a clean **hybrid discovery** story:
+1. deterministically rebuild a private candidate from accepted inputs;
+2. verify any existing image and receipt against the candidate identity;
+3. reuse a valid image;
+4. quarantine corrupt image/receipt files;
+5. publish the rebuilt pair without mutating accepted state.
 
-- Vector / full-text retrieval provides candidate evidence (chunks) and is explicitly *approximate*.
-- PathDB applies structural constraints and returns **certificate-carrying** answers when requested.
+Deleting and rebuilding a materialization preserves the logical digest and
+finite query answers. Cache loss is therefore a performance event, not semantic
+loss.
 
-See:
-- `docs/reference/CERTIFICATES.md` (certificate schema + examples)
-- `docs/howto/FORMAL_VERIFICATION.md` (how Rust↔Lean checking is wired today)
+## In-memory query structures
 
-## Performance Characteristics
+After verified hydration, PathDB preserves each finite n-ary fact as a fact
+object with ordered typed role projections. Context/world/temporal rows remain
+ordinary role projections and also gain the derived `axi_fact_in_context` scope
+edge used by the runtime fact index. Reversible generators hydrate into the
+process-local equivalence index. `MaterializedPathDb` exposes the hydrated rows
+through shared access only; its narrow mutable interface configures derived
+path-cache state without exposing logical-row mutation. These structures
+preserve the checked finite rows; they do not establish univalence, arbitrary
+higher paths, general transport, or a Lean theorem about the Rust hydrator.
 
-| Operation | Time Complexity | Notes |
-|-----------|-----------------|-------|
-| Type lookup | O(1) | Bitmap retrieval |
-| Single-hop | O(k) | k = out-degree |
-| N-hop (indexed) | O(1) | Pre-computed |
-| N-hop (unindexed) | O(|V|^n) | Worst case |
-| Path discovery | O(|V| + |E|) | BFS |
-| Bitmap AND | O(min(m,n)) | SIMD accelerated |
-| Bitmap OR | O(m+n) | SIMD accelerated |
-| Equivalence lookup | O(1) | Hash map |
+PathDB then uses:
 
-## Comparison with Other Systems
+- compact string interning;
+- column-oriented entity attributes;
+- forward/backward relation indexes;
+- Roaring bitmaps for set operations;
+- bounded precomputed path indexes;
+- lazy fact and text indexes;
+- optional process-local LRU entries for deep paths;
+- an equivalence index for reversible mappings.
 
-| Feature | PathDB | Neo4j | TypeDB | PostgreSQL |
-|---------|--------|-------|--------|------------|
-| Path indexing | ✓ Pre-computed | ✓ At query time | ✓ Rule-based | ✗ JOINs |
-| Binary format | ✓ Zero-copy | ✗ | ✗ | ✗ |
-| Type system | ✓ Lean-checked certificates | ✗ | ✓ Types | ✓ SQL types |
-| Bitmap joins | ✓ Roaring | ✗ | ✗ | ✓ Bitmap indexes |
-| HoTT equivalences | ✓ Native | ✗ | ✗ | ✗ |
-| Vector hybrid | ✓ Bridge API | Plugin | ✗ | pgvector |
+All of these structures are rebuildable. No index sidecar is durable.
 
-## Future Work
+### Fact index
 
-1. **Incremental Path Index**: Update path index without full rebuild
-2. **Distributed PathDB**: Sharding across machines
-3. **GPU Acceleration**: Bitmap operations on GPU
-4. **Adaptive Indexing**: Build indexes based on query patterns
-5. **Streaming Updates**: Append-only binary format with compaction
-6. **Certified discovery operators**: expand certificates beyond reachability into normalization/reconciliation
-7. **Ingestion integration**: treat `.axi` as canonical facts, and treat indexes as derived and rebuildable
+Canonical n-ary tuples are represented as fact nodes with stable fact ids and
+ordered role edges. The in-memory `FactIndex` accelerates:
+
+- relation and schema/relation lookup;
+- key lookup from declared constraints;
+- context/world-scoped fact lookup.
+
+AxQL uses these indexes automatically. Index invalidation occurs on in-memory
+mutation; no index content enters the `.axpd` identity.
+
+### Path index
+
+Short relation paths can be precomputed into Roaring-bitmap reachability maps.
+Longer paths may use a bounded process-local LRU. The path index depth and LRU
+capacity affect runtime performance only; semantic rows and certificates remain
+anchored to stable ids.
+
+## Operational rule
+
+Never open a bare `.axpd` by path in a query service. Require an AxiStore root and
+`MaterializationIdV2`, call `load_verified_pathdb`, and only then serve queries.
+If exact accepted `.axi` bytes are needed for review or certificate checking,
+read them from the accepted AxiStore object closure—not from PathDB.

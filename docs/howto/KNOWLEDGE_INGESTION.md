@@ -3,8 +3,11 @@
 **Diataxis:** How-to  
 **Audience:** contributors
 
-This document describes how Axiograph ingests knowledge from various sources
-and builds a probabilistic knowledge graph with confidence-scored facts.
+This document describes how Axiograph ingests knowledge from various sources,
+produces evidence-plane artifacts, drafts candidate canonical `.axi`, and then
+uses typed reports and semantic VCS promotion. Derived PathDB snapshots can then
+be materialized for query/index workflows, but they are not the semantic
+authority.
 
 ## Overview
 
@@ -47,7 +50,8 @@ The knowledge ingestion pipeline follows Axiograph's core principle:
 │                     Promotion + acceptance                                 │
 │   proposals.json → candidate domain `.axi` modules (explicit review)        │
 │   accepted `.axi` → runtime PathDB `.axpd` (derived, rebuildable)           │
-│   runtime results → certificate JSON → Lean checks                           │
+│   typed previews/reports → semantic VCS history                              │
+│   prepared queries → query_result_v4 witnesses → Lean checks                 │
 └───────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -63,10 +67,12 @@ axiograph ingest conversation input.txt --out proposals.json \
 ```
 
 Formats supported:
+
 - `slack`: "Speaker (timestamp): message"
 - `meeting`: "SPEAKER NAME:" followed by paragraphs
 
 Extracts:
+
 - Non-question turns as potential knowledge
 - Technical content detection (materials, tools, parameters)
 - Speaker attribution for provenance
@@ -81,6 +87,7 @@ axiograph ingest confluence page.html --out proposals.json \
 ```
 
 Extracts:
+
 - Sections (h2-h6) as separate chunks
 - Tables (structured data)
 - Code blocks (examples, procedures)
@@ -97,6 +104,7 @@ axiograph ingest doc manual.txt --out proposals.json \
 ```
 
 The `--machining` flag enables domain-specific:
+
 - Material mention detection
 - Tool and parameter extraction
 - Quality/observation tagging
@@ -116,37 +124,46 @@ Current structured adapters in `axiograph ingest dir`:
 - `*.sql` → SQL DDL → table/column/foreign-key proposals
 - `*.json` → JSON sample → inferred schema proposals
 - `*.nt` / `*.ntriples` / `*.ttl` / `*.turtle` / `*.nq` / `*.nquads` / `*.trig` / `*.rdf` / `*.owl` / `*.xml`
-  → RDF graph (Sophia) → entity/relation proposals (named graphs become `Context` entities; each relation proposal carries a `context` attribute)
+  → RDF graph (Sophia for line-oriented formats; pinned Oxigraph for RDF/XML) → entity/relation proposals (named graphs become `Context` entities; each relation proposal carries a `context` attribute)
 
 Semantic Web interop design notes: `docs/explanation/SEMANTIC_WEB_INTEROP.md`.
 
-### 5. GitHub repos (code + proto APIs)
+### 5. GitHub repos (code + optional proto API evidence)
 
 For “codebase discovery” we can ingest a repo into:
 
-- `chunks.json` (for RAG / approximate discovery),
+- `chunks.json` as `EvidenceChunkBundleV1` (for RAG / approximate discovery),
 - lightweight repo edges (definitions/imports/TODOs),
-- and (optionally) protobuf/gRPC API structure from a Buf descriptor set.
+- and optionally protobuf/gRPC API structure from a Buf descriptor set.
 
-### 6. World model proposals (JEPA / objective-driven)
+The proto path is an evidence adapter. It emits proposal/chunk artifacts only;
+it does not bypass reviewed canonical `.axi` promotion or query/certificate
+typing.
 
-World models are **untrusted** proposal generators that emit evidence-plane
-`proposals.json` overlays. They plug into the same ingest/promote pipeline.
+### 6. Predictive proposal adapters
+
+Predictive proposal adapters are **untrusted** generators that emit
+evidence-plane `proposals.json` overlays. They plug into the same
+ingest/promote pipeline as document, repo, SQL, RDF, and web evidence.
+
+This core ingestion path makes no autonomous-execution or learned-dynamics
+claim. Research adapters can use richer predictive techniques internally, but
+Axiograph receives typed proposals and keeps them in the evidence plane until
+review.
 
 Example (baseline plugin):
 
 ```bash
-axiograph discover jepa-export examples/Family.axi --out build/family_jepa.json
-axiograph ingest world-model \
-  --input examples/Family.axi \
-  --export build/family_jepa.json \
+axiograph discover training-export examples/Family.axi \
+  --out build/family_training_export.json
+axiograph ingest predictive-proposal examples/Family.axi \
   --out build/family_proposals.json \
-  --world-model-plugin scripts/axiograph_world_model_plugin_baseline.py
+  --proposal-adapter-plugin scripts/axiograph_predictive_proposal_plugin_baseline.py
 ```
 
-Note: use full `.axi` modules (schema + theory + instance + contexts) as the
-training/export source. PathDB exports are derived and should only be used for
-query performance.
+Note: use full canonical `.axi` modules (schema + theory + instance + contexts)
+as the training/export source. Authenticated SQLite `.axpd` files are derived
+execution artifacts and cannot be reverse-exported into accepted meaning.
 
 Offline/local repo:
 
@@ -154,11 +171,12 @@ Offline/local repo:
 axiograph ingest github import /path/to/repo --out-dir build/github_import/demo
 ```
 
-Proto APIs without requiring `buf` (use an existing descriptor set JSON):
+Proto API evidence without requiring `buf` (use an existing binary descriptor
+set):
 
 ```bash
 axiograph ingest github import /path/to/repo --out-dir build/github_import/demo \
-  --proto-descriptor examples/proto/large_api/descriptor.json
+  --proto-descriptor examples/proto/large_api/descriptor.binpb
 ```
 
 ### 7. Web pages (scrape/crawl) -> evidence artifacts
@@ -189,7 +207,7 @@ The ingestion layer uses pattern matching to extract facts with confidence:
 ### Fact Types
 
 | Type | Description | Example |
-|------|-------------|---------|
+| ------ | ------------- | --------- |
 | Recommendation | "use X for Y" | "use carbide for titanium" |
 | Observation | "we saw X" | "we saw chatter at 3000 RPM" |
 | Causation | "X causes Y" | "increasing speed causes more heat" |
@@ -203,7 +221,7 @@ The ingestion layer uses pattern matching to extract facts with confidence:
 Base confidence is pattern-dependent, then adjusted by:
 
 | Factor | Adjustment |
-|--------|------------|
+| -------- | ------------ |
 | Technical source (Confluence, manual) | +10% |
 | Expert attribution | +15% |
 | Short evidence (<30 chars) | -10% |
@@ -219,7 +237,12 @@ In the Rust+Lean architecture:
 
 - ingestion produces **untrusted evidence** (`proposals.json` + provenance)
 - promotion produces candidate **canonical** `.axi` modules (explicit + reviewable)
-- high-value inferences can be **certificate-backed** (Rust emits, Lean verifies)
+- preview/review flows produce typed reports such as `EvolutionPreviewV1`,
+  trust/coverage reports, and refinement handles
+- machine query flows compile `query_ir_v1` as `CompiledFiniteQuery`; supported
+  certified answers emit query-and-answer-bound `query_result_v4` witnesses
+  (Rust emits, Lean verifies)
+- accepted deltas move through semantic VCS history; PathDB remains derived
 
 ## Example: Building a Machining Knowledge Base
 
@@ -256,7 +279,10 @@ axiograph discover draft-module manual_proposals.json \
   --instance DiscoveredInstance \
   --infer-constraints
 
-# 6. Run the semantics verification suite (Rust + Lean certificates/parsers)
+# 6. Build a typed PromotionPlan from the exact reviewed `.axi` bytes and
+#    promote it with AxiStore::promote; see docs/howto/SNAPSHOT_STORE.md.
+
+# 7. Run the semantics verification suite (Rust + Lean certificates/parsers)
 make verify-semantics
 ```
 
@@ -270,6 +296,7 @@ The `PhysicsKnowledge.axi` example shows how to encode:
 - **Heuristics**: "titanium needs low speed, high feed"
 
 These are typed in the canonical `.axi` module, enabling:
+
 1. Constraint checking (dimensional consistency)
 2. Inference (if A and B, then C)
 3. Probabilistic queries (confidence-weighted)
@@ -278,10 +305,14 @@ certificates and invariants checked in Lean.
 
 ## RAG Integration
 
-The chunks.json output is RAG-ready:
+The `chunks.json` output is a typed evidence-plane bundle. It is RAG-ready, but
+it is not accepted ontology truth:
 
 ```json
 {
+  "version": "evidence_chunk_bundle_v1",
+  "evidence_plane": "evidence_overlay",
+  "source": { "source_type": "conversation", "locator": "shop-floor-notes.md" },
   "chunks": [
     {
       "chunk_id": "conv_0",
@@ -296,14 +327,54 @@ The chunks.json output is RAG-ready:
 }
 ```
 
-Use with your vector store (Pinecone, Qdrant, Chroma) to enable semantic search over the knowledge base. Treat retrieved chunks as **evidence** that produces new proposals; promotion into canonical `.axi` remains explicit.
+Use with a vector store or Axiograph's snapshot-scoped embedding sidecars to
+enable semantic search over the knowledge base. Treat retrieved chunks as
+**evidence** that can produce new proposals; promotion into canonical `.axi`
+remains explicit. See `docs/reference/EMBEDDINGS_AND_EVIDENCE.md` for the
+sidecar model and how embedding-derived relationships are lifted into typed
+proposals.
 
-## Binary Knowledge Graph
+Embedding artifacts should be exported as three separate objects:
 
-For large knowledge bases, use PathDB snapshots (`.axpd`). For auditability and offline review, round-trip through the
-reversible `.axi` snapshot format (`PathDBExportV1`):
+- `EmbeddingsFileV1` stores the vector payload and target keys.
+- `EmbeddingSidecarManifestV1` stores the accepted ref/module digest, optional
+  PathDB snapshot id, model version/digest, target ids, source text digests,
+  normalization policy, and trust caveats.
+- `EmbeddingEvidenceOverlayV1` stores vector-free similarity observations and
+  advisory candidate relationships such as `similar_to`, `supports`, `mentions`,
+  `implements`, `violates`, and `subtype_candidate`.
 
-```bash
-axiograph db pathdb export-axi knowledge.axpd --out snapshot.axi
-axiograph db pathdb import-axi snapshot.axi --out knowledge.axpd
-```
+Do not import an embedding overlay as canonical `.axi`. If a relationship from
+an overlay looks useful, convert it into a typed proposal, run validation and CQ
+preview, review it, reconcile conflicts, and promote the accepted delta through
+the semantic VCS.
+
+Current Rust support lives in `rust/crates/axiograph-cli/src/embeddings.rs`:
+
+- build a manifest with `build_embedding_sidecar_manifest_v1`;
+- compute a stable vector-sidecar digest with `embedding_file_digest_v1`;
+- create a tiny deterministic evidence overlay with
+  `discover_embedding_evidence_overlay_v1`.
+
+That discovery helper is pairwise and intended for small sidecars or tests. It
+emits ranked cosine observations plus `advisory_only=true` candidate
+relationships. The CLI surface `axiograph discover embedding-relationships`
+uses the same manifest and overlay report family; do not add a separate
+embedding evidence format for ingestion or promotion flows.
+
+## Derived PathDB Snapshots
+
+For large execution-oriented knowledge bases, materialize canonical `.axi` into
+PathDB snapshots (`.axpd`). These snapshots are fast query/index artifacts and
+can carry reviewable evidence overlays, but accepted semantics still live in
+canonical `.axi` and semantic VCS history.
+
+Use `CompiledFiniteQuery` metadata/trust reports for machine query flows and
+`query_result_v4` witnesses for supported certified answers.
+
+Storage byte round-trip checks live in `docs/howto/TESTING.md` and
+`docs/explanation/PATHDB_DESIGN.md`. Keep them out of ingest, query, and
+promotion walkthroughs.
+
+Do not feed derived snapshots into semantic/query/certificate commands. Those
+flows require canonical accepted `.axi` modules and typed anchors.

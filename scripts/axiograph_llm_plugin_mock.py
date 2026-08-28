@@ -62,14 +62,13 @@ def respond_to_query(question: str) -> int:
         # Default: follow rel_0/rel_1 if nothing else.
         rels: List[str] = [t for t in tokens if t.startswith("rel_")]
         path = "/".join(rels) if rels else "rel_0/rel_1"
-        axql = f"select ?y where {start} -{path}-> ?y limit 20"
         query_ir_v1 = {
             "version": 1,
-            "select": ["?y"],
-            "where": [{"kind": "edge", "left": int(start), "path": path, "right": "?y"}],
+            "select_vars": ["?y"],
+            "where_atoms": [{"kind": "edge", "left": int(start), "path": path, "right": "?y"}],
             "limit": 20,
         }
-        return respond_ok({"query_ir_v1": query_ir_v1, "axql": axql})
+        return respond_ok({"query_ir_v1": query_ir_v1})
 
     if lower[:1] == ["find"] and len(tokens) >= 2:
         # `find Node named b`
@@ -88,20 +87,19 @@ def respond_to_query(question: str) -> int:
             atoms.append(f"?x.name = \"{name}\"")
             ir_atoms.append({"kind": "attr_eq", "term": "?x", "key": "name", "value": name})
         where = ", ".join(atoms) if atoms else "?x is Node"
-        axql = f"select ?x where {where} limit 20"
         if not ir_atoms:
             ir_atoms = [{"kind": "type", "term": "?x", "type": "Node"}]
-        query_ir_v1 = {"version": 1, "select": ["?x"], "where": ir_atoms, "limit": 20}
-        return respond_ok({"query_ir_v1": query_ir_v1, "axql": axql})
+        query_ir_v1 = {"version": 1, "select_vars": ["?x"], "where_atoms": ir_atoms, "limit": 20}
+        return respond_ok({"query_ir_v1": query_ir_v1})
 
     # Fallback: a harmless AxQL query.
     query_ir_v1 = {
         "version": 1,
-        "select": ["?x"],
-        "where": [{"kind": "type", "term": "?x", "type": "Node"}],
+        "select_vars": ["?x"],
+        "where_atoms": [{"kind": "type", "term": "?x", "type": "Node"}],
         "limit": 20,
     }
-    return respond_ok({"query_ir_v1": query_ir_v1, "axql": "select ?x where ?x is Node limit 20"})
+    return respond_ok({"query_ir_v1": query_ir_v1})
 
 
 def respond_answer(task: Dict[str, Any]) -> int:
@@ -204,14 +202,13 @@ def build_query_payload(question: str) -> Dict[str, Any]:
             start = tokens[1]
         rels: List[str] = [t for t in tokens if t.startswith("rel_")]
         path = "/".join(rels) if rels else "rel_0/rel_1"
-        axql = f"select ?y where {start} -{path}-> ?y limit 20"
         query_ir_v1 = {
             "version": 1,
-            "select": ["?y"],
-            "where": [{"kind": "edge", "left": int(start), "path": path, "right": "?y"}],
+            "select_vars": ["?y"],
+            "where_atoms": [{"kind": "edge", "left": int(start), "path": path, "right": "?y"}],
             "limit": 20,
         }
-        return {"query_ir_v1": query_ir_v1, "axql": axql}
+        return {"query_ir_v1": query_ir_v1}
 
     if lower[:1] == ["find"] and len(tokens) >= 2:
         type_name = tokens[1]
@@ -229,19 +226,18 @@ def build_query_payload(question: str) -> Dict[str, Any]:
             atoms.append(f"?x.name = \"{name}\"")
             ir_atoms.append({"kind": "attr_eq", "term": "?x", "key": "name", "value": name})
         where = ", ".join(atoms) if atoms else "?x is Node"
-        axql = f"select ?x where {where} limit 20"
         if not ir_atoms:
             ir_atoms = [{"kind": "type", "term": "?x", "type": "Node"}]
-        query_ir_v1 = {"version": 1, "select": ["?x"], "where": ir_atoms, "limit": 20}
-        return {"query_ir_v1": query_ir_v1, "axql": axql}
+        query_ir_v1 = {"version": 1, "select_vars": ["?x"], "where_atoms": ir_atoms, "limit": 20}
+        return {"query_ir_v1": query_ir_v1}
 
     query_ir_v1 = {
         "version": 1,
-        "select": ["?x"],
-        "where": [{"kind": "type", "term": "?x", "type": "Node"}],
+        "select_vars": ["?x"],
+        "where_atoms": [{"kind": "type", "term": "?x", "type": "Node"}],
         "limit": 20,
     }
-    return {"query_ir_v1": query_ir_v1, "axql": "select ?x where ?x is Node limit 20"}
+    return {"query_ir_v1": query_ir_v1}
 
 
 def respond_augment_proposals(task: Dict[str, Any]) -> int:

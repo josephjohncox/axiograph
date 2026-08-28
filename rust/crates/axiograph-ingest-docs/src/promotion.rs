@@ -151,9 +151,9 @@ pub fn promote_proposals_to_candidates_v1(
         let domain_proposals: Vec<ProposalV1> = file
             .proposals
             .iter()
+            .filter(|&p| proposal_confidence(p) >= options.min_confidence)
+            .filter(|&p| proposal_domain(p, file.schema_hint.as_deref()) == Some(domain))
             .cloned()
-            .filter(|p| proposal_confidence(p) >= options.min_confidence)
-            .filter(|p| proposal_domain(p, file.schema_hint.as_deref()) == Some(domain))
             .collect();
 
         let (axi, summary, dom_conflicts, dom_unmapped) =
@@ -313,7 +313,7 @@ fn resolve_entities(
         };
 
         let key_name = normalize_name_key(name);
-        let key = format!("{}::{}", entity_type, key_name);
+        let key = format!("{entity_type}::{key_name}");
         by_entity_id.insert(entity_id.clone(), key.clone());
 
         match entities.get_mut(&key) {
@@ -430,10 +430,13 @@ fn promote_domain(
     let mut collisions: HashSet<String> = HashSet::new();
     for entity in resolved.entities.values() {
         let nk = normalize_name_key(&entity.display_name);
-        if fallback_by_name.contains_key(&nk) {
-            collisions.insert(nk);
-        } else {
-            fallback_by_name.insert(nk, entity.key.clone());
+        match fallback_by_name.entry(nk) {
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                entry.insert(entity.key.clone());
+            }
+            std::collections::btree_map::Entry::Occupied(entry) => {
+                collisions.insert(entry.key().clone());
+            }
         }
     }
     for nk in collisions {
@@ -490,7 +493,7 @@ fn confidence_ident(confidence: f64) -> String {
 }
 
 fn text_ident(base: &str, suffix: &str) -> String {
-    format!("Text_{}_{}", base, suffix)
+    format!("Text_{base}_{suffix}")
 }
 
 fn add_concept_candidate(
@@ -892,7 +895,7 @@ fn split_list_idents(raw: &str) -> Vec<String> {
     raw.split([',', ';'])
         .map(|s| s.trim())
         .filter(|s| !s.is_empty())
-        .map(|s| sanitize_ident(s))
+        .map(sanitize_ident)
         .collect()
 }
 

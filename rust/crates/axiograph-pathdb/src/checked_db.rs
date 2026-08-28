@@ -15,10 +15,13 @@
 //! These checks are **not** the trusted gate (Lean is). They are runtime
 //! guardrails and ergonomics.
 
-use crate::axi_meta::{ATTR_AXI_SCHEMA, META_REL_FACT_OF, REL_AXI_FACT_IN_CONTEXT};
+use crate::axi_meta::{
+    ATTR_AXI_FACT_ID, ATTR_AXI_INSTANCE, ATTR_AXI_MODULE, ATTR_AXI_SCHEMA, META_ATTR_NAME,
+    META_REL_FACT_OF, REL_AXI_FACT_IN_CONTEXT,
+};
 use crate::axi_semantics::{AxiTypeCheckReport, MetaPlaneIndex, RelationDecl, SchemaIndex};
 use crate::axi_type::TypingEnv;
-use crate::PathDB;
+use crate::{CanonicalFactLogV1, PathDB, StableFactId};
 use anyhow::{anyhow, Result};
 use std::collections::HashMap;
 
@@ -26,6 +29,53 @@ fn entity_attr_string(db: &PathDB, entity: u32, key: &str) -> Option<String> {
     let key_id = db.interner.id_of(key)?;
     let value_id = db.entities.get_attr(entity, key_id)?;
     db.interner.lookup(value_id)
+}
+
+fn entity_token_for_stable_fact_id(db: &PathDB, entity: u32) -> Result<String> {
+    if let Some(name) = entity_attr_string(db, entity, META_ATTR_NAME) {
+        return Ok(name);
+    }
+    if let Some(fact_id) = entity_attr_string(db, entity, ATTR_AXI_FACT_ID) {
+        return Ok(fact_id);
+    }
+    Err(anyhow!(
+        "entity {entity} is missing a stable `{META_ATTR_NAME}` or `{ATTR_AXI_FACT_ID}` value"
+    ))
+}
+
+pub fn stable_fact_id_v1_for_declared_fields(
+    db: &PathDB,
+    module_name: &str,
+    schema_name: &str,
+    instance_name: &str,
+    relation_name: &str,
+    decl: &RelationDecl,
+    field_values: &HashMap<String, u32>,
+) -> Result<StableFactId> {
+    let mut owned_fields: Vec<(String, String)> = Vec::with_capacity(decl.fields.len());
+    for f in &decl.fields {
+        let value = field_values.get(&f.field_name).copied().ok_or_else(|| {
+            anyhow!(
+                "missing field `{}` for relation `{relation_name}` while computing stable fact id",
+                f.field_name
+            )
+        })?;
+        owned_fields.push((
+            f.field_name.clone(),
+            entity_token_for_stable_fact_id(db, value)?,
+        ));
+    }
+    let field_refs: Vec<(&str, &str)> = owned_fields
+        .iter()
+        .map(|(field, value)| (field.as_str(), value.as_str()))
+        .collect();
+    Ok(StableFactId::new(axiograph_kernel::runtime_fact_id_v2(
+        module_name,
+        schema_name,
+        instance_name,
+        relation_name,
+        &field_refs,
+    )))
 }
 
 #[derive(Debug, Clone, Default)]
@@ -139,29 +189,11 @@ impl<'db> CheckedDb<'db> {
     pub fn db(&self) -> &'db PathDB {
         self.db
     }
-}
 
-fn infer_binary_endpoint_fields(rel_decl: &RelationDecl) -> Option<(&str, &str)> {
-    let names: Vec<&str> = rel_decl.fields.iter().map(|f| f.field_name.as_str()).collect();
-    if names.contains(&"from") && names.contains(&"to") {
-        return Some(("from", "to"));
+    /// Extract a canonical fact log only after this checked wrapper exists.
+    pub fn certified_canonical_fact_log_v1(&self) -> Result<CanonicalFactLogV1> {
+        CanonicalFactLogV1::certified_from_db(self.db)
     }
-    if names.contains(&"source") && names.contains(&"target") {
-        return Some(("source", "target"));
-    }
-    if names.contains(&"lhs") && names.contains(&"rhs") {
-        return Some(("lhs", "rhs"));
-    }
-    if names.contains(&"child") && names.contains(&"parent") {
-        return Some(("child", "parent"));
-    }
-    if rel_decl.fields.len() >= 2 {
-        return Some((
-            rel_decl.fields[0].field_name.as_str(),
-            rel_decl.fields[1].field_name.as_str(),
-        ));
-    }
-    None
 }
 
 fn check_rewrite_rules(db: &PathDB, meta: &MetaPlaneIndex) -> RewriteRuleTypecheckReport {
@@ -170,8 +202,8 @@ fn check_rewrite_rules(db: &PathDB, meta: &MetaPlaneIndex) -> RewriteRuleTypeche
 
     #[derive(Debug, Clone)]
     struct RewriteTypingEnv {
-        object_vars: HashMap<String, String>,          // x -> Ty
-        path_vars: HashMap<String, (String, String)>,  // p -> (from_term, to_term)
+        object_vars: HashMap<String, String>,         // x -> Ty
+        path_vars: HashMap<String, (String, String)>, // p -> (from_term, to_term)
     }
 
     fn infer_expr_endpoints(
@@ -201,26 +233,23 @@ fn check_rewrite_rules(db: &PathDB, meta: &MetaPlaneIndex) -> RewriteRuleTypeche
                 }
 
                 let rel_name = rel.to_string();
-                let Some(rel_decl) = schema.relation_decls.get(&rel_name) else {
+                let Some(_rel_decl) = schema.relation_decls.get(&rel_name) else {
                     return Err(format!("unknown relation `{schema_name}.{rel_name}`"));
                 };
-                let Some((src_field, dst_field)) = infer_binary_endpoint_fields(rel_decl) else {
+                let Some(rel_semantics) = schema.compiled_relation_semantics(&rel_name) else {
                     return Err(format!(
-                        "relation `{schema_name}.{rel_name}` has fewer than 2 fields (cannot infer step endpoints)"
+                        "relation `{schema_name}.{rel_name}` is missing compiled schema semantics"
                     ));
                 };
-                let src_ty = rel_decl
-                    .fields
-                    .iter()
-                    .find(|f| f.field_name == src_field)
-                    .map(|f| f.field_type.as_str())
-                    .unwrap_or("");
-                let dst_ty = rel_decl
-                    .fields
-                    .iter()
-                    .find(|f| f.field_name == dst_field)
-                    .map(|f| f.field_type.as_str())
-                    .unwrap_or("");
+                let Some((src_role, dst_role)) = rel_semantics.carrier_roles() else {
+                    return Err(format!(
+                        "relation `{schema_name}.{rel_name}` does not expose a compiled binary carrier"
+                    ));
+                };
+                let src_field = src_role.name.as_str();
+                let dst_field = dst_role.name.as_str();
+                let src_ty = src_role.target_type.as_str();
+                let dst_ty = dst_role.target_type.as_str();
 
                 let from_ty = env
                     .object_vars
@@ -287,7 +316,9 @@ fn check_rewrite_rules(db: &PathDB, meta: &MetaPlaneIndex) -> RewriteRuleTypeche
                 let mut pending_paths: Vec<(String, String, String)> = Vec::new();
                 for v in &rule.vars {
                     let var_name = v.name.to_string();
-                    if env.object_vars.contains_key(&var_name) || env.path_vars.contains_key(&var_name) {
+                    if env.object_vars.contains_key(&var_name)
+                        || env.path_vars.contains_key(&var_name)
+                    {
                         report.errors.push(format!(
                             "{schema_name}.{theory_name}.{}: duplicate var `{var_name}`",
                             rule.name
@@ -414,9 +445,11 @@ fn check_context_invariants(db: &PathDB, meta: &MetaPlaneIndex) -> ContextInvari
 
     // Compute the set of entity types that count as Contexts (including schema-local
     // subtypes of `Context`). This keeps the invariant robust when domains extend
-    // the context/world model.
+    // the context/predictive proposal adapter.
     let mut allowed_context_types: std::collections::HashSet<String> =
-        ["Context".to_string(), "World".to_string()].into_iter().collect();
+        ["Context".to_string(), "World".to_string()]
+            .into_iter()
+            .collect();
     for schema in meta.schemas.values() {
         for obj in &schema.object_types {
             if schema.is_subtype(obj, "Context") {
@@ -555,7 +588,7 @@ fn check_modal_invariants(db: &PathDB) -> ModalInvariantReport {
     let mut entities_with_conf: std::collections::HashSet<u32> = std::collections::HashSet::new();
     if let Some(key_id) = proposal_conf_key {
         if let Some(col) = db.entities.attrs.get(&key_id) {
-            for (&id, _) in col {
+            for &id in col.keys() {
                 entities_with_conf.insert(id);
             }
         }
@@ -593,7 +626,7 @@ fn check_modal_invariants(db: &PathDB) -> ModalInvariantReport {
         }
     }
     for entity_id in &entities_with_conf {
-        if !entities_with_proposal_id.binary_search(entity_id).is_ok() {
+        if entities_with_proposal_id.binary_search(entity_id).is_err() {
             report.errors.push(format!(
                 "entity {entity_id}: has proposal_confidence but missing proposal_id"
             ));
@@ -637,7 +670,10 @@ fn check_modal_invariants(db: &PathDB) -> ModalInvariantReport {
     for (i, r) in db.relations.relations.iter().enumerate() {
         report.checked_edges += 1;
         if !r.confidence.is_finite() || !(0.0..=1.0).contains(&r.confidence) {
-            let rel_name = db.interner.lookup(r.rel_type).unwrap_or_else(|| "<rel?>".to_string());
+            let rel_name = db
+                .interner
+                .lookup(r.rel_type)
+                .unwrap_or_else(|| "<rel?>".to_string());
             report.errors.push(format!(
                 "edge#{i} {src} -{rel_name}-> {dst}: invalid confidence {} (expected finite number in [0,1])",
                 r.confidence,
@@ -717,9 +753,7 @@ impl<'db> CheckedDbMut<'db> {
 
         if !schema.object_types.contains(type_name) {
             return Err(anyhow!(
-                "unknown object type `{}` in schema `{}`",
-                type_name,
-                schema_name
+                "unknown object type `{type_name}` in schema `{schema_name}`"
             ));
         }
 
@@ -781,7 +815,8 @@ impl<'db> CheckedDbMut<'db> {
             return Ok(false);
         }
 
-        self.db.add_relation(rel_type, source, target, confidence, attrs);
+        self.db
+            .add_relation(rel_type, source, target, confidence, attrs);
         Ok(true)
     }
 
@@ -875,9 +910,68 @@ impl<'db> TypedFactBuilder<'db> {
     }
 
     /// Set the confidence used for field edges (default = 1.0).
-    pub fn with_edge_confidence(mut self, confidence: f32) -> Self {
-        self.edge_confidence = confidence.clamp(0.0, 1.0);
-        self
+    pub fn with_edge_confidence(mut self, confidence: f32) -> Result<Self> {
+        if !confidence.is_finite() || !(0.0..=1.0).contains(&confidence) {
+            return Err(anyhow!(
+                "typed fact `{}` edge confidence must be finite and in [0, 1] (got {confidence})",
+                self.relation
+            ));
+        }
+        self.edge_confidence = confidence;
+        Ok(self)
+    }
+
+    /// Preview the canonical `.axi` fact id if the builder has enough stable context.
+    ///
+    /// This requires module and instance identity plus all declared fields. It
+    /// returns `Ok(None)` for runtime-only facts that are typed but not
+    /// canonical/certified enough to carry an `axi_fact_id`.
+    pub fn preview_stable_fact_id_v1(&self) -> Result<Option<StableFactId>> {
+        if self
+            .decl
+            .fields
+            .iter()
+            .any(|f| !self.field_values.contains_key(&f.field_name))
+        {
+            return Ok(None);
+        }
+
+        let module_name = self
+            .fact_attr_value(ATTR_AXI_MODULE)
+            .map(str::to_string)
+            .or_else(|| self.schema.module_name.clone())
+            .or(self.common_field_entity_attr(ATTR_AXI_MODULE)?);
+        let instance_name = self
+            .fact_attr_value(ATTR_AXI_INSTANCE)
+            .map(str::to_string)
+            .or(self.common_field_entity_attr(ATTR_AXI_INSTANCE)?);
+
+        let (Some(module_name), Some(instance_name)) = (module_name, instance_name) else {
+            return Ok(None);
+        };
+
+        stable_fact_id_v1_for_declared_fields(
+            self.db,
+            &module_name,
+            &self.schema_name,
+            &instance_name,
+            &self.relation,
+            &self.decl,
+            &self.field_values,
+        )
+        .map(Some)
+    }
+
+    /// Commit only if the fact can carry a deterministic canonical `axi_fact_id`.
+    pub fn commit_certified_only(mut self) -> Result<u32> {
+        let fact_id = self.preview_stable_fact_id_v1()?.ok_or_else(|| {
+            anyhow!(
+                "cannot commit certified-only fact `{}`: missing module/instance identity or stable field value names",
+                self.relation
+            )
+        })?;
+        self.ensure_fact_attr(ATTR_AXI_FACT_ID, fact_id.as_str())?;
+        self.commit()
     }
 
     /// Set a field value, checking:
@@ -935,17 +1029,54 @@ impl<'db> TypedFactBuilder<'db> {
             ));
         }
 
-        if self
-            .field_values
-            .insert(field.to_string(), value)
-            .is_some()
-        {
+        if self.field_values.insert(field.to_string(), value).is_some() {
             return Err(anyhow!(
                 "duplicate assignment for field `{field}` in relation `{}`",
                 self.relation
             ));
         }
 
+        Ok(())
+    }
+
+    fn fact_attr_value(&self, key: &str) -> Option<&str> {
+        self.fact_attrs
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.as_str())
+    }
+
+    fn common_field_entity_attr(&self, key: &str) -> Result<Option<String>> {
+        let mut seen: Option<String> = None;
+        for entity_id in self.field_values.values().copied() {
+            let Some(value) = entity_attr_string(self.db, entity_id, key) else {
+                continue;
+            };
+            if let Some(existing) = seen.as_ref() {
+                if existing != &value {
+                    return Err(anyhow!(
+                        "cannot infer stable fact id for `{}`: field values disagree on `{key}` (`{existing}` vs `{value}`)",
+                        self.relation
+                    ));
+                }
+            } else {
+                seen = Some(value);
+            }
+        }
+        Ok(seen)
+    }
+
+    fn ensure_fact_attr(&mut self, key: &str, value: &str) -> Result<()> {
+        if let Some((_, existing)) = self.fact_attrs.iter().find(|(k, _)| k == key) {
+            if existing != value {
+                return Err(anyhow!(
+                    "fact `{}` has conflicting `{key}` (existing=`{existing}`, computed=`{value}`)",
+                    self.relation
+                ));
+            }
+            return Ok(());
+        }
+        self.fact_attrs.push((key.to_string(), value.to_string()));
         Ok(())
     }
 
@@ -963,42 +1094,76 @@ impl<'db> TypedFactBuilder<'db> {
             }
         }
 
+        let stable_fact_id = self.preview_stable_fact_id_v1()?;
+        if let Some(fact_id) = stable_fact_id.as_ref() {
+            self.ensure_fact_attr(ATTR_AXI_FACT_ID, fact_id.as_str())?;
+        }
+
         // Canonical fact-node entity type name.
         let tuple_type = self.schema.tuple_entity_type_name(&self.relation);
 
         // Default name: stable hash of (schema, relation, ordered field ids).
-        let mut bytes: Vec<u8> = Vec::new();
-        bytes.extend_from_slice(self.schema_name.as_bytes());
-        bytes.push(0);
-        bytes.extend_from_slice(self.relation.as_bytes());
-        bytes.push(0);
-        for f in &self.decl.fields {
-            bytes.extend_from_slice(f.field_name.as_bytes());
-            bytes.push(b'=');
-            let id = self
-                .field_values
-                .get(&f.field_name)
-                .copied()
-                .expect("checked above");
-            bytes.extend_from_slice(id.to_string().as_bytes());
+        let default_name = if let Some(fact_id) = stable_fact_id.as_ref() {
+            format!(
+                "{}_fact_{}",
+                self.relation,
+                fact_id
+                    .as_str()
+                    .strip_prefix(axiograph_kernel::FACT_ID_V2_PREFIX)
+                    .unwrap_or(fact_id.as_str())
+            )
+        } else {
+            let mut bytes: Vec<u8> = Vec::new();
+            bytes.extend_from_slice(self.schema_name.as_bytes());
             bytes.push(0);
-        }
-        let digest = axiograph_dsl::digest::fnv1a64_digest_bytes(&bytes);
-        let default_name = format!("{}_fact_{}", self.relation, digest);
+            bytes.extend_from_slice(self.relation.as_bytes());
+            bytes.push(0);
+            for f in &self.decl.fields {
+                bytes.extend_from_slice(f.field_name.as_bytes());
+                bytes.push(b'=');
+                let id = self
+                    .field_values
+                    .get(&f.field_name)
+                    .copied()
+                    .ok_or_else(|| {
+                        anyhow!(
+                            "missing field `{}` while deriving stable fact name for relation `{}`",
+                            f.field_name,
+                            self.relation
+                        )
+                    })?;
+                bytes.extend_from_slice(id.to_string().as_bytes());
+                bytes.push(0);
+            }
+            let digest = axiograph_kernel::object_blob_digest_v2(&bytes);
+            format!("{}_fact_{}", self.relation, digest)
+        };
 
         // Build attrs.
         let mut attrs: Vec<(String, String)> = Vec::new();
         attrs.push(("name".to_string(), default_name));
         attrs.push((ATTR_AXI_SCHEMA.to_string(), self.schema_name.clone()));
-        attrs.push((crate::axi_meta::ATTR_AXI_RELATION.to_string(), self.relation.clone()));
-        attrs.extend(self.fact_attrs.drain(..));
-        let attrs_ref: Vec<(&str, &str)> = attrs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        attrs.push((
+            crate::axi_meta::ATTR_AXI_RELATION.to_string(),
+            self.relation.clone(),
+        ));
+        attrs.append(&mut self.fact_attrs);
+        let attrs_ref: Vec<(&str, &str)> = attrs
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
 
         let fact = self.db.add_entity(&tuple_type, attrs_ref);
         self.db.mark_virtual_type(fact, "FactNode")?;
 
         // Link fact node to its relation declaration (meta-plane).
-        self.db.add_relation(META_REL_FACT_OF, fact, self.decl.relation_entity, 1.0, vec![]);
+        self.db.add_relation(
+            META_REL_FACT_OF,
+            fact,
+            self.decl.relation_entity,
+            1.0,
+            vec![],
+        );
 
         // Field edges + derived uniform context edge.
         for f in &self.decl.fields {
@@ -1006,7 +1171,13 @@ impl<'db> TypedFactBuilder<'db> {
                 .field_values
                 .get(&f.field_name)
                 .copied()
-                .expect("checked above");
+                .ok_or_else(|| {
+                    anyhow!(
+                        "missing field `{}` while committing relation `{}`",
+                        f.field_name,
+                        self.relation
+                    )
+                })?;
             self.db
                 .add_relation(&f.field_name, fact, value, self.edge_confidence, vec![]);
             if f.field_name == "ctx" {
@@ -1072,6 +1243,19 @@ impl<'db> TypedFactBuilder<'db> {
             )?;
         }
 
+        if let Some(stable_fact_id) = self.preview_stable_fact_id_v1()? {
+            if let Some(existing) = entity_attr_string(self.db, fact_id, ATTR_AXI_FACT_ID) {
+                if existing != stable_fact_id.as_str() {
+                    return Err(anyhow!(
+                        "fact {fact_id}: `{ATTR_AXI_FACT_ID}` mismatch (existing=`{existing}`, computed=`{}`)",
+                        stable_fact_id.as_str()
+                    ));
+                }
+            } else {
+                self.ensure_fact_attr(ATTR_AXI_FACT_ID, stable_fact_id.as_str())?;
+            }
+        }
+
         // Attach extra attrs (best-effort: fill missing only).
         for (k, v) in self.fact_attrs.drain(..) {
             if entity_attr_string(self.db, fact_id, &k).is_none() {
@@ -1103,7 +1287,13 @@ impl<'db> TypedFactBuilder<'db> {
                 .field_values
                 .get(&f.field_name)
                 .copied()
-                .expect("checked above");
+                .ok_or_else(|| {
+                    anyhow!(
+                        "missing field `{}` while updating relation `{}`",
+                        f.field_name,
+                        self.relation
+                    )
+                })?;
             let Some(field_rel_id) = self.db.interner.id_of(&f.field_name) else {
                 return Err(anyhow!(
                     "fact {fact_id}: missing interned relation id for field `{}`",
@@ -1203,12 +1393,20 @@ instance I of S:
         let alice = db
             .find_by_axi_type("S", "Person")
             .iter()
-            .find(|id| db.get_entity(*id).map(|e| e.attrs.get("name").is_some_and(|n| n == "Alice")).unwrap_or(false))
+            .find(|id| {
+                db.get_entity(*id)
+                    .map(|e| e.attrs.get("name").is_some_and(|n| n == "Alice"))
+                    .unwrap_or(false)
+            })
             .ok_or_else(|| anyhow!("missing Alice"))?;
         let bob = db
             .find_by_axi_type("S", "Person")
             .iter()
-            .find(|id| db.get_entity(*id).map(|e| e.attrs.get("name").is_some_and(|n| n == "Bob")).unwrap_or(false))
+            .find(|id| {
+                db.get_entity(*id)
+                    .map(|e| e.attrs.get("name").is_some_and(|n| n == "Bob"))
+                    .unwrap_or(false)
+            })
             .ok_or_else(|| anyhow!("missing Bob"))?;
 
         let mut checked = CheckedDbMut::new(&mut db)?;
@@ -1228,6 +1426,111 @@ instance I of S:
         let meta = MetaPlaneIndex::from_db(&db)?;
         assert!(meta.typecheck_axi_facts(&db).ok());
         assert!(db.get_entity(fact).is_some());
+        Ok(())
+    }
+
+    #[test]
+    fn typed_fact_builder_rejects_invalid_edge_confidence() -> Result<()> {
+        let mut db = PathDB::new();
+        let axi = r#"
+module Demo
+
+schema S:
+  object Person
+  relation Parent(parent: Person, child: Person)
+
+instance I of S:
+  Person = {Alice, Bob}
+"#;
+        crate::axi_module_import::import_axi_schema_v1_into_pathdb(&mut db, axi)?;
+        db.build_indexes();
+
+        let mut checked = CheckedDbMut::new(&mut db)?;
+        let err = match checked
+            .fact_builder("S", "Parent")?
+            .with_edge_confidence(f32::NAN)
+        {
+            Ok(_) => return Err(anyhow!("NaN confidence should be rejected")),
+            Err(err) => err,
+        };
+        assert!(err.to_string().contains("edge confidence must be finite"));
+
+        let err = match checked
+            .fact_builder("S", "Parent")?
+            .with_edge_confidence(1.5)
+        {
+            Ok(_) => return Err(anyhow!("out-of-range confidence should be rejected")),
+            Err(err) => err,
+        };
+        assert!(err.to_string().contains("edge confidence must be finite"));
+        Ok(())
+    }
+
+    #[test]
+    fn typed_fact_builder_can_commit_certified_only_fact_id() -> Result<()> {
+        let mut db = PathDB::new();
+        let axi = r#"
+module Demo
+
+schema S:
+  object Person
+  relation Parent(parent: Person, child: Person)
+
+instance I of S:
+  Person = {Alice, Bob}
+"#;
+        crate::axi_module_import::import_axi_schema_v1_into_pathdb(&mut db, axi)?;
+        db.build_indexes();
+
+        let alice = db
+            .find_by_axi_type("S", "Person")
+            .iter()
+            .find(|id| {
+                db.get_entity(*id)
+                    .map(|e| e.attrs.get("name").is_some_and(|n| n == "Alice"))
+                    .unwrap_or(false)
+            })
+            .ok_or_else(|| anyhow!("missing Alice"))?;
+        let bob = db
+            .find_by_axi_type("S", "Person")
+            .iter()
+            .find(|id| {
+                db.get_entity(*id)
+                    .map(|e| e.attrs.get("name").is_some_and(|n| n == "Bob"))
+                    .unwrap_or(false)
+            })
+            .ok_or_else(|| anyhow!("missing Bob"))?;
+
+        let mut checked = CheckedDbMut::new(&mut db)?;
+        let mut builder = checked.fact_builder("S", "Parent")?;
+        builder.set_field("parent", alice)?;
+        builder.set_field("child", bob)?;
+
+        let fact_id = builder
+            .preview_stable_fact_id_v1()?
+            .ok_or_else(|| anyhow!("expected stable fact id preview"))?;
+        assert!(fact_id.is_fact_id_v2());
+        let fact_id_text = fact_id.to_string();
+
+        let fact = builder.commit_certified_only()?;
+        let view = checked
+            .db()
+            .get_entity(fact)
+            .ok_or_else(|| anyhow!("missing committed fact"))?;
+        assert_eq!(
+            view.attrs.get(ATTR_AXI_FACT_ID).map(|s| s.as_str()),
+            Some(fact_id_text.as_str())
+        );
+        let expected_name = format!(
+            "Parent_fact_{}",
+            fact_id_text
+                .strip_prefix(axiograph_kernel::FACT_ID_V2_PREFIX)
+                .unwrap_or(&fact_id_text)
+        );
+        assert_eq!(
+            view.attrs.get("name").map(|s| s.as_str()),
+            Some(expected_name.as_str())
+        );
         Ok(())
     }
 
@@ -1256,7 +1559,10 @@ instance I of S:
         db.build_indexes();
 
         let meta = MetaPlaneIndex::from_db(&db)?;
-        let schema = meta.schemas.get("S").ok_or_else(|| anyhow!("missing schema S"))?;
+        let schema = meta
+            .schemas
+            .get("S")
+            .ok_or_else(|| anyhow!("missing schema S"))?;
         let rules = schema
             .rewrite_rules_by_theory
             .get("T")
@@ -1294,18 +1600,47 @@ theory T on S:
 instance I of S:
   Person = {Alice}
 "#;
+        let err = crate::axi_module_import::import_axi_schema_v1_into_pathdb(&mut db, axi)
+            .expect_err("ill-typed rewrite rule should be rejected during import validation");
+        assert!(
+            err.to_string().contains("unknown endpoint `y`"),
+            "expected unknown endpoint error, got: {err:#}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn checked_db_typechecks_rewrite_steps_against_meta_plane_carrier() -> Result<()> {
+        let mut db = PathDB::new();
+        let axi = r#"
+module RouteWitnesses
+
+schema S:
+  object World
+  object Route
+  object Context
+  relation RouteWitness(from: World, to: World, route1: Route, route2: Route, ctx: Context)
+
+theory T on S:
+  rewrite witness_refl:
+    orientation: forward
+    vars: r1: Route, r2: Route
+    lhs: step(r1, RouteWitness, r2)
+    rhs: step(r1, RouteWitness, r2)
+
+instance I of S:
+  World = {A, B}
+  Route = {R1, R2}
+  Context = {C0}
+  RouteWitness = {(from=A, to=B, route1=R1, route2=R2, ctx=C0)}
+"#;
         crate::axi_module_import::import_axi_schema_v1_into_pathdb(&mut db, axi)?;
         db.build_indexes();
 
         let report = CheckedDb::check(&db)?;
-        assert!(!report.ok, "expected checked_db to report errors");
         assert!(
-            report
-                .rewrite_rule_typecheck
-                .errors
-                .iter()
-                .any(|e| e.contains("unknown endpoint `y`")),
-            "expected unknown endpoint error, got: {:?}",
+            report.rewrite_rule_typecheck.errors.is_empty(),
+            "expected compiled carrier semantics to typecheck RouteWitness rewrite steps, got: {:?}",
             report.rewrite_rule_typecheck.errors
         );
         Ok(())

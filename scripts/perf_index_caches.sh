@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Perf harness for cache/index layers (fact/text caches + path LRU).
+# Perf runner for cache/index layers (fact/text caches + path LRU).
 #
 # Run from repo root:
 #   ./scripts/perf_index_caches.sh
@@ -26,12 +26,19 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$ROOT_DIR"
 
 OUT_DIR="${OUT_DIR:-$ROOT_DIR/build/perf_index_caches}"
+case "$OUT_DIR" in
+"$ROOT_DIR"/build/* | /tmp/* | /private/tmp/*) ;;
+*)
+	echo "error: refusing to delete OUT_DIR outside repo build/ or temp paths: $OUT_DIR" >&2
+	exit 2
+	;;
+esac
 rm -rf "$OUT_DIR"
 mkdir -p "$OUT_DIR"
 
 PERF_NATIVE="${PERF_NATIVE:-1}"
 if [ "$PERF_NATIVE" = "1" ]; then
-  export RUSTFLAGS="${RUSTFLAGS:-} -C target-cpu=native"
+	export RUSTFLAGS="${RUSTFLAGS:-} -C target-cpu=native"
 fi
 export CARGO_PROFILE_RELEASE_LTO="${CARGO_PROFILE_RELEASE_LTO:-thin}"
 export CARGO_PROFILE_RELEASE_CODEGEN_UNITS="${CARGO_PROFILE_RELEASE_CODEGEN_UNITS:-1}"
@@ -48,8 +55,8 @@ PROFILE_DIR="$OUT_DIR/profiles"
 PROFILE_SEQ=0
 
 if [ "$PROFILE_ENABLED" = "0" ]; then
-  PROFILE_CPU=0
-  PROFILE_MEM=0
+	PROFILE_CPU=0
+	PROFILE_MEM=0
 fi
 
 ENTITIES="${ENTITIES:-50000}"
@@ -71,9 +78,9 @@ VERIFY="${VERIFY:-1}"
 MUTATIONS="${MUTATIONS:-0}"
 
 if [ "$LRU_ASYNC" = "1" ]; then
-  LRU_ASYNC_STR="true"
+	LRU_ASYNC_STR="true"
 else
-  LRU_ASYNC_STR="false"
+	LRU_ASYNC_STR="false"
 fi
 
 SCALES="${SCALES:-}"
@@ -82,120 +89,117 @@ echo "== Axiograph perf (index caches) =="
 echo "root: $ROOT_DIR"
 echo "out:  $OUT_DIR"
 if [ "$PROFILE_ENABLED" = "1" ]; then
-  echo "profiling: cpu=$PROFILE_CPU mem=$PROFILE_MEM format=$PROFILE_FORMAT hz=$PROFILE_HZ interval=${PROFILE_INTERVAL}s signal=$PROFILE_SIGNAL dir=$PROFILE_DIR"
+	echo "profiling: cpu=$PROFILE_CPU mem=$PROFILE_MEM format=$PROFILE_FORMAT hz=$PROFILE_HZ interval=${PROFILE_INTERVAL}s signal=$PROFILE_SIGNAL dir=$PROFILE_DIR"
 fi
 
 mkdir -p "$PROFILE_DIR"
 TIME_MODE="none"
 TIME_FLAG=""
 if [ "$PROFILE_MEM" = "1" ] && [ -x /usr/bin/time ]; then
-  if /usr/bin/time -o "$PROFILE_DIR/.time_probe" -v true >/dev/null 2>&1; then
-    TIME_MODE="file"
-    TIME_FLAG="-v"
-  elif /usr/bin/time -o "$PROFILE_DIR/.time_probe" -l true >/dev/null 2>&1; then
-    TIME_MODE="file"
-    TIME_FLAG="-l"
-  elif /usr/bin/time -v true >/dev/null 2>&1; then
-    TIME_MODE="tee"
-    TIME_FLAG="-v"
-  elif /usr/bin/time -l true >/dev/null 2>&1; then
-    TIME_MODE="tee"
-    TIME_FLAG="-l"
-  fi
-  rm -f "$PROFILE_DIR/.time_probe"
+	if /usr/bin/time -o "$PROFILE_DIR/.time_probe" -v true >/dev/null 2>&1; then
+		TIME_MODE="file"
+		TIME_FLAG="-v"
+	elif /usr/bin/time -o "$PROFILE_DIR/.time_probe" -l true >/dev/null 2>&1; then
+		TIME_MODE="file"
+		TIME_FLAG="-l"
+	elif /usr/bin/time -v true >/dev/null 2>&1; then
+		TIME_MODE="tee"
+		TIME_FLAG="-v"
+	elif /usr/bin/time -l true >/dev/null 2>&1; then
+		TIME_MODE="tee"
+		TIME_FLAG="-l"
+	fi
+	rm -f "$PROFILE_DIR/.time_probe"
 fi
 
 profile_label() {
-  PROFILE_SEQ=$((PROFILE_SEQ + 1))
-  printf "%03d_%s" "$PROFILE_SEQ" "$1"
+	PROFILE_SEQ=$((PROFILE_SEQ + 1))
+	printf "%03d_%s" "$PROFILE_SEQ" "$1"
 }
 
 axiograph_profiled() {
-  local label
-  label="$(profile_label "$1")"
-  shift
+	local label
+	label="$(profile_label "$1")"
+	shift
 
-  local cmd=("$AXIOGRAPH")
-  if [ "$PROFILE_CPU" = "1" ]; then
-    cmd+=(--profile "$PROFILE_FORMAT" --profile-out "$PROFILE_DIR/$label" --profile-hz "$PROFILE_HZ")
-    if [ -n "${PROFILE_INTERVAL:-}" ] && [ "$PROFILE_INTERVAL" -gt 0 ]; then
-      cmd+=(--profile-interval "$PROFILE_INTERVAL")
-    fi
-    if [ "${PROFILE_SIGNAL:-0}" = "1" ]; then
-      cmd+=(--profile-signal)
-    fi
-  fi
+	local cmd=("$AXIOGRAPH")
+	if [ "$PROFILE_CPU" = "1" ]; then
+		cmd+=(--profile "$PROFILE_FORMAT" --profile-out "$PROFILE_DIR/$label" --profile-hz "$PROFILE_HZ")
+		if [ -n "${PROFILE_INTERVAL:-}" ] && [ "$PROFILE_INTERVAL" -gt 0 ]; then
+			cmd+=(--profile-interval "$PROFILE_INTERVAL")
+		fi
+		if [ "${PROFILE_SIGNAL:-0}" = "1" ]; then
+			cmd+=(--profile-signal)
+		fi
+	fi
 
-  if [ "$PROFILE_MEM" = "1" ] && [ "$TIME_MODE" != "none" ] && [ -n "$TIME_FLAG" ]; then
-    local time_log="$PROFILE_DIR/${label}.time.txt"
-    if [ "$TIME_MODE" = "file" ]; then
-      /usr/bin/time -o "$time_log" "$TIME_FLAG" "${cmd[@]}" "$@"
-    else
-      { /usr/bin/time "$TIME_FLAG" "${cmd[@]}" "$@"; } 2> >(tee "$time_log" >&2)
-    fi
-  else
-    "${cmd[@]}" "$@"
-  fi
+	if [ "$PROFILE_MEM" = "1" ] && [ "$TIME_MODE" != "none" ] && [ -n "$TIME_FLAG" ]; then
+		local time_log="$PROFILE_DIR/${label}.time.txt"
+		if [ "$TIME_MODE" = "file" ]; then
+			/usr/bin/time -o "$time_log" "$TIME_FLAG" "${cmd[@]}" "$@"
+		else
+			{ /usr/bin/time "$TIME_FLAG" "${cmd[@]}" "$@"; } 2> >(tee "$time_log" >&2)
+		fi
+	else
+		"${cmd[@]}" "$@"
+	fi
 }
 
 echo ""
 echo "-- Build (via Makefile)"
 if [ "$PROFILE_CPU" = "1" ]; then
-  make binaries CARGO_FEATURES="--features profiling"
+	make binaries CARGO_FEATURES="--features profiling"
 else
-  make binaries
+	make binaries
 fi
 
 AXIOGRAPH="$ROOT_DIR/bin/axiograph"
 if [ ! -x "$AXIOGRAPH" ]; then
-  AXIOGRAPH="$ROOT_DIR/bin/axiograph-cli"
-fi
-if [ ! -x "$AXIOGRAPH" ]; then
-  echo "error: expected executable at $ROOT_DIR/bin/axiograph-cli or $ROOT_DIR/bin/axiograph"
-  exit 2
+	echo "error: expected executable at $ROOT_DIR/bin/axiograph"
+	exit 2
 fi
 
 if [ -n "$SCALES" ]; then
-  SCALES="${SCALES// /}"
-  IFS=',' read -r -a SCALE_LIST <<< "$SCALES"
+	SCALES="${SCALES// /}"
+	IFS=',' read -r -a SCALE_LIST <<<"$SCALES"
 else
-  SCALE_LIST=("$ENTITIES")
+	SCALE_LIST=("$ENTITIES")
 fi
 
 run_idx=0
 for SCALE in "${SCALE_LIST[@]}"; do
-  run_idx=$((run_idx + 1))
-  echo ""
-  echo "-- Run $run_idx: entities=$SCALE"
+	run_idx=$((run_idx + 1))
+	echo ""
+	echo "-- Run $run_idx: entities=$SCALE"
 
-  ARGS=(
-    tools perf indexes
-    --entities "$SCALE"
-    --edges-per-entity "$EDGES_PER_ENTITY"
-    --rel-types "$REL_TYPES"
-    --index-depth "$INDEX_DEPTH"
-    --path-len "$PATH_LEN"
-    --path-queries "$PATH_QUERIES"
-    --fact-queries "$FACT_QUERIES"
-    --text-queries "$TEXT_QUERIES"
-    --lru-capacity "$LRU_CAPACITY"
-    --lru-async "$LRU_ASYNC_STR"
-    --lru-queue "$LRU_QUEUE"
-    --index-mode "$INDEX_MODE"
-    --async-wait-secs "$ASYNC_WAIT_SECS"
-    --seed "$SEED"
-    --out-json "$OUT_DIR/report_${run_idx}_${SCALE}.json"
-  )
+	ARGS=(
+		tools perf indexes
+		--entities "$SCALE"
+		--edges-per-entity "$EDGES_PER_ENTITY"
+		--rel-types "$REL_TYPES"
+		--index-depth "$INDEX_DEPTH"
+		--path-len "$PATH_LEN"
+		--path-queries "$PATH_QUERIES"
+		--fact-queries "$FACT_QUERIES"
+		--text-queries "$TEXT_QUERIES"
+		--lru-capacity "$LRU_CAPACITY"
+		--lru-async "$LRU_ASYNC_STR"
+		--lru-queue "$LRU_QUEUE"
+		--index-mode "$INDEX_MODE"
+		--async-wait-secs "$ASYNC_WAIT_SECS"
+		--seed "$SEED"
+		--out-json "$OUT_DIR/report_${run_idx}_${SCALE}.json"
+	)
 
-  if [ "$VERIFY" = "1" ]; then
-    ARGS+=(--verify)
-  fi
+	if [ "$VERIFY" = "1" ]; then
+		ARGS+=(--verify)
+	fi
 
-  if [ "$MUTATIONS" -gt 0 ]; then
-    ARGS+=(--mutations "$MUTATIONS")
-  fi
+	if [ "$MUTATIONS" -gt 0 ]; then
+		ARGS+=(--mutations "$MUTATIONS")
+	fi
 
-  axiograph_profiled "indexes_${SCALE}" "${ARGS[@]}"
+	axiograph_profiled "indexes_${SCALE}" "${ARGS[@]}"
 done
 
 echo ""

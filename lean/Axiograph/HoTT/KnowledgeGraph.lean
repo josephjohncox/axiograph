@@ -3,11 +3,8 @@ import Axiograph.HoTT.Core
 import Axiograph.Prob.Verified
 
 -- =============================================================================
--- Axiograph.HoTT.KnowledgeGraph - HoTT-based knowledge graph core (Lean port)
+-- Axiograph.HoTT.KnowledgeGraph - HoTT-based knowledge graph core
 -- =============================================================================
---
--- This module is a minimal, auditable port of
--- `idris/Axiograph/HoTT/KnowledgeGraph.idr`.
 --
 -- It defines:
 -- - a dependent knowledge-graph interface (`KnowledgeGraph`)
@@ -70,7 +67,7 @@ inductive KGPathEquiv {n : Nat} {kg : KnowledgeGraph.{u} n} :
   | KGPEAssoc {a b c d : EntityId n} {p : KGPath kg a b} {q : KGPath kg b c} {r : KGPath kg c d} :
       KGPathEquiv (KGPath.KGTrans (KGPath.KGTrans p q) r) (KGPath.KGTrans p (KGPath.KGTrans q r))
 
--- 3-cells: paths between path equivalences (Idris collapses higher cells here).
+-- 3-cells: paths between path equivalences.
 abbrev KGPath3 {n : Nat} {kg : KnowledgeGraph.{u} n} {a b : EntityId n}
     {p q : KGPath kg a b} (pe1 pe2 : KGPathEquiv p q) : Prop :=
   pe1 = pe2

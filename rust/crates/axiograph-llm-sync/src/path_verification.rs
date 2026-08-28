@@ -1,8 +1,8 @@
 //! Path Verification: Type-safe path validation for reconciliation
 //!
-//! This module provides runtime verification of paths that mirrors
-//! the Lean-checked semantics and certificate discipline. While we can't have full dependent
-//! types in Rust, we use:
+//! This module provides runtime path guardrails that align with the
+//! certificate discipline. While we can't have full dependent types in Rust, we
+//! use:
 //!
 //! 1. **Phantom types** for relationship types
 //! 2. **Builder patterns** for constructing valid paths
@@ -229,28 +229,27 @@ pub enum PathError {
 
 /// Builder for constructing valid paths
 pub struct PathBuilder {
-    current: Option<Uuid>,
+    current: Uuid,
     edges: Vec<EdgeData>,
 }
 
 impl PathBuilder {
     pub fn new(start: Uuid) -> Self {
         Self {
-            current: Some(start),
+            current: start,
             edges: vec![],
         }
     }
 
-    /// Add an edge to the path
+    /// Add an edge to the path.
     pub fn edge<R: Relationship>(mut self, target: Uuid, confidence: f32) -> Self {
-        let source = self.current.expect("Path already terminated");
         self.edges.push(EdgeData {
-            source,
+            source: self.current,
             target,
             relation: R::name().to_string(),
             confidence: Weight::new(confidence),
         });
-        self.current = Some(target);
+        self.current = target;
         self
     }
 
@@ -264,9 +263,7 @@ impl PathBuilder {
                 reason: "Empty path".to_string(),
             })?;
 
-        let end = self.current.ok_or(PathError::Invalid {
-            reason: "Path not properly constructed".to_string(),
-        })?;
+        let end = self.current;
 
         let path = Path {
             edges: self.edges,
@@ -306,6 +303,12 @@ pub struct FactNode {
     pub weight: f32,
 }
 
+impl Default for VerifiedGraph {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl VerifiedGraph {
     pub fn new() -> Self {
         Self {
@@ -343,7 +346,7 @@ impl VerifiedGraph {
         }
 
         // Validate confidence
-        if confidence < 0.0 || confidence > 1.0 {
+        if !(0.0..=1.0).contains(&confidence) {
             return Err(GraphError::InvalidConfidence(confidence));
         }
 
@@ -407,12 +410,9 @@ impl VerifiedGraph {
     /// Find the best (highest confidence) path
     pub fn best_path(&self, from: Uuid, to: Uuid) -> Option<Path> {
         let paths = self.find_paths(from, to, 5);
-        paths.into_iter().max_by(|a, b| {
-            a.confidence()
-                .value()
-                .partial_cmp(&b.confidence().value())
-                .unwrap()
-        })
+        paths
+            .into_iter()
+            .max_by(|a, b| a.confidence().value().total_cmp(&b.confidence().value()))
     }
 
     /// Check for conflicts along paths

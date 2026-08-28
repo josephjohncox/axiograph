@@ -1,0 +1,29 @@
+version competency_question_bundle_v1
+
+question titanium_has_prerequisite_concept:
+  ask: What should I know before machining titanium?
+  about: MachiningLearning.requires
+  expect: exists MachiningLearning.requires(concept=WorkHardening, prereq=?prereq)
+  min_rows: 1
+  weight: 1.5
+
+question titanium_examples_exist:
+  ask: Show examples that demonstrate titanium machining concepts.
+  about: MachiningLearning.demonstrates
+  expect: exists MachiningLearning.demonstrates(example=?example, concept=WorkHardening)
+  min_rows: 1
+  weight: 1.5
+
+question high_speed_titanium_risk_is_modeled:
+  ask: What can go wrong if I use high speed on titanium?
+  about: MachiningLearning.causes
+  expect: exists MachiningLearning.causes(op=Op_TitaniumFailure, outcome=?outcome)
+  min_rows: 1
+  weight: 2.0
+
+question operation_has_applicable_guideline:
+  ask: What safety guideline applies to a machining operation?
+  about: MachiningLearning.explains
+  expect: exists MachiningLearning.explains(concept=?concept, guideline=?guideline)
+  min_rows: 1
+  weight: 1.0

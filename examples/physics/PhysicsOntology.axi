@@ -402,7 +402,7 @@ instance PhysicsPrimer of Physics:
     (connection=Conn_LeviCivita_Schwarzschild, curvature=Curv_Schwarzschild)
   }
 
-  DifferentialForm = {Form_Maxwell_F, Form_Volume_M4}
+  DifferentialForm = {Form_Maxwell_F, Form_Maxwell_F_Dual, Form_Volume_M4}
   SymplecticForm = {Form_Symplectic_Omega_HO}
 
   FormOn = {
@@ -420,7 +420,7 @@ instance PhysicsPrimer of Physics:
   SymplecticFormOn = {(form=Form_Symplectic_Omega_HO, manifold=PhaseSpace_HO)}
   SymplecticManifoldHasForm = {(manifold=PhaseSpace_HO, form=Form_Symplectic_Omega_HO)}
 
-  -- Hodge star over Minkowski metric (toy; signature conventions matter).
+  -- Hodge star over Minkowski metric (compact example; signature conventions matter).
   HodgeStar = {(metric=Metric_Minkowski, input=Form_Maxwell_F, output=Form_Maxwell_F_Dual)}
 
   -- --------------------------------------------------------------------------

@@ -1,10 +1,10 @@
-//! End-to-End tests for LLM ↔ KG synchronization
+//! End-to-end tests for LLM evidence extraction and grounding.
 //!
 //! These tests verify the complete pipeline:
 //! 1. Conversation → Fact extraction
 //! 2. Fact validation
 //! 3. Conflict detection
-//! 4. Storage to both .axi and PathDB
+//! 4. Evidence/cache materialization
 //! 5. Grounding context retrieval
 //! 6. Review workflow
 //! 7. Rollback
@@ -20,8 +20,6 @@ fn test_env() -> (Arc<UnifiedStorage>, SyncManager, tempfile::TempDir) {
     let dir = tempdir().unwrap();
     let config = StorageConfig {
         axi_dir: dir.path().to_path_buf(),
-        pathdb_path: dir.path().join("test.axpd"),
-        changelog_path: dir.path().join("changelog.json"),
         watch_files: false,
         ..Default::default()
     };
@@ -42,7 +40,8 @@ fn test_env() -> (Arc<UnifiedStorage>, SyncManager, tempfile::TempDir) {
             name: "test".to_string(),
             endpoint: "local".to_string(),
         },
-    );
+    )
+    .expect("valid sync configuration");
 
     (storage, manager, dir)
 }
@@ -95,25 +94,17 @@ async fn test_full_extraction_pipeline() {
 }
 
 #[tokio::test]
-async fn test_facts_land_in_axi() {
-    let (storage, sync, dir) = test_env();
+async fn sync_never_writes_accepted_axi() {
+    let (_storage, sync, dir) = test_env();
 
     sync.sync_from_conversation(&machinist_conversation(), None)
         .await
         .unwrap();
 
-    // Check .axi file was created
-    let axi_path = dir.path().join("llm_extracted.axi");
-
-    // May not exist if all facts need review
-    if axi_path.exists() {
-        let content = std::fs::read_to_string(&axi_path).unwrap();
-        assert!(content.len() > 0, "Should have content");
-        assert!(
-            content.contains("LLM extraction"),
-            "Should have source comment"
-        );
-    }
+    assert!(
+        !dir.path().join("llm_extracted.axi").exists(),
+        "runtime evidence sync must not create accepted .axi files"
+    );
 }
 
 #[tokio::test]
@@ -125,16 +116,15 @@ async fn test_facts_land_in_pathdb() {
         .unwrap();
 
     // Check PathDB has entities
-    let pathdb = storage.pathdb();
-    let db = pathdb.read();
+    let db = storage.pathdb();
 
     // Should have at least one entity type
     let has_entities = ["Material", "Tool", "TacitKnowledge"]
         .iter()
-        .any(|t| db.find_by_type(t).map_or(false, |e| !e.is_empty()));
+        .any(|t| db.find_by_type(t).is_some_and(|e| !e.is_empty()));
 
     // May not have entities if all need review, which is also valid
-    println!("Entities found in PathDB: {}", has_entities);
+    println!("Entities found in PathDB: {has_entities}");
 }
 
 #[tokio::test]
@@ -260,11 +250,33 @@ async fn test_grounding_context_basic() {
         .build_grounding_context("titanium cutting", 10)
         .unwrap();
 
+    // Current grounding is explicitly evidence-plane; process-local PathDB
+    // rows never acquire accepted or certificate-backed authority.
+    assert_eq!(context.provenance.plane, GroundingPlaneV1::Evidence);
+    assert_eq!(
+        context.provenance.source,
+        "unified_storage_process_local_evidence"
+    );
+
     // Should have suggestions
     assert!(!context.suggested_queries.is_empty());
 
-    // Should have guardrails for machining topic
-    assert!(!context.active_guardrails.is_empty());
+    // Grounding must not invent a domain guardrail that was never stored.
+    assert!(context.active_guardrails.is_empty());
+
+    assert!(sync.build_grounding_context("titanium", 0).is_err());
+    assert!(sync
+        .build_grounding_context(
+            "titanium",
+            axiograph_llm_sync::grounding::MAX_GROUNDING_FACTS + 1,
+        )
+        .is_err());
+    assert!(sync
+        .build_grounding_context(
+            &"q".repeat(axiograph_llm_sync::grounding::MAX_GROUNDING_QUERY_BYTES + 1),
+            1,
+        )
+        .is_err());
 }
 
 #[tokio::test]
@@ -306,8 +318,6 @@ async fn test_pending_review_workflow() {
     let dir = tempdir().unwrap();
     let config = StorageConfig {
         axi_dir: dir.path().to_path_buf(),
-        pathdb_path: dir.path().join("test.axpd"),
-        changelog_path: dir.path().join("changelog.json"),
         watch_files: false,
         ..Default::default()
     };
@@ -326,7 +336,8 @@ async fn test_pending_review_workflow() {
             name: "test".to_string(),
             endpoint: "local".to_string(),
         },
-    );
+    )
+    .expect("valid sync configuration");
 
     sync.sync_from_conversation(&machinist_conversation(), None)
         .await
@@ -353,8 +364,6 @@ async fn test_reject_fact() {
     let dir = tempdir().unwrap();
     let config = StorageConfig {
         axi_dir: dir.path().to_path_buf(),
-        pathdb_path: dir.path().join("test.axpd"),
-        changelog_path: dir.path().join("changelog.json"),
         watch_files: false,
         ..Default::default()
     };
@@ -372,7 +381,8 @@ async fn test_reject_fact() {
             name: "test".to_string(),
             endpoint: "local".to_string(),
         },
-    );
+    )
+    .expect("valid sync configuration");
 
     sync.sync_from_conversation(&machinist_conversation(), None)
         .await
@@ -438,13 +448,13 @@ async fn test_conflict_detection() {
 
 #[tokio::test]
 async fn test_event_emission() {
-    let (storage, mut sync, _dir) = test_env();
+    let (_storage, mut sync, _dir) = test_env();
 
     let events = Arc::new(std::sync::Mutex::new(Vec::new()));
     let events_clone = Arc::clone(&events);
 
     sync.on_event(Box::new(move |event| {
-        events_clone.lock().unwrap().push(format!("{:?}", event));
+        events_clone.lock().unwrap().push(format!("{event:?}"));
     }));
 
     sync.sync_from_conversation(&machinist_conversation(), None)
@@ -570,10 +580,7 @@ async fn test_large_conversation() {
     let conversation: Vec<ConversationTurn> = (0..100)
         .map(|i| ConversationTurn {
             role: Role::Assistant,
-            content: format!(
-                "Material{} is a Material with property{} of value{}.",
-                i, i, i
-            ),
+            content: format!("Material{i} is a Material with property{i} of value{i}."),
             timestamp: Utc::now(),
             metadata: Default::default(),
         })
@@ -603,14 +610,15 @@ async fn test_custom_provider() {
         endpoint: "http://localhost:8080".to_string(),
     };
 
-    let sync = SyncManager::new(storage, SyncConfig::default(), custom_provider);
+    let sync = SyncManager::new(storage, SyncConfig::default(), custom_provider)
+        .expect("valid sync configuration");
 
     // Should work with custom provider
     let result = sync
         .sync_from_conversation(&machinist_conversation(), None)
         .await
         .unwrap();
-    println!("Custom provider result: {:?}", result);
+    println!("Custom provider result: {result:?}");
 }
 
 // ============================================================================
@@ -619,7 +627,7 @@ async fn test_custom_provider() {
 
 #[tokio::test]
 async fn test_full_roundtrip() {
-    let (storage, sync, dir) = test_env();
+    let (storage, sync, _dir) = test_env();
 
     // 1. Extract from conversation
     sync.sync_from_conversation(&machinist_conversation(), None)
@@ -627,24 +635,14 @@ async fn test_full_roundtrip() {
         .unwrap();
 
     // 2. Build grounding context
-    let context = sync.build_grounding_context("titanium", 5).unwrap();
+    let _context = sync.build_grounding_context("titanium", 5).unwrap();
 
-    // 3. Check .axi file
-    let axi_files: Vec<_> = std::fs::read_dir(dir.path())
-        .unwrap()
-        .filter_map(|e| e.ok())
-        .filter(|e| e.path().extension().map_or(false, |ext| ext == "axi"))
-        .collect();
+    // 3. Check the process-local PathDB evidence view.
+    let _db = storage.pathdb();
 
-    println!("Created {} .axi files", axi_files.len());
-
-    // 4. Check PathDB
-    let pathdb = storage.pathdb();
-    let db = pathdb.read();
-
-    // 5. Verify end state
+    // 4. Verify end state
     let stats = sync.stats();
-    println!("Final stats: {:?}", stats);
+    println!("Final stats: {stats:?}");
 
     // Should have processed something
     assert!(

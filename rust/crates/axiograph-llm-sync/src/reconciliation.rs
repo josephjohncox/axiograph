@@ -39,12 +39,40 @@ use uuid::Uuid;
 // ============================================================================
 
 /// Weight assigned to a fact (0.0 to 1.0)
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize)]
 pub struct Weight(f32);
 
+impl<'de> Deserialize<'de> for Weight {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = f32::deserialize(deserializer)?;
+        if !value.is_finite() {
+            return Err(serde::de::Error::custom(
+                "weight must be a finite value in [0.0, 1.0]",
+            ));
+        }
+        if !(0.0..=1.0).contains(&value) {
+            return Err(serde::de::Error::custom(
+                "weight must be in the closed interval [0.0, 1.0]",
+            ));
+        }
+        Ok(Self(value))
+    }
+}
+
 impl Weight {
+    /// Normalize runtime evidence weight conservatively.
+    ///
+    /// Finite values clamp to `[0, 1]`; non-finite values become zero. The wire
+    /// deserializer is stricter and rejects non-finite or out-of-range values.
     pub fn new(w: f32) -> Self {
-        Self(w.clamp(0.0, 1.0))
+        if w.is_finite() {
+            Self(w.clamp(0.0, 1.0))
+        } else {
+            Self(0.0)
+        }
     }
 
     pub fn value(&self) -> f32 {
@@ -881,10 +909,10 @@ pub struct ResolvedConflict {
 impl std::fmt::Display for crate::LLMProvider {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            crate::LLMProvider::OpenAI { model } => write!(f, "openai:{}", model),
-            crate::LLMProvider::Anthropic { model } => write!(f, "anthropic:{}", model),
-            crate::LLMProvider::Local { model_path } => write!(f, "local:{}", model_path),
-            crate::LLMProvider::Custom { name, .. } => write!(f, "custom:{}", name),
+            crate::LLMProvider::OpenAI { model } => write!(f, "openai:{model}"),
+            crate::LLMProvider::Anthropic { model } => write!(f, "anthropic:{model}"),
+            crate::LLMProvider::Local { model_path } => write!(f, "local:{model_path}"),
+            crate::LLMProvider::Custom { name, .. } => write!(f, "custom:{name}"),
         }
     }
 }
@@ -912,6 +940,18 @@ mod tests {
 
         let under = Weight::new(-0.5);
         assert!((under.value() - 0.0).abs() < 0.001);
+
+        for non_finite in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            assert_eq!(Weight::new(non_finite).value(), 0.0);
+        }
+    }
+
+    #[test]
+    fn test_weight_deserialization_rejects_invalid_values() {
+        assert!(serde_json::from_str::<Weight>("0.75").is_ok());
+        assert!(serde_json::from_str::<Weight>("1.25").is_err());
+        assert!(serde_json::from_str::<Weight>("-0.1").is_err());
+        assert!(serde_json::from_str::<Weight>("null").is_err());
     }
 
     #[test]

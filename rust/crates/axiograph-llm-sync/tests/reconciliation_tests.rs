@@ -6,18 +6,6 @@ use chrono::Utc;
 use std::collections::HashMap;
 use uuid::Uuid;
 
-fn test_source_expert() -> SourceCredibility {
-    let mut source = SourceCredibility::new("expert", 0.95);
-    source
-        .domain_expertise
-        .insert("machining".to_string(), Weight::new(0.99));
-    source.track_record = TrackRecord {
-        correct: 100,
-        incorrect: 5,
-    };
-    source
-}
-
 fn test_source_llm() -> SourceCredibility {
     SourceCredibility::new("llm", 0.7)
 }
@@ -29,7 +17,7 @@ fn test_source_user() -> SourceCredibility {
 fn make_fact(name: &str, confidence: f32) -> ExtractedFact {
     ExtractedFact {
         id: Uuid::new_v4(),
-        claim: format!("{} is a Material", name),
+        claim: format!("{name} is a Material"),
         structured: StructuredFact::Entity {
             entity_type: "Material".to_string(),
             name: name.to_string(),
@@ -375,8 +363,6 @@ fn test_bayesian_api() {
 
 #[test]
 fn test_decay_all() {
-    use chrono::Duration;
-
     let mut engine = ReconciliationEngine::new(ReconciliationConfig {
         decay_half_life: 30.0,
         ..Default::default()

@@ -39,9 +39,10 @@ fn normalize_path_v2_cancels_adjacent_inverse_pair() {
     );
 
     // The derived rewrite proof should be a single `cancel_head` at the root.
-    let (normalized, derivation) = expr.normalize_with_derivation();
+    let (normalized, steps) = expr
+        .normalize_with_derivation()
+        .expect("well-typed path must produce a replay trace");
     assert_eq!(normalized, PathExprV2::Reflexive { entity: 1 });
-    let steps = derivation.expect("expected a derivation for a simple cancellation");
     assert_eq!(
         steps,
         vec![PathRewriteStepV2 {
@@ -75,9 +76,10 @@ fn normalize_path_v2_double_inverse_is_noop() {
 
     assert_eq!(expr.normalize(), base.normalize());
 
-    let (normalized, derivation) = expr.normalize_with_derivation();
+    let (normalized, steps) = expr
+        .normalize_with_derivation()
+        .expect("well-typed path must produce a replay trace");
     assert_eq!(normalized, base.normalize());
-    let steps = derivation.expect("expected a derivation for inv(inv(p))");
     assert!(
         steps
             .first()
@@ -153,7 +155,7 @@ fn with_confidence_filters_low_conf_edges() {
 
 #[test]
 fn delta_f_is_functorial_on_objects_and_arrows() {
-    let optimizer = ProofProducingOptimizer::default();
+    let optimizer = ProofProducingOptimizer;
 
     // S0: A --f--> B
     let schema_s0 = SchemaV1 {

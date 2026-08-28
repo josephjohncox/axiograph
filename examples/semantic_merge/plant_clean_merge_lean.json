@@ -1,0 +1,127 @@
+{
+  "version": "semantic_vcs_lean_merge_plan_v1",
+  "base": {
+    "anchor": {
+      "accepted_ref": "heads/main",
+      "accepted_snapshot_id": "axi:snapshot:v2:sha256:4933c9acf67d0e4b039129ee9b07bf2b17454924c211208e8c605757b8eed183",
+      "kernel_ir_digest": "axi:object-blob:v2:sha256:c161589a3d2b97b488cb637b896e66f88d7c506d0476fca98bbddcf6054fd57e",
+      "context_id": "plant-ops",
+      "world_id": "accepted"
+    },
+    "refs": [
+      {
+        "kind": "schema_object",
+        "id": "PlantOps.MaterialLot"
+      },
+      {
+        "kind": "relation_object",
+        "id": "PlantOps.RunUsesLot"
+      },
+      {
+        "kind": "theory_obligation",
+        "id": "PlantOpsRules.RunUsesLot.key"
+      }
+    ]
+  },
+  "left": {
+    "anchor": {
+      "accepted_ref": "heads/review/procurement-certification",
+      "accepted_snapshot_id": "axi:snapshot:v2:sha256:66bdec2a2ca77f5064d7d4e294dacea270f14b9087b5f2b3ff952ebf45355c58",
+      "kernel_ir_digest": "axi:object-blob:v2:sha256:8a8f46c360b57c290ed888a776d8ba5450f218e349d9f7dd48053701879fec86",
+      "context_id": "plant-procurement",
+      "world_id": "review"
+    },
+    "refs": [
+      {
+        "kind": "schema_object",
+        "id": "PlantProcurement.SupplierCertificate"
+      },
+      {
+        "kind": "relation_object",
+        "id": "PlantProcurement.ReleaseDocumentForLot"
+      },
+      {
+        "kind": "theory_obligation",
+        "id": "ProcurementRules.ReleaseDocumentForLot.key"
+      },
+      {
+        "kind": "implementation_surface",
+        "id": "erp.receiving.release_document_service"
+      }
+    ]
+  },
+  "right": {
+    "anchor": {
+      "accepted_ref": "heads/review/simulation-safety",
+      "accepted_snapshot_id": "axi:snapshot:v2:sha256:3d8d1ab71667f3439aee1e50a6448bf3fb56d2b8cd86049bb31b2f6c61f96234",
+      "kernel_ir_digest": "axi:object-blob:v2:sha256:252eefd980a59ea00248d05a014c6f753f5d3671b43414dbbdbf6f41c4688fe2",
+      "context_id": "plant-simulation",
+      "world_id": "review"
+    },
+    "refs": [
+      {
+        "kind": "schema_object",
+        "id": "PlantSimulation.SimulationScenario"
+      },
+      {
+        "kind": "relation_object",
+        "id": "PlantSimulation.OptimizerEvaluatesScenario"
+      },
+      {
+        "kind": "theory_obligation",
+        "id": "SimulationRules.OptimizerEvaluatesScenario.key"
+      },
+      {
+        "kind": "implementation_surface",
+        "id": "sim.optimizer.startup_schedule"
+      }
+    ]
+  },
+  "result": {
+    "anchor": {
+      "accepted_ref": "heads/main",
+      "accepted_snapshot_id": "axi:snapshot:v2:sha256:70525357e75da236fe4882400b7300123aba2accfd4ce1a238c98f74203e8cb0",
+      "kernel_ir_digest": "axi:object-blob:v2:sha256:f4137a4221f12daa8f4a63bc7aa2812c060a333f7b92ce4941c877308d6749f7",
+      "context_id": "plant-ops",
+      "world_id": "accepted"
+    },
+    "refs": [
+      {
+        "kind": "schema_object",
+        "id": "PlantProcurement.SupplierCertificate"
+      },
+      {
+        "kind": "relation_object",
+        "id": "PlantProcurement.ReleaseDocumentForLot"
+      },
+      {
+        "kind": "theory_obligation",
+        "id": "ProcurementRules.ReleaseDocumentForLot.key"
+      },
+      {
+        "kind": "implementation_surface",
+        "id": "erp.receiving.release_document_service"
+      },
+      {
+        "kind": "schema_object",
+        "id": "PlantSimulation.SimulationScenario"
+      },
+      {
+        "kind": "relation_object",
+        "id": "PlantSimulation.OptimizerEvaluatesScenario"
+      },
+      {
+        "kind": "theory_obligation",
+        "id": "SimulationRules.OptimizerEvaluatesScenario.key"
+      },
+      {
+        "kind": "implementation_surface",
+        "id": "sim.optimizer.startup_schedule"
+      }
+    ]
+  },
+  "blockers": [],
+  "resolver_steps": [],
+  "residual_obligations": [],
+  "trust_class": "runtime_checked"
+}

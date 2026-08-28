@@ -31,48 +31,42 @@ echo ""
 echo "-- Build (via Makefile)"
 make binaries
 
-AXIOGRAPH="$ROOT_DIR/bin/axiograph-cli"
+AXIOGRAPH="$ROOT_DIR/bin/axiograph"
 if [ ! -x "$AXIOGRAPH" ]; then
-  AXIOGRAPH="$ROOT_DIR/bin/axiograph"
-fi
-if [ ! -x "$AXIOGRAPH" ]; then
-  echo "error: expected executable at $ROOT_DIR/bin/axiograph-cli or $ROOT_DIR/bin/axiograph"
-  exit 2
+	echo "error: expected executable at $ROOT_DIR/bin/axiograph"
+	exit 2
 fi
 
 echo ""
 echo "-- A) Crawl + ingest"
 "$AXIOGRAPH" ingest web ingest \
-  --out-dir "$OUT_DIR/ingest" \
-  --crawl \
-  --seed "https://en.wikipedia.org/wiki/Physics" \
-  --max-pages "$MAX_PAGES" \
-  --max-depth "$MAX_DEPTH" \
-  --delay-ms "$DELAY_MS" \
-  --respect-robots \
-  --same-host \
-  --domain general
+	--out-dir "$OUT_DIR/ingest" \
+	--crawl \
+	--seed "https://en.wikipedia.org/wiki/Physics" \
+	--max-pages "$MAX_PAGES" \
+	--max-depth "$MAX_DEPTH" \
+	--delay-ms "$DELAY_MS" \
+	--respect-robots \
+	--same-host \
+	--domain general
 
 echo ""
 echo "-- B) Draft a candidate axi_v1 module (untrusted) from proposals"
 "$AXIOGRAPH" discover draft-module "$OUT_DIR/ingest/proposals.json" \
-  --out "$OUT_DIR/wikipedia_discovered.axi" \
-  --module "WikipediaDiscovered" \
-  --schema "WikipediaDiscovered" \
-  --infer-constraints
+	--out "$OUT_DIR/wikipedia_discovered.axi" \
+	--module "WikipediaDiscovered" \
+	--schema "WikipediaDiscovered" \
+	--infer-constraints
 
 echo ""
-echo "-- C) Import drafted module into PathDB (.axpd) and run tooling"
-"$AXIOGRAPH" db pathdb import-axi "$OUT_DIR/wikipedia_discovered.axi" --out "$OUT_DIR/wikipedia_discovered.axpd"
-
-"$AXIOGRAPH" tools analyze network "$OUT_DIR/wikipedia_discovered.axpd" --plane both --format json --out "$OUT_DIR/network.json"
-"$AXIOGRAPH" check quality "$OUT_DIR/wikipedia_discovered.axpd" --plane both --profile fast --format json --no-fail --out "$OUT_DIR/quality.json"
+echo "-- C) Run tooling over process-local state derived from the candidate .axi"
+"$AXIOGRAPH" tools analyze network "$OUT_DIR/wikipedia_discovered.axi" --plane both --format json --out "$OUT_DIR/network.json"
+"$AXIOGRAPH" check quality "$OUT_DIR/wikipedia_discovered.axi" --plane both --profile fast --format json --no-fail --out "$OUT_DIR/quality.json"
 
 echo ""
 echo "Done."
 echo "Outputs:"
 echo "  $OUT_DIR/ingest/proposals.json"
 echo "  $OUT_DIR/wikipedia_discovered.axi"
-echo "  $OUT_DIR/wikipedia_discovered.axpd"
 echo "  $OUT_DIR/network.json"
 echo "  $OUT_DIR/quality.json"

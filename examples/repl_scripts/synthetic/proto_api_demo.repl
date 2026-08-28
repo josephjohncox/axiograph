@@ -1,0 +1,40 @@
+# Axiograph REPL script: proto_api scenario demo
+#
+# Run (from repo root):
+#   make binaries
+#   ./bin/axiograph repl --script examples/repl_scripts/synthetic/proto_api_demo.repl
+#
+# Or (if installed to PATH):
+#   axiograph repl --script examples/repl_scripts/synthetic/proto_api_demo.repl
+#
+# Debug via cargo:
+#   cd rust && cargo run -p axiograph-cli -- repl --script ../examples/repl_scripts/synthetic/proto_api_demo.repl
+
+# Generate a proto/gRPC-style API surface with HttpEndpoint mappings, heuristic workflows,
+# and explicit path-witness artifacts.
+gen proto_api 3 3 1
+
+stats
+
+# List services.
+q select ?svc where ?svc is ProtoService limit 10
+
+# List RPCs for one service.
+q select ?rpc where name("acme.svc0.v1.Service0") -proto_service_has_rpc-> ?rpc limit 20
+
+# Follow HTTP annotations: RPC → HttpEndpoint.
+q select ?ep where name("acme.svc0.v1.Service0.GetWidget") -proto_rpc_http_endpoint-> ?ep limit 10
+
+# Docs can mention the RPC directly or mention the HTTP endpoint and arrive at the RPC.
+q select ?rpc where name("doc_proto_api_0") -mentions_rpc-> ?rpc limit 10
+q select ?rpc where name("doc_proto_api_0") -mentions_http_endpoint/proto_http_endpoint_of_rpc-> ?rpc max_hops 3 limit 10
+
+# Compare the recorded path witnesses for the same endpoint.
+q select ?p where ?p is PathWitness, ?p -from-> name("doc_proto_api_0") limit 10
+
+# Tacit + approximate knowledge:
+# - workflow grouping and suggested ordering are heuristic (lower confidence)
+# - we also record an "observed_next" ordering alongside explicit path witnesses
+q select ?next where name("acme.svc0.v1.Service0.CreateWidget") -workflow_suggests_order-> ?next limit 10
+q select ?next where name("acme.svc0.v1.Service0.CreateWidget") -observed_next-> ?next limit 10
+q select ?p where ?p is PathWitness, ?p -from-> name("acme.svc0.v1.Service0.CreateWidget") limit 10

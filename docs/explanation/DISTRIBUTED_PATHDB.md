@@ -20,28 +20,35 @@ For the base single-node design, see `docs/explanation/PATHDB_DESIGN.md`.
 
 ## 0. Executive summary
 
-PathDB today is a single-node, binary, indexed KG store. The most robust path to distribution is:
+PathDB today is a single-node, binary, indexed execution/query substrate. The
+most robust path to distribution is:
 
-1. Treat **facts** as the canonical replicated state (append-only log + snapshots).
-2. Treat **PathDB indexes** (bitmaps/path indexes) as **derived, rebuildable state** per shard/replica.
-3. Ensure every query result is bound to a **snapshot id** and accompanied by a **certificate**.
-4. If you need offline/third-party verification, bind certificates to a **cryptographic commitment** (Merkle root / transparency log) of the snapshot.
+1. Treat accepted canonical **`.axi` modules plus semantic VCS commits** as the
+   replicated meaning state.
+2. Treat ordered, content-digested evidence overlays as reviewable attachments until promoted.
+3. Treat **PathDB indexes** (bitmaps/path indexes) as **derived, rebuildable
+   state** per shard/replica.
+4. Ensure every machine query is compiled as `CompiledFiniteQuery` and every
+   certified result is bound to a canonical `.axi` anchor through
+   envelope V3 / `query_result_v4` witnesses.
+5. If you need offline/third-party verification, bind witnesses to a
+   cryptographic commitment (Merkle root / transparency log) of the accepted
+   snapshot/ref.
 
-In other words: distribute the *data plane*, keep the *meaning plane* stable.
+In other words: distribute the execution/data plane, keep the accepted `.axi`
+meaning plane and semantic VCS stable.
 
-### 0.1 Read replicas (v1, implemented)
+### 0.1 Read replicas (not implemented)
 
-We already have a practical, semantics-preserving “write master / read replica” primitive:
+AxiStore deliberately has no filesystem-copy replication primitive. Copying a
+live catalog or mutable pointer can create a state that never existed and is not
+an authenticated transition.
 
-- treat an accepted-plane directory as the unit of replication (it contains both the accepted snapshot store and the PathDB WAL),
-- replicate by copying missing **immutable, content-addressed objects** first,
-- then update the small mutable `HEAD` pointers.
-
-This is implemented as a filesystem-only command:
-
-- `axiograph db accept sync --from <master_dir> --dir <replica_dir> --layer both`
-
-See `docs/howto/SNAPSHOT_STORE.md` for usage and gotchas.
+A future replica protocol must transfer immutable objects by digest, validate
+the full reachable closure, and advance a local SQLite catalog through the same
+repository-bound generation CAS and audit event used by local promotion. Until
+that protocol exists, read replicas are an explicit non-claim. PathDB indexes
+may be rebuilt independently from an authenticated accepted snapshot.
 
 ---
 
@@ -57,18 +64,19 @@ See `docs/howto/SNAPSHOT_STORE.md` for usage and gotchas.
 
 Every answer certificate must say:
 
-- which snapshot of the KG it is about (logical time / commit index),
-- which semantics version it assumes (certificate kind + version),
-- and how to validate any data dependencies.
+- which accepted `.axi`/semantic VCS anchor and derived PathDB snapshot it is about,
+- which compiled query/IR it answers (`CompiledFiniteQuery` metadata),
+- which semantics version it assumes (for active query witnesses, `query_result_v4`),
+- and how to validate any data dependencies, overlays, or evidence attachments.
 
 In a distributed system, “what snapshot?” becomes the *hard part*.
 
-**Practical note (current repo)**: for auditability and offline review we can represent a snapshot as:
-
-- `.axpd` (binary PathDB, fast to load), and/or
-- `.axi` using the reversible `PathDBExportV1` schema (`axiograph db pathdb export-axi`), which is diffable and can be hashed/committed.
-
-Either way, certificates should bind to a stable snapshot identifier (commit index, hash, or Merkle root).
+**Practical note (current repo)**: a derived snapshot is an immutable SQLite
+`.axpd` materialization under the AxiStore directory family. Its
+`MaterializationIdV2` binds the accepted snapshot/tree, exact ordered module
+closure, kernel and fact-log digests, ordered overlays, logical digest, and exact
+SQLite image digest. Query services verify that identity before hydration.
+Canonical `.axi` bytes are never reconstructed from PathDB.
 
 ### 1.3 Partitioning must not change semantics
 
@@ -83,24 +91,27 @@ Partitioning only changes *how we find proofs*, not *what counts as a proof*.
 
 ---
 
-## 2. Canonical distributed shape: log + snapshots + derived indexes
+## 2. Canonical distributed shape: semantic VCS + snapshots + derived indexes
 
-The cleanest approach is “event-sourced KG”:
+The cleanest approach is semantic history first, execution state second:
 
-1. **Canonical fact log**
-   - append-only records: “add fact”, “retract fact”, “supersede”, “reconcile decision”, etc.
-2. **Periodic snapshots**
-   - a snapshot defines a closed set of facts at a commit index/time.
-3. **Derived indexes per node**
-   - PathDB-like adjacency + bitmap/path indexes are built from a snapshot.
+1. **Canonical semantic VCS**: append-only typed commits for promotion, evidence
+   commits, merges, rebases, supersession, retraction, and reconciliation.
+2. **Accepted snapshots**: the accepted `.axi` closure and reviewed overlays at
+   a semantic ref/time.
+3. **Derived indexes per node**: PathDB-like adjacency + bitmap/path indexes
+   built from accepted snapshots.
 
-This matches production DB practice: derived indexes can be rebuilt; the canonical log cannot be reconstructed if corrupted.
+This matches production DB practice: derived indexes can be rebuilt; semantic
+history and accepted `.axi` cannot be reconstructed if corrupted.
 
 ### 2.1 Why this fits proof-carrying results
 
 Certificates become stable if they refer to:
 
-- a snapshot id,
+- a canonical accepted `.axi` anchor / semantic VCS ref,
+- a derived snapshot id,
+- the `CompiledFiniteQuery`/`query_ir_v1` identity,
 - and fact identifiers that are stable within that snapshot (or globally content-addressed).
 
 This avoids the “my answer is true, but only in whatever inconsistent replica state you happened to read” failure mode.
@@ -116,7 +127,7 @@ This avoids the “my answer is true, but only in whatever inconsistent replica 
 
 Pros:
 
-- simplest semantics and easiest certificate anchoring (“snapshot = commit index N”)
+- simplest semantics and deterministic audit anchoring (“snapshot = commit index N”)
 - easier reconciliation (one canonical decision stream)
 
 Cons:
@@ -149,7 +160,7 @@ This fits Axiograph’s current worldview well: LLM outputs and ingestion are un
 
 ---
 
-## 4. Sharding strategies for a knowledge graph
+## 4. Sharding Strategies For The Derived Graph
 
 You will likely need different partitioning for different workloads.
 
@@ -308,7 +319,8 @@ Distributed systems amplify conflicts:
 Recommendations:
 
 1. Make reconciliation decisions explicit events in the canonical log (“resolution chosen because …”).
-2. Emit a reconciliation certificate whose meaning is defined in Lean (policy evaluation + any merge math).
+2. Emit a reconciliation certificate whose meaning is checked by Lean for the
+   supported policy-evaluation and merge fragments.
 3. Treat “proposal facts” as separate from “accepted facts” so the accepted snapshot stays coherent.
 
 If you need multi-writer reconciliation, CRDT-like designs can work, but only if the merge policy is explicit and certificate-checked.
@@ -350,38 +362,38 @@ If you need multi-writer reconciliation, CRDT-like designs can work, but only if
 
 ### 9.1 Distributed systems foundations
 
-- Lamport — “Paxos Made Simple” (2001). https://lamport.azurewebsites.net/pubs/paxos-simple.pdf
-- Ongaro & Ousterhout — “In Search of an Understandable Consensus Algorithm (Raft)” (2014). https://raft.github.io/raft.pdf
-- Ghemawat, Gobioff, Leung — “The Google File System” (2003). https://research.google/pubs/pub51/
-- Chang et al. — “Bigtable: A Distributed Storage System for Structured Data” (2006). https://www.usenix.org/legacy/event/osdi06/tech/chang/chang.pdf
-- Corbett et al. — “Spanner: Google’s Globally-Distributed Database” (2012). https://research.google/pubs/pub39966/
-- DeCandia et al. — “Dynamo: Amazon’s Highly Available Key-value Store” (2007). https://www.allthingsdistributed.com/files/amazon-dynamo-sosp2007.pdf
-- Kleppmann — *Designing Data-Intensive Applications* (2017). https://dataintensive.net/
+- Lamport — “Paxos Made Simple” (2001). <https://lamport.azurewebsites.net/pubs/paxos-simple.pdf>
+- Ongaro & Ousterhout — “In Search of an Understandable Consensus Algorithm (Raft)” (2014). <https://raft.github.io/raft.pdf>
+- Ghemawat, Gobioff, Leung — “The Google File System” (2003). <https://research.google/pubs/pub51/>
+- Chang et al. — “Bigtable: A Distributed Storage System for Structured Data” (2006). <https://www.usenix.org/legacy/event/osdi06/tech/chang/chang.pdf>
+- Corbett et al. — “Spanner: Google’s Globally-Distributed Database” (2012). <https://research.google/pubs/pub39966/>
+- DeCandia et al. — “Dynamo: Amazon’s Highly Available Key-value Store” (2007). <https://www.allthingsdistributed.com/files/amazon-dynamo-sosp2007.pdf>
+- Kleppmann — *Designing Data-Intensive Applications* (2017). <https://dataintensive.net/>
 
 ### 9.2 Distributed graph processing / graph databases
 
-- Malewicz et al. — “Pregel: A System for Large-Scale Graph Processing” (2010). https://doi.org/10.1145/1807167.1807184
-- Gonzalez et al. — “PowerGraph: Distributed Graph-Parallel Computation on Natural Graphs” (OSDI 2012). https://www.usenix.org/conference/osdi12/technical-sessions/presentation/gonzalez
-- Shao, Wang, Li — “Trinity: A Distributed Graph Engine on a Memory Cloud” (SIGMOD 2013). https://doi.org/10.1145/2463676.2463705
-- Zeng et al. — “Trinity.RDF: A Distributed In-Memory RDF Engine for Efficient Querying of Large Graphs” (VLDB 2013). https://doi.org/10.14778/2536222.2536232
-- Xin et al. — “GraphX: Unifying Data-Parallel and Graph-Parallel Analytics” (2013). https://arxiv.org/abs/1402.2394
+- Malewicz et al. — “Pregel: A System for Large-Scale Graph Processing” (2010). <https://doi.org/10.1145/1807167.1807184>
+- Gonzalez et al. — “PowerGraph: Distributed Graph-Parallel Computation on Natural Graphs” (OSDI 2012). <https://www.usenix.org/conference/osdi12/technical-sessions/presentation/gonzalez>
+- Shao, Wang, Li — “Trinity: A Distributed Graph Engine on a Memory Cloud” (SIGMOD 2013). <https://doi.org/10.1145/2463676.2463705>
+- Zeng et al. — “Trinity.RDF: A Distributed In-Memory RDF Engine for Efficient Querying of Large Graphs” (VLDB 2013). <https://doi.org/10.14778/2536222.2536232>
+- Xin et al. — “GraphX: Unifying Data-Parallel and Graph-Parallel Analytics” (2013). <https://arxiv.org/abs/1402.2394>
 
 ### 9.3 Incremental view maintenance / dataflow (helpful for streaming updates)
 
-- Murray et al. — “Noria: dynamic, partially-stateful data-flow for high-performance web applications” (OSDI 2018). https://www.usenix.org/conference/osdi18/presentation/murray
-- McSherry et al. — “Differential Dataflow” (CIDR 2013). https://www.cidrdb.org/cidr2013/Papers/CIDR13_Paper111.pdf
-- McSherry et al. — “Timely Dataflow” (2015). https://doi.org/10.1145/2723372.2742785
+- Murray et al. — “Noria: dynamic, partially-stateful data-flow for high-performance web applications” (OSDI 2018). <https://www.usenix.org/conference/osdi18/presentation/murray>
+- McSherry et al. — “Differential Dataflow” (CIDR 2013). <https://www.cidrdb.org/cidr2013/Papers/CIDR13_Paper111.pdf>
+- McSherry et al. — “Timely Dataflow” (2015). <https://doi.org/10.1145/2723372.2742785>
 
 ### 9.4 CRDTs (if you pursue eventual consistency)
 
-- Shapiro et al. — “Conflict-Free Replicated Data Types” (2011). https://doi.org/10.1007/978-3-642-24550-3_29
-- CRDT literature hub: https://crdt.tech/papers.html
+- Shapiro et al. — “Conflict-Free Replicated Data Types” (2011). <https://doi.org/10.1007/978-3-642-24550-3_29>
+- CRDT literature hub: <https://crdt.tech/papers.html>
 
 ### 9.5 Authenticated data structures / transparency logs (for trustless-ish verification)
 
-- Laurie, Langley, Kasper — RFC 6962 “Certificate Transparency” (2013). https://www.rfc-editor.org/rfc/rfc6962
-- Trillian (transparent, tamper-evident logs): https://github.com/google/trillian
-- Goodrich, Tamassia, Triandopoulos — “Authenticated Data Structures for Graph and Geometric Searching” (CT-RSA 2009). https://doi.org/10.1007/978-3-642-00862-7_18
+- Laurie, Langley, Kasper — RFC 6962 “Certificate Transparency” (2013). <https://www.rfc-editor.org/rfc/rfc6962>
+- Trillian (transparent, tamper-evident logs): <https://github.com/google/trillian>
+- Goodrich, Tamassia, Triandopoulos — “Authenticated Data Structures for Graph and Geometric Searching” (CT-RSA 2009). <https://doi.org/10.1007/978-3-642-00862-7_18>
 
 ### 9.6 Cryptographic query verification (optional, later)
 
@@ -389,7 +401,7 @@ If you need stronger guarantees than “certificate checking + authenticated mem
 
 One recent pointer in the “ZK for SQL query results” direction:
 
-- PoneglyphDB — “Verifiable Query Execution for Blockchain-based Databases” (preprint). https://kira.cs.umd.edu/papers/poneglyphdb_preprint.pdf
+- PoneglyphDB — “Verifiable Query Execution for Blockchain-based Databases” (preprint). <https://kira.cs.umd.edu/papers/poneglyphdb_preprint.pdf>
 
 This is a *later-layer* for Axiograph: it adds heavy cryptographic complexity and is usually only justified for multi-organization deployments where the verifier cannot rely on the operator for honest execution.
 

@@ -1,7 +1,7 @@
 //! Synthetic PathDB generators used by CLI tooling.
 //!
 //! We keep this separate from the core `axiograph-pathdb` crate so that:
-//! - performance harnesses can evolve quickly without polluting the library API
+//! - performance runners can evolve quickly without polluting the library API
 //! - REPL/demo tooling can share deterministic generators
 
 #![allow(dead_code)]
@@ -320,6 +320,12 @@ fn connect_migration(b: &mut ScenarioBuilder, from_schema: u32, migration: u32, 
     b.rel("toSchema", migration, to_schema, 1.0);
 }
 
+fn required_named_id(ids: &HashMap<String, u32>, name: &str, entity_kind: &str) -> Result<u32> {
+    ids.get(name)
+        .copied()
+        .ok_or_else(|| anyhow!("synthetic scenario omitted required {entity_kind} `{name}`"))
+}
+
 fn build_enterprise_scenario(
     scale: usize,
     index_depth: usize,
@@ -339,7 +345,6 @@ fn build_enterprise_scenario(
             "q select ?ep where name(\"svc_0\") -exposes-> ?ep limit 10".to_string(),
             "q select ?dst where name(\"svc_0.rpc_0\") -calls/calls-> ?dst limit 10".to_string(),
             "q select ?h where ?h is Homotopy, ?h -from-> name(\"doc_0_0\") limit 10".to_string(),
-            "sq examples/semantic_queries/person_team_services.json".to_string(),
             "llm use mock".to_string(),
             "llm ask find Service named svc_0".to_string(),
         ],
@@ -363,7 +368,7 @@ fn build_enterprise_large_api_scenario(
         "enterprise_large_api",
         "Enterprise-ish KB aligned with `examples/proto/large_api`: teams/services/docs plus a proto-shaped API surface that can be imported and matched.",
         |i| {
-            let base = domains.get(i).copied().unwrap_or_else(|| "misc");
+            let base = domains.get(i).copied().unwrap_or("misc");
             format!("svc_{base}")
         },
         vec![
@@ -628,8 +633,8 @@ fn build_enterprise_scenario_named(
     // Cross-service call graph (endpoints call endpoints).
     for i in 0..scale {
         let next = (i + 1) % scale;
-        for e in 0..endpoints[i].len() {
-            b.rel("calls", endpoints[i][e], endpoints[next][e], 0.7);
+        for (&source, &target) in endpoints[i].iter().zip(&endpoints[next]) {
+            b.rel("calls", source, target, 0.7);
         }
     }
 
@@ -642,7 +647,11 @@ fn build_enterprise_scenario_named(
         &mut b,
         scenario_name,
         description,
-        &[("Service", key_service.as_str()), ("Person", "person_0_0"), ("Doc", "doc_0_0")],
+        &[
+            ("Service", key_service.as_str()),
+            ("Person", "person_0_0"),
+            ("Doc", "doc_0_0"),
+        ],
         Vec::new(),
     )?;
 
@@ -670,7 +679,7 @@ fn build_enterprise_scenario_named(
 }
 
 fn enterprise_service_fqn_segment(service_name: &str) -> String {
-    // Preserve the old behavior for numeric service names:
+    // Keep compact numeric service names:
     // - `svc_0` → `svc0` (no underscore)
     // but keep named services readable:
     // - `svc_users` → `svc_users`
@@ -1410,7 +1419,7 @@ fn build_proto_api_scenario(
     }
 
     // A scenario aligned with `axiograph-ingest-proto` and the fixture in
-    // `examples/proto/large_api/descriptor.json`.
+    // `examples/proto/large_api/descriptor.binpb`.
     //
     // Goals:
     // - typed API surface: Proto* entities + HttpEndpoint + ApiWorkflow
@@ -1563,7 +1572,7 @@ fn build_proto_api_scenario(
             ("GetWidgetRequest", "GetWidgetResponse"),
             ("DeleteWidgetRequest", "DeleteWidgetResponse"),
         ] {
-            let req_id = *named_message_ids.get(req).expect("request message exists");
+            let req_id = required_named_id(&named_message_ids, req, "request message")?;
             let req_field = builder.add_named_entity(
                 "ProtoField",
                 format!("{package_name}.{req}.widget_id"),
@@ -1580,9 +1589,7 @@ fn build_proto_api_scenario(
                 field_type_message: None,
             });
 
-            let resp_id = *named_message_ids
-                .get(resp)
-                .expect("response message exists");
+            let resp_id = required_named_id(&named_message_ids, resp, "response message")?;
             let resp_field = builder.add_named_entity(
                 "ProtoField",
                 format!("{package_name}.{resp}.widget"),
@@ -1658,12 +1665,10 @@ fn build_proto_api_scenario(
                 ],
             );
 
-            let request_message_id = *named_message_ids
-                .get(request_name)
-                .expect("request message exists");
-            let response_message_id = *named_message_ids
-                .get(response_name)
-                .expect("response message exists");
+            let request_message_id =
+                required_named_id(&named_message_ids, request_name, "request message")?;
+            let response_message_id =
+                required_named_id(&named_message_ids, response_name, "response message")?;
 
             rpcs.push(ProtoRpcSpec {
                 rpc_id,
@@ -1835,7 +1840,7 @@ fn build_proto_api_scenario(
             .rpcs
             .iter()
             .find(|r| r.http_method == "GET")
-            .expect("GetWidget exists");
+            .ok_or_else(|| anyhow!("proto_api scenario omitted the required GET RPC"))?;
         builder.rel("mentions_rpc", bundle.doc_id, get_rpc.rpc_id, 0.85);
         builder.rel(
             "mentions_http_endpoint",
@@ -1849,12 +1854,12 @@ fn build_proto_api_scenario(
             .rpcs
             .iter()
             .find(|r| r.http_method == "POST")
-            .expect("CreateWidget exists");
+            .ok_or_else(|| anyhow!("proto_api scenario omitted the required POST RPC"))?;
         let delete_rpc = bundle
             .rpcs
             .iter()
             .find(|r| r.http_method == "DELETE")
-            .expect("DeleteWidget exists");
+            .ok_or_else(|| anyhow!("proto_api scenario omitted the required DELETE RPC"))?;
 
         builder.rel(
             "workflow_suggests_order",
@@ -1968,7 +1973,7 @@ fn build_proto_api_scenario(
     // cite and users can `open chunk ...` in the REPL/HTML explorer.
     let mut extra_chunks: Vec<axiograph_ingest_docs::Chunk> = Vec::new();
     let doc_id = scenario_doc_id("proto_api");
-    for svc_i in 0..scale.max(1).min(8) {
+    for svc_i in 0..scale.clamp(1, 8) {
         let service_fqn = format!("acme.svc{svc_i}.v1.Service{svc_i}");
         let rpc_fqns = ["CreateWidget", "GetWidget", "DeleteWidget"]
             .into_iter()
@@ -1982,7 +1987,12 @@ fn build_proto_api_scenario(
             span_id: format!("proto_service_{svc_i}"),
             text: format!(
                 "Proto service: {service_fqn}\nRPCs: {}",
-                rpc_fqns.iter().take(8).cloned().collect::<Vec<_>>().join(", ")
+                rpc_fqns
+                    .iter()
+                    .take(8)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", ")
             ),
             bbox: None,
             metadata: HashMap::from([
@@ -2171,7 +2181,14 @@ fn build_proto_api_business_scenario(
             domain: "orders",
             service_name: "OrderService",
             resource_name: "Order",
-            dependencies: &["users", "catalog", "pricing", "inventory", "payments", "shipping"],
+            dependencies: &[
+                "users",
+                "catalog",
+                "pricing",
+                "inventory",
+                "payments",
+                "shipping",
+            ],
         },
         BusinessServiceSpec {
             domain: "payments",
@@ -2296,26 +2313,33 @@ fn build_proto_api_business_scenario(
         let mut rpc_method_names: Vec<String> = Vec::new();
 
         if domain == "payments" {
-            rpc_method_names.extend([
-                "AuthorizePayment",
-                "CapturePayment",
-                "RefundPayment",
-                "GetPayment",
-            ].into_iter().map(|s| s.to_string()));
+            rpc_method_names.extend(
+                [
+                    "AuthorizePayment",
+                    "CapturePayment",
+                    "RefundPayment",
+                    "GetPayment",
+                ]
+                .into_iter()
+                .map(|s| s.to_string()),
+            );
         } else if domain == "orders" {
-            rpc_method_names.extend([
-                "CreateOrder",
-                "GetOrder",
-                "CancelOrder",
-                "ListOrders",
-            ].into_iter().map(|s| s.to_string()));
+            rpc_method_names.extend(
+                ["CreateOrder", "GetOrder", "CancelOrder", "ListOrders"]
+                    .into_iter()
+                    .map(|s| s.to_string()),
+            );
         } else if domain == "shipping" {
-            rpc_method_names.extend([
-                "CreateShipment",
-                "TrackShipment",
-                "GetQuote",
-                "CancelShipment",
-            ].into_iter().map(|s| s.to_string()));
+            rpc_method_names.extend(
+                [
+                    "CreateShipment",
+                    "TrackShipment",
+                    "GetQuote",
+                    "CancelShipment",
+                ]
+                .into_iter()
+                .map(|s| s.to_string()),
+            );
         } else {
             rpc_method_names.extend([
                 format!("Create{resource_name}"),
@@ -2389,7 +2413,7 @@ fn build_proto_api_business_scenario(
         for method in &rpc_method_names {
             let req_name = format!("{method}Request");
             let resp_name = format!("{method}Response");
-            let req_id = *named_message_ids.get(&req_name).expect("request message exists");
+            let req_id = required_named_id(&named_message_ids, &req_name, "request message")?;
             let req_field = builder.add_named_entity(
                 "ProtoField",
                 format!("{package_name}.{req_name}.id"),
@@ -2409,9 +2433,7 @@ fn build_proto_api_business_scenario(
                 field_type_message: None,
             });
 
-            let resp_id = *named_message_ids
-                .get(&resp_name)
-                .expect("response message exists");
+            let resp_id = required_named_id(&named_message_ids, &resp_name, "response message")?;
             let resp_field = builder.add_named_entity(
                 "ProtoField",
                 format!("{package_name}.{resp_name}.resource"),
@@ -2440,7 +2462,11 @@ fn build_proto_api_business_scenario(
             let request_fqn = format!("{package_name}.{method_name}Request");
             let response_fqn = format!("{package_name}.{method_name}Response");
 
-            let http_method = if method_name.starts_with("Get") || method_name.starts_with("List") || method_name == "TrackShipment" || method_name == "GetQuote" {
+            let http_method = if method_name.starts_with("Get")
+                || method_name.starts_with("List")
+                || method_name == "TrackShipment"
+                || method_name == "GetQuote"
+            {
                 "GET"
             } else if method_name.starts_with("Delete") || method_name.starts_with("Cancel") {
                 "DELETE"
@@ -2494,12 +2520,16 @@ fn build_proto_api_business_scenario(
                 ],
             );
 
-            let request_message_id = *named_message_ids
-                .get(&format!("{method_name}Request"))
-                .expect("request message exists");
-            let response_message_id = *named_message_ids
-                .get(&format!("{method_name}Response"))
-                .expect("response message exists");
+            let request_message_id = required_named_id(
+                &named_message_ids,
+                &format!("{method_name}Request"),
+                "request message",
+            )?;
+            let response_message_id = required_named_id(
+                &named_message_ids,
+                &format!("{method_name}Response"),
+                "response message",
+            )?;
 
             rpcs.push(ProtoRpcSpec {
                 rpc_id,
@@ -2571,7 +2601,10 @@ fn build_proto_api_business_scenario(
         let order_homotopy_id = builder.add_named_entity(
             "Homotopy",
             format!("homotopy_Create_to_Get_{domain}"),
-            vec![("repr".to_string(), "workflow_suggests_order ~ observed_next".to_string())],
+            vec![(
+                "repr".to_string(),
+                "workflow_suggests_order ~ observed_next".to_string(),
+            )],
         );
 
         bundles.push(ServiceBundle {
@@ -2626,7 +2659,12 @@ fn build_proto_api_business_scenario(
 
         // message → fields
         for field in &bundle.field_specs {
-            builder.rel("proto_message_has_field", field.message_id, field.field_id, 0.98);
+            builder.rel(
+                "proto_message_has_field",
+                field.message_id,
+                field.field_id,
+                0.98,
+            );
             if let Some(type_msg) = field.field_type_message {
                 builder.rel("proto_field_type_message", field.field_id, type_msg, 0.98);
             }
@@ -2642,13 +2680,38 @@ fn build_proto_api_business_scenario(
 
         for rpc in &bundle.rpcs {
             builder.rel("proto_service_has_rpc", bundle.service_id, rpc.rpc_id, 0.98);
-            builder.rel("proto_rpc_request", rpc.rpc_id, rpc.request_message_id, 0.98);
-            builder.rel("proto_rpc_response", rpc.rpc_id, rpc.response_message_id, 0.98);
-            builder.rel("proto_rpc_http_endpoint", rpc.rpc_id, rpc.http_endpoint_id, 0.98);
-            builder.rel("proto_http_endpoint_of_rpc", rpc.http_endpoint_id, rpc.rpc_id, 0.98);
+            builder.rel(
+                "proto_rpc_request",
+                rpc.rpc_id,
+                rpc.request_message_id,
+                0.98,
+            );
+            builder.rel(
+                "proto_rpc_response",
+                rpc.rpc_id,
+                rpc.response_message_id,
+                0.98,
+            );
+            builder.rel(
+                "proto_rpc_http_endpoint",
+                rpc.rpc_id,
+                rpc.http_endpoint_id,
+                0.98,
+            );
+            builder.rel(
+                "proto_http_endpoint_of_rpc",
+                rpc.http_endpoint_id,
+                rpc.rpc_id,
+                0.98,
+            );
 
             // include in workflow (tacit)
-            builder.rel("workflow_includes_rpc", bundle.workflow_id, rpc.rpc_id, 0.60);
+            builder.rel(
+                "workflow_includes_rpc",
+                bundle.workflow_id,
+                rpc.rpc_id,
+                0.60,
+            );
         }
 
         // Pick a deterministic “primary” rpc for doc mentions:
@@ -2658,7 +2721,7 @@ fn build_proto_api_business_scenario(
             .iter()
             .find(|r| r.method_name.starts_with("Get"))
             .or_else(|| bundle.rpcs.first())
-            .expect("at least one rpc exists");
+            .ok_or_else(|| anyhow!("proto_api_business scenario generated no RPCs"))?;
 
         builder.rel("mentions_rpc", bundle.doc_id, primary_rpc.rpc_id, 0.85);
         builder.rel(
@@ -2669,8 +2732,14 @@ fn build_proto_api_business_scenario(
         );
 
         // Heuristic order: Create* -> Get* (when present).
-        let create_rpc = bundle.rpcs.iter().find(|r| r.method_name.starts_with("Create"));
-        let get_rpc = bundle.rpcs.iter().find(|r| r.method_name.starts_with("Get"));
+        let create_rpc = bundle
+            .rpcs
+            .iter()
+            .find(|r| r.method_name.starts_with("Create"));
+        let get_rpc = bundle
+            .rpcs
+            .iter()
+            .find(|r| r.method_name.starts_with("Get"));
         if let (Some(create), Some(get)) = (create_rpc, get_rpc) {
             builder.rel("workflow_suggests_order", create.rpc_id, get.rpc_id, 0.55);
             builder.rel("observed_next", create.rpc_id, get.rpc_id, 0.70);
@@ -2683,8 +2752,18 @@ fn build_proto_api_business_scenario(
 
             builder.rel("from", bundle.order_homotopy_id, create.rpc_id, 1.0);
             builder.rel("to", bundle.order_homotopy_id, get.rpc_id, 1.0);
-            builder.rel("lhs", bundle.order_homotopy_id, bundle.order_suggested_path_id, 1.0);
-            builder.rel("rhs", bundle.order_homotopy_id, bundle.order_observed_path_id, 1.0);
+            builder.rel(
+                "lhs",
+                bundle.order_homotopy_id,
+                bundle.order_suggested_path_id,
+                1.0,
+            );
+            builder.rel(
+                "rhs",
+                bundle.order_homotopy_id,
+                bundle.order_observed_path_id,
+                1.0,
+            );
             builder.equiv(
                 bundle.order_suggested_path_id,
                 bundle.order_observed_path_id,
@@ -2698,12 +2777,27 @@ fn build_proto_api_business_scenario(
 
         builder.rel("from", bundle.doc_via_http_path_id, bundle.doc_id, 1.0);
         builder.rel("to", bundle.doc_via_http_path_id, primary_rpc.rpc_id, 1.0);
-        builder.rel("via", bundle.doc_via_http_path_id, primary_rpc.http_endpoint_id, 1.0);
+        builder.rel(
+            "via",
+            bundle.doc_via_http_path_id,
+            primary_rpc.http_endpoint_id,
+            1.0,
+        );
 
         builder.rel("from", bundle.doc_homotopy_id, bundle.doc_id, 1.0);
         builder.rel("to", bundle.doc_homotopy_id, primary_rpc.rpc_id, 1.0);
-        builder.rel("lhs", bundle.doc_homotopy_id, bundle.doc_direct_path_id, 1.0);
-        builder.rel("rhs", bundle.doc_homotopy_id, bundle.doc_via_http_path_id, 1.0);
+        builder.rel(
+            "lhs",
+            bundle.doc_homotopy_id,
+            bundle.doc_direct_path_id,
+            1.0,
+        );
+        builder.rel(
+            "rhs",
+            bundle.doc_homotopy_id,
+            bundle.doc_via_http_path_id,
+            1.0,
+        );
         builder.equiv(
             bundle.doc_direct_path_id,
             bundle.doc_via_http_path_id,
@@ -2743,21 +2837,15 @@ fn build_proto_api_business_scenario(
     // generate hundreds of thousands of chunks.
     let mut extra_chunks: Vec<axiograph_ingest_docs::Chunk> = Vec::new();
     let doc_id = scenario_doc_id("proto_api_business");
-    let chunk_cap = scale.max(1).min(64);
-    for svc_i in 0..chunk_cap {
-        let b = &bundles[svc_i];
-
+    let chunk_cap = scale.clamp(1, 64);
+    for (svc_i, b) in bundles.iter().enumerate().take(chunk_cap) {
         let service_fqn = builder
             .db
             .get_entity(b.service_id)
             .and_then(|v| v.attrs.get("name").cloned())
             .unwrap_or_else(|| "<unknown>".to_string());
 
-        let rpc_fqns = b
-            .rpcs
-            .iter()
-            .map(|r| r.rpc_fqn.clone())
-            .collect::<Vec<_>>();
+        let rpc_fqns = b.rpcs.iter().map(|r| r.rpc_fqn.clone()).collect::<Vec<_>>();
 
         extra_chunks.push(axiograph_ingest_docs::Chunk {
             chunk_id: format!("doc_proto_business_service_{svc_i}"),
@@ -2768,7 +2856,7 @@ fn build_proto_api_business_scenario(
                 "Business proto service: {service_fqn}\nDomain: {}\nResource: {}\nRPCs: {}",
                 b.domain,
                 b.resource_fqn,
-                rpc_fqns.iter().cloned().collect::<Vec<_>>().join(", ")
+                rpc_fqns.to_vec().join(", ")
             ),
             bbox: None,
             metadata: HashMap::from([
@@ -3023,17 +3111,13 @@ fn build_social_network_scenario(
     let start = Instant::now();
 
     // Shared transform composition edges.
-    let meet_intro = *transform_ids.get("MeetIntro").expect("transform exists");
-    let strengthen = *transform_ids.get("Strengthen").expect("transform exists");
-    let deep_trust = *transform_ids.get("DeepTrust").expect("transform exists");
-    let formalize = *transform_ids.get("Formalize").expect("transform exists");
-    let became_friends = *transform_ids
-        .get("BecameFriends")
-        .expect("transform exists");
-    let became_close = *transform_ids.get("BecameClose").expect("transform exists");
-    let became_colleagues = *transform_ids
-        .get("BecameColleagues")
-        .expect("transform exists");
+    let meet_intro = required_named_id(&transform_ids, "MeetIntro", "transform")?;
+    let strengthen = required_named_id(&transform_ids, "Strengthen", "transform")?;
+    let deep_trust = required_named_id(&transform_ids, "DeepTrust", "transform")?;
+    let formalize = required_named_id(&transform_ids, "Formalize", "transform")?;
+    let became_friends = required_named_id(&transform_ids, "BecameFriends", "transform")?;
+    let became_close = required_named_id(&transform_ids, "BecameClose", "transform")?;
+    let became_colleagues = required_named_id(&transform_ids, "BecameColleagues", "transform")?;
 
     builder.rel("t1", compose_meet_intro, meet_intro, 1.0);
     builder.rel("t2", compose_meet_intro, strengthen, 1.0);
@@ -3047,10 +3131,13 @@ fn build_social_network_scenario(
     builder.rel("t2", compose_formalize, formalize, 1.0);
     builder.rel("result", compose_formalize, became_colleagues, 1.0);
 
-    let friend = *relation_type_ids.get("Friend").expect("rel exists");
-    let colleague = *relation_type_ids.get("Colleague").expect("rel exists");
-    let acquaintance = *relation_type_ids.get("Acquaintance").expect("rel exists");
-    let stranger = *relation_type_ids.get("Stranger").expect("rel exists");
+    let friend = required_named_id(&relation_type_ids, "Friend", "relation type")?;
+    let colleague = required_named_id(&relation_type_ids, "Colleague", "relation type")?;
+    let acquaintance = required_named_id(&relation_type_ids, "Acquaintance", "relation type")?;
+    let stranger = required_named_id(&relation_type_ids, "Stranger", "relation type")?;
+    let time_t0 = required_named_id(&time_ids, "T0", "time")?;
+    let time_t1 = required_named_id(&time_ids, "T1", "time")?;
+    let high_trust = required_named_id(&trust_level_ids, "High", "trust level")?;
 
     for (i, c) in clusters.iter().enumerate() {
         // Membership / participation
@@ -3078,12 +3165,7 @@ fn build_social_network_scenario(
         builder.rel("startRel", rel_path_0, stranger, 1.0);
         builder.rel("endRel", rel_path_0, acquaintance, 1.0);
         builder.rel("transform", rel_path_0, meet_intro, 1.0);
-        builder.rel(
-            "time",
-            rel_path_0,
-            *time_ids.get("T0").expect("T0 exists"),
-            1.0,
-        );
+        builder.rel("time", rel_path_0, time_t0, 1.0);
 
         let rel_path_1 = builder.add_named_entity(
             "RelationshipPath",
@@ -3095,12 +3177,7 @@ fn build_social_network_scenario(
         builder.rel("startRel", rel_path_1, acquaintance, 1.0);
         builder.rel("endRel", rel_path_1, friend, 1.0);
         builder.rel("transform", rel_path_1, strengthen, 1.0);
-        builder.rel(
-            "time",
-            rel_path_1,
-            *time_ids.get("T1").expect("T1 exists"),
-            1.0,
-        );
+        builder.rel("time", rel_path_1, time_t1, 1.0);
 
         // Trust paths (typed objects).
         let trust_path = builder.add_named_entity(
@@ -3110,12 +3187,7 @@ fn build_social_network_scenario(
         );
         builder.rel("from", trust_path, c.alice, 1.0);
         builder.rel("to", trust_path, c.bob, 1.0);
-        builder.rel(
-            "level",
-            trust_path,
-            *trust_level_ids.get("High").expect("High exists"),
-            1.0,
-        );
+        builder.rel("level", trust_path, high_trust, 1.0);
         builder.rel("witnesses", trust_path, c.bookclub, 1.0);
 
         // History equivalence / homotopy between two "histories" from Alice to Carol.

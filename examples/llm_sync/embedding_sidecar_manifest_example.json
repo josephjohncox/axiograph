@@ -1,0 +1,33 @@
+{
+  "version": "axiograph_embedding_sidecar_manifest_v1",
+  "kind": "embedding_sidecar_manifest_v1",
+  "coverage_mode": "advisory",
+  "accepted_anchor": {
+    "module": "examples/learning/MachinistLearning.axi",
+    "semantic_ref": "refs/heads/evidence/machinist-learning-demo"
+  },
+  "compiled_ir_digest": "example-only",
+  "embedding_file": {
+    "path": "build/examples/llm_sync/machining_embeddings.bin",
+    "digest": "example-only",
+    "format": "EmbeddingsFileV1"
+  },
+  "model": {
+    "provider": "example",
+    "name": "text-embedding-demo",
+    "version": "not-a-real-model",
+    "dimensions": 3,
+    "normalization": "l2"
+  },
+  "targets": [
+    {
+      "target_id": "chunk:machining_conversation:0",
+      "target_kind": "doc_chunk",
+      "source_text_digest": "example-only"
+    }
+  ],
+  "trust_caveats": [
+    "Example manifest only; no vectors are stored in canonical .axi.",
+    "Embedding scores can suggest proposals but cannot promote ontology truth."
+  ]
+}

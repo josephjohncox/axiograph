@@ -21,7 +21,8 @@ use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 
 use axiograph_pathdb::axi_meta::{
-    ATTR_AXI_RELATION, ATTR_AXI_SCHEMA, ATTR_CONSTRAINT_RELATION, ATTR_FIELD_TYPE, REL_AXI_FACT_IN_CONTEXT,
+    ATTR_AXI_RELATION, ATTR_AXI_SCHEMA, ATTR_CONSTRAINT_RELATION, ATTR_FIELD_TYPE,
+    REL_AXI_FACT_IN_CONTEXT,
 };
 use axiograph_pathdb::axi_semantics::{ConstraintDecl, MetaPlaneIndex, SchemaIndex};
 use axiograph_pathdb::PathDB;
@@ -165,7 +166,7 @@ pub struct VizNode {
     /// Values:
     /// - `meta`     (schema/theory layer imported into PathDB)
     /// - `accepted` (canonical meaning plane imported from reviewed `.axi`)
-    /// - `evidence` (WAL overlays: proposals/chunks/provenance)
+    /// - `evidence` (staged proposals/chunks/provenance)
     /// - `data`     (generic runtime data not tagged as accepted/evidence)
     #[serde(default)]
     pub plane: String,
@@ -317,7 +318,11 @@ fn db_entity_short_label(db: &PathDB, id: u32) -> String {
     format!("{}#{}", view.entity_type, id)
 }
 
-fn type_label_for_node(entity_type: &str, kind: &str, attrs: &BTreeMap<String, String>) -> Option<String> {
+fn type_label_for_node(
+    entity_type: &str,
+    kind: &str,
+    attrs: &BTreeMap<String, String>,
+) -> Option<String> {
     if matches!(kind, "fact" | "morphism" | "homotopy") {
         if let Some(r) = attrs.get(ATTR_AXI_RELATION) {
             let r = r.trim();
@@ -340,7 +345,11 @@ fn display_name_for_record_from_decl(
     for f in &rel_decl.fields {
         let targets = db.follow_one(tuple_id, &f.field_name);
         if let Some(tid) = targets.iter().next() {
-            parts.push(format!("{}={}", f.field_name, db_entity_short_label(db, tid)));
+            parts.push(format!(
+                "{}={}",
+                f.field_name,
+                db_entity_short_label(db, tid)
+            ));
         }
     }
     if parts.is_empty() {
@@ -419,7 +428,9 @@ fn display_name_for_node(
         if let Some(meta) = meta {
             if let Some(schema) = schema_for_entity(meta, attrs) {
                 if let Some(rel_decl) = schema.relation_decls.get(&rel) {
-                    if let Some(summary) = display_name_for_record_from_decl(db, node_id, &rel, rel_decl) {
+                    if let Some(summary) =
+                        display_name_for_record_from_decl(db, node_id, &rel, rel_decl)
+                    {
                         return Some(summary);
                     }
                 }
@@ -464,7 +475,11 @@ fn display_name_for_node(
     }
 
     if entity_type == "Document" {
-        if let Some(doc) = attrs.get("document_id").map(|s| short_locator(s)).filter(|s| !s.is_empty()) {
+        if let Some(doc) = attrs
+            .get("document_id")
+            .map(|s| short_locator(s))
+            .filter(|s| !s.is_empty())
+        {
             return Some(format!("doc {doc}"));
         }
     }
@@ -569,7 +584,7 @@ pub fn extract_viz_graph_with_meta(
             // Fallback: show the first few entity ids deterministically.
             for id in 0..(db.entities.len() as u32) {
                 queue.push_back((id, 0));
-                if queue.len() >= 1 {
+                if !queue.is_empty() {
                     break;
                 }
             }
@@ -687,10 +702,7 @@ pub fn extract_viz_graph_with_meta(
                     params,
                     ..
                 } => {
-                    let mut s = format!(
-                        "symmetric_where_in({field} in {{{}}})",
-                        values.join(", ")
-                    );
+                    let mut s = format!("symmetric_where_in({field} in {{{}}})", values.join(", "));
                     if let Some((left, right)) = carriers {
                         s.push_str(&format!(" on ({left}, {right})"));
                     }
@@ -701,7 +713,9 @@ pub fn extract_viz_graph_with_meta(
                     }
                     parts.push(s);
                 }
-                ConstraintDecl::Symmetric { carriers, params, .. } => {
+                ConstraintDecl::Symmetric {
+                    carriers, params, ..
+                } => {
                     let mut s = String::from("symmetric");
                     if let Some((left, right)) = carriers {
                         s.push_str(&format!(" on ({left}, {right})"));
@@ -713,7 +727,9 @@ pub fn extract_viz_graph_with_meta(
                     }
                     parts.push(s);
                 }
-                ConstraintDecl::Transitive { carriers, params, .. } => {
+                ConstraintDecl::Transitive {
+                    carriers, params, ..
+                } => {
                     let mut s = String::from("transitive");
                     if let Some((left, right)) = carriers {
                         s.push_str(&format!(" on ({left}, {right})"));
@@ -728,7 +744,9 @@ pub fn extract_viz_graph_with_meta(
                 ConstraintDecl::Key { fields, .. } => {
                     parts.push(format!("key({})", fields.join(", ")))
                 }
-                ConstraintDecl::NamedBlock { name, .. } => parts.push(format!("named_block({name})")),
+                ConstraintDecl::NamedBlock { name, .. } => {
+                    parts.push(format!("named_block({name})"))
+                }
                 ConstraintDecl::Unknown { text, .. } => parts.push(format!("unknown({text})")),
             }
         }
@@ -796,8 +814,15 @@ pub fn extract_viz_graph_with_meta(
 
         let plane = node_plane(&view.entity_type, kind.as_str(), &attrs).to_string();
         let type_label = type_label_for_node(&view.entity_type, kind.as_str(), &attrs);
-        let display_name =
-            display_name_for_node(db, *id, &view.entity_type, kind.as_str(), name.as_deref(), &attrs, meta);
+        let display_name = display_name_for_node(
+            db,
+            *id,
+            &view.entity_type,
+            kind.as_str(),
+            name.as_deref(),
+            &attrs,
+            meta,
+        );
 
         kind_by_id.insert(*id, kind.clone());
         node_views.push(VizNode {
@@ -1315,7 +1340,7 @@ pub fn render_dot(db: &PathDB, g: &VizGraph) -> String {
         let mut attrs: Vec<String> = Vec::new();
         let mut label = e.label.clone();
         if let Some(c) = e.confidence {
-            label = format!("{label} ({:.3})", c);
+            label = format!("{label} ({c:.3})");
         }
         attrs.push(format!("label=\"{}\"", dot_escape(&label)));
         match e.kind.as_str() {
@@ -1358,24 +1383,49 @@ pub fn render_json(g: &VizGraph) -> Result<String> {
 
 pub fn viz_dist_dir() -> PathBuf {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let mut dir = cwd.clone();
+    if let Some(dist) = find_viz_dist_from(&cwd) {
+        return dist;
+    }
+
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    if let Some(dist) = find_viz_dist_from(&manifest_dir) {
+        return dist;
+    }
+
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(exe_dir) = exe.parent() {
+            if let Some(dist) = find_viz_dist_from(exe_dir) {
+                return dist;
+            }
+        }
+    }
+
+    cwd.join("frontend").join("viz").join("dist")
+}
+
+fn find_viz_dist_from(start: &std::path::Path) -> Option<PathBuf> {
+    let mut dir = start.to_path_buf();
     loop {
         let candidate = dir.join("frontend").join("viz").join("dist");
         if candidate.join("index.html").exists() {
-            return candidate;
+            return Some(candidate);
         }
         if !dir.pop() {
             break;
         }
     }
-    cwd.join("frontend").join("viz").join("dist")
+    None
 }
 
 pub fn viz_index_path() -> PathBuf {
     viz_dist_dir().join("index.html")
 }
 
-pub fn write_html_bundle(out: &std::path::Path, html: &str, graph_json: Option<&str>) -> Result<PathBuf> {
+pub fn write_html_bundle(
+    out: &std::path::Path,
+    html: &str,
+    graph_json: Option<&str>,
+) -> Result<PathBuf> {
     let out_dir = if out.extension().is_some_and(|e| e == "html") {
         out.with_extension("")
     } else {
@@ -1400,10 +1450,11 @@ pub fn write_html_bundle(out: &std::path::Path, html: &str, graph_json: Option<&
     }
     let dist_root = viz_dist_dir();
     html_out = inline_viz_script(&html_out, &dist_root).unwrap_or(html_out);
-    std::fs::write(out_dir.join("index.html"), html_out)?;
-    std::fs::write(
+    crate::security::write_output_bounded(out_dir.join("index.html"), html_out, "CLI output")?;
+    crate::security::write_output_bounded(
         out_dir.join("README.txt"),
         "Open index.html (offline). Optional: index.html?data=graph.json\n",
+        "CLI output",
     )?;
     Ok(out_dir)
 }
@@ -1426,7 +1477,12 @@ fn inline_viz_script(html: &str, dist_root: &std::path::Path) -> Result<String> 
                         let end_tag = start + end_tag_rel + "</script>".len();
                         let src_trim = src.trim_start_matches("./").trim_start_matches('/');
                         let js_path = dist_root.join(src_trim);
-                        let js = std::fs::read_to_string(&js_path).with_context(|| {
+                        let js = crate::security::read_utf8_file_bounded(
+                            &js_path,
+                            crate::security::MAX_TEXT_INPUT_BYTES,
+                            "CLI input",
+                        )
+                        .with_context(|| {
                             format!("missing viz asset script at {}", js_path.display())
                         })?;
                         let inline = format!("<script>\n{js}\n</script>");
@@ -1440,16 +1496,78 @@ fn inline_viz_script(html: &str, dist_root: &std::path::Path) -> Result<String> 
     Ok(out)
 }
 
+const MAX_VIZ_COPY_DEPTH: usize = 16;
+const MAX_VIZ_COPY_ENTRIES: usize = 4_096;
+const MAX_VIZ_COPY_FILES: usize = 1_024;
+
 fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> Result<()> {
+    let mut entries = 0_usize;
+    let mut files = 0_usize;
+    let mut bytes = 0_usize;
+    copy_dir_recursive_bounded(src, dst, 0, &mut entries, &mut files, &mut bytes)
+}
+
+fn copy_dir_recursive_bounded(
+    src: &std::path::Path,
+    dst: &std::path::Path,
+    depth: usize,
+    entries: &mut usize,
+    files: &mut usize,
+    total_bytes: &mut usize,
+) -> Result<()> {
+    if depth > MAX_VIZ_COPY_DEPTH {
+        return Err(anyhow!(
+            "viz asset directory depth exceeds {MAX_VIZ_COPY_DEPTH}"
+        ));
+    }
+    let source = std::fs::symlink_metadata(src)?;
+    if source.file_type().is_symlink() || !source.file_type().is_dir() {
+        return Err(anyhow!("viz asset source must be a real directory"));
+    }
     std::fs::create_dir_all(dst)?;
+    let destination = std::fs::symlink_metadata(dst)?;
+    if destination.file_type().is_symlink() || !destination.file_type().is_dir() {
+        return Err(anyhow!("viz asset destination must be a real directory"));
+    }
     for entry in std::fs::read_dir(src)? {
         let entry = entry?;
+        *entries = entries
+            .checked_add(1)
+            .ok_or_else(|| anyhow!("viz asset entry count overflow"))?;
+        if *entries > MAX_VIZ_COPY_ENTRIES {
+            return Err(anyhow!(
+                "viz asset entry count exceeds {MAX_VIZ_COPY_ENTRIES}"
+            ));
+        }
         let path = entry.path();
         let target = dst.join(entry.file_name());
-        if path.is_dir() {
-            copy_dir_recursive(&path, &target)?;
+        let metadata = std::fs::symlink_metadata(&path)?;
+        if metadata.file_type().is_symlink() {
+            return Err(anyhow!("viz asset source must not contain symlinks"));
+        }
+        if metadata.file_type().is_dir() {
+            copy_dir_recursive_bounded(&path, &target, depth + 1, entries, files, total_bytes)?;
+        } else if metadata.file_type().is_file() {
+            *files = files
+                .checked_add(1)
+                .ok_or_else(|| anyhow!("viz asset file count overflow"))?;
+            if *files > MAX_VIZ_COPY_FILES {
+                return Err(anyhow!("viz asset file count exceeds {MAX_VIZ_COPY_FILES}"));
+            }
+            let data = crate::security::read_file_bounded(
+                &path,
+                crate::security::MAX_OUTPUT_BYTES,
+                "viz asset",
+            )?;
+            *total_bytes = total_bytes
+                .checked_add(data.len())
+                .ok_or_else(|| anyhow!("viz asset byte count overflow"))?;
+            if *total_bytes > crate::security::MAX_OUTPUT_BYTES {
+                return Err(anyhow!("viz asset total bytes exceed output limit"));
+            }
+            crate::security::write_output_bounded(&target, data, "viz asset")?;
         } else {
-            std::fs::copy(&path, &target)?;
+            return Err(anyhow!("viz asset source contains a special file"));
         }
     }
     Ok(())
@@ -1463,8 +1581,12 @@ pub fn render_html(db: &PathDB, g: &VizGraph) -> Result<String> {
     let json = serde_json::to_string(g)?.replace("</", "<\\/");
 
     let index_path = viz_index_path();
-    let template = std::fs::read_to_string(&index_path)
-        .with_context(|| format!("missing viz frontend at {}", index_path.display()))?;
+    let template = crate::security::read_utf8_file_bounded(
+        &index_path,
+        crate::security::MAX_TEXT_INPUT_BYTES,
+        "CLI input",
+    )
+    .with_context(|| format!("missing viz frontend at {}", index_path.display()))?;
     let mut html = template;
     html = html.replace("{{GRAPH_JSON}}", &json);
     html = html.replace("{{NODES_COUNT}}", &g.nodes.len().to_string());
@@ -1506,6 +1628,29 @@ instance DemoInst of Demo:
             .expect("import demo axi module");
         db.build_indexes();
         db
+    }
+
+    #[test]
+    fn viz_asset_copy_rejects_entry_fanout_before_copying() -> Result<()> {
+        let source = tempfile::tempdir()?;
+        let destination = tempfile::tempdir()?;
+        std::fs::write(source.path().join("asset.js"), b"asset")?;
+        let mut entries = MAX_VIZ_COPY_ENTRIES;
+        let mut files = 0;
+        let mut bytes = 0;
+        let error = copy_dir_recursive_bounded(
+            source.path(),
+            &destination.path().join("copy"),
+            0,
+            &mut entries,
+            &mut files,
+            &mut bytes,
+        )
+        .expect_err("viz asset entry overflow must reject");
+        assert!(error.to_string().contains("entry count"));
+        assert_eq!(files, 0);
+        assert_eq!(bytes, 0);
+        Ok(())
     }
 
     #[test]
@@ -1561,5 +1706,35 @@ instance DemoInst of Demo:
             .unwrap_or(&String::new())
             .contains("Node"));
         Ok(())
+    }
+
+    #[test]
+    fn viz_dist_dir_resolves_from_crate_manifest_for_temp_cwd_scripts() {
+        let root = std::env::temp_dir().join(format!(
+            "axiograph-viz-dist-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time should be after unix epoch")
+                .as_nanos()
+        ));
+        let manifest_dir = root.join("rust").join("crates").join("axiograph-cli");
+        let dist = root.join("frontend").join("viz").join("dist");
+        std::fs::create_dir_all(&manifest_dir).expect("create fake manifest dir");
+        std::fs::create_dir_all(&dist).expect("create fake viz dist dir");
+        crate::security::write_output_bounded(
+            dist.join("index.html"),
+            "<!doctype html><html></html>",
+            "CLI output",
+        )
+        .expect("write fake viz index");
+
+        let resolved = find_viz_dist_from(&manifest_dir)
+            .expect("fake repo checkout should contain frontend/viz/dist/index.html");
+
+        assert_eq!(resolved, dist);
+        assert!(resolved.ends_with("frontend/viz/dist"));
+
+        let _ = std::fs::remove_dir_all(root);
     }
 }

@@ -1,0 +1,7 @@
+version competency_question_bundle_v1
+
+question released_shipment_has_work_order:
+  ask: Can the accepted ontology show that the released shipment fulfills a concrete work order?
+  expect: exists RegulatedLine.ShipmentFulfills(shipment=Shipment_7001, order=SalesOrder_1001, work_order=WorkOrder_5001, ctx=Released, time=T1)
+  min_rows: 1
+  weight: 1.0

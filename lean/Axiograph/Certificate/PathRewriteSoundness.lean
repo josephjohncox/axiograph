@@ -6,8 +6,12 @@ import Axiograph.HoTT.FreeGroupoid
 
 This file proves **semantic soundness** of the *groupoid/path rewrite rules* used in:
 
-* `normalize_path_v2` (optional derivation replay), and
-* `rewrite_derivation_v2`.
+* `normalize_path_v2` and `path_equiv_v2` (mandatory derivation replay), and
+* the internal builtin `RewriteDerivationProofV2` replay helper used by path
+  equivalence.
+
+This theorem file does not claim soundness for anchored domain-rule steps in
+`rewrite_derivation_v3`.
 
 The untrusted Rust engine (and certificate emitters) are allowed to be “clever”:
 they can normalize, reassociate, cancel inverses, and so on. The trusted Lean

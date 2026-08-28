@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "select_vars": ["?certificate"],
+  "where_atoms": [
+    {
+      "kind": "edge",
+      "left": "Shipment_RX_1007",
+      "path": "ShipmentContainsBatch/BatchHasCertificate",
+      "right": "?certificate"
+    }
+  ],
+  "max_hops": 2,
+  "limit": 10
+}

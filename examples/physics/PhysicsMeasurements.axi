@@ -16,11 +16,11 @@
 --
 -- The intended workflow is:
 --
---   1) Promote this module into the accepted plane (append-only).
---   2) Commit observations into the PathDB WAL as evidence-plane overlays
---      (`proposals.json` + `chunks.json`) using `axiograph db accept pathdb-commit`.
---   3) Query/visualize across planes; optionally require certificates for
---      high-value answers (Lean verifies).
+--   1) Promote this exact module through AxiStore review.
+--   2) Keep observations as typed evidence and, when needed, include them as
+--      explicitly ordered, content-digested materialization overlays.
+--   3) Query/visualize derived state; require checked certificates for
+--      high-value answers.
 --
 -- Design choice: “values” are not stored as raw floats in the canonical surface.
 -- -----------------------------------------------------------------------------
@@ -29,8 +29,8 @@
 -- too expensive, so the intended pattern is:
 --
 -- - store the *typed* part as edges (run/quantity/unit/bin/context/time),
--- - store the raw numeric value as an attribute on the fact node in the WAL
---   overlay (e.g. `value_f64="3.14159"`), and/or keep an approximation via
+-- - retain raw numeric values in typed evidence sidecars
+--   (e.g. `value_f64="3.14159"`), and/or keep an approximation via
 --   `ScalarBin` to preserve typed queryability.
 --
 -- This keeps the type layer useful while staying scalable.
@@ -63,11 +63,9 @@ schema PhysicsMeasurements:
   -- Observation facts (reified records)
   -- ==========================================================================
   -- The observation is a typed record:
-  --   MeasurementObs(run, quantity, unit, value_bin, ctx, time)
+--   MeasurementObs(run, quantity, unit, value_bin, ctx, time)
   --
-  -- Context and time are first-class scoping axes:
-  -- - `@context Context` adds a `ctx: Context` field
-  -- - `@temporal Time` adds a `time: Time` field
+  -- Context and time are first-class scoping axes encoded as explicit roles.
   --
   -- In PathDB, every imported observation becomes a fact-node with field edges,
   -- plus a derived traversal edge:
@@ -80,8 +78,10 @@ schema PhysicsMeasurements:
     run: Run,
     quantity: Quantity,
     unit: Unit,
-    value_bin: ScalarBin
-  ) @context Context @temporal Time
+    value_bin: ScalarBin,
+    ctx: Context,
+    time: Time
+  )
 
 theory PhysicsMeasurementsRules on PhysicsMeasurements:
   -- Metadata hygiene
@@ -104,21 +104,30 @@ theory PhysicsMeasurementsRules on PhysicsMeasurements:
   constraint key MeasurementObs(run, quantity, unit, value_bin, ctx, time)
 
 instance PhysicsMeasurementsSeed of PhysicsMeasurements:
-  -- A small seed instance:
+  -- A compact seed instance:
   -- - provides stable identifiers for common quantities/units/contexts,
-  -- - keeps the accepted plane tiny,
-  -- - real datasets are added as WAL overlays.
+  -- - keeps the accepted plane inspectable,
+  -- - real datasets remain typed evidence until reviewed into canonical `.axi`.
 
   Context = {ObservedSensors, Simulation, Literature, TacitNotes}
   Time = {T0}
 
   Run = {Run_Seed_0, Run_Seed_1}
 
-  Unit = {Unit_Meter, Unit_Second, Unit_Kelvin, Unit_Dimensionless}
-  Text = {Text_m, Text_s, Text_K, Text_1}
+  Unit = {
+    Unit_Meter,
+    Unit_MeterPerSecond,
+    Unit_MeterPerSecondSquared,
+    Unit_Second,
+    Unit_Kelvin,
+    Unit_Dimensionless
+  }
+  Text = {Text_m, Text_m_per_s, Text_m_per_s2, Text_s, Text_K, Text_1}
 
   UnitSymbol = {
     (unit=Unit_Meter, text=Text_m),
+    (unit=Unit_MeterPerSecond, text=Text_m_per_s),
+    (unit=Unit_MeterPerSecondSquared, text=Text_m_per_s2),
     (unit=Unit_Second, text=Text_s),
     (unit=Unit_Kelvin, text=Text_K),
     (unit=Unit_Dimensionless, text=Text_1)
@@ -134,8 +143,8 @@ instance PhysicsMeasurementsSeed of PhysicsMeasurements:
 
   QuantityHasCanonicalUnit = {
     (quantity=PositionX, unit=Unit_Meter),
-    (quantity=VelocityX, unit=Unit_Dimensionless),     -- demo placeholder (unit algebra is future work)
-    (quantity=AccelerationX, unit=Unit_Dimensionless), -- demo placeholder
+    (quantity=VelocityX, unit=Unit_MeterPerSecond),
+    (quantity=AccelerationX, unit=Unit_MeterPerSecondSquared),
     (quantity=Temperature, unit=Unit_Kelvin),
     (quantity=CurvatureScalar, unit=Unit_Dimensionless)
   }
@@ -148,7 +157,7 @@ instance PhysicsMeasurementsSeed of PhysicsMeasurements:
   -- One seed bin: real bins are typically imported as overlay entities.
   ScalarBin = {Bin_0}
 
-  -- A couple of seed observations (accepted plane stays tiny).
+  -- A couple of seed observations (accepted plane stays inspectable).
   MeasurementObs = {
     (run=Run_Seed_0, quantity=PositionX, unit=Unit_Meter, value_bin=Bin_0, ctx=ObservedSensors, time=T0),
     (run=Run_Seed_0, quantity=Temperature, unit=Unit_Kelvin, value_bin=Bin_0, ctx=ObservedSensors, time=T0)

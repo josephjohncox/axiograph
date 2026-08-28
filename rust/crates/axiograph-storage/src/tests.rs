@@ -1,4 +1,4 @@
-//! End-to-end tests for unified storage
+//! End-to-end tests for runtime evidence storage.
 
 use super::*;
 use tempfile::tempdir;
@@ -8,8 +8,6 @@ fn test_storage() -> (UnifiedStorage, tempfile::TempDir) {
     let dir = tempdir().unwrap();
     let config = StorageConfig {
         axi_dir: dir.path().to_path_buf(),
-        pathdb_path: dir.path().join("test.axpd"),
-        changelog_path: dir.path().join("changelog.json"),
         watch_files: false,
         require_review: ReviewPolicy {
             constraints: false,
@@ -23,8 +21,8 @@ fn test_storage() -> (UnifiedStorage, tempfile::TempDir) {
 }
 
 #[test]
-fn test_entity_lands_in_both_formats() {
-    let (storage, dir) = test_storage();
+fn test_entity_materializes_to_evidence_record_and_pathdb_cache() {
+    let (storage, _dir) = test_storage();
 
     // Add entity
     let facts = vec![StorableFact::Entity {
@@ -44,12 +42,10 @@ fn test_entity_lands_in_both_formats() {
             },
         )
         .unwrap();
-    storage.flush().unwrap();
+    let results = storage.flush().unwrap();
 
-    // Verify .axi file
-    let axi_path = dir.path().join("user_edits.axi");
-    assert!(axi_path.exists(), ".axi file should exist");
-    let axi_content = std::fs::read_to_string(&axi_path).unwrap();
+    // Generated `.axi` is an in-memory proposal, never an accepted-file append.
+    let axi_content = results[0].axi_lines.join("\n");
     assert!(
         axi_content.contains("Titanium"),
         "Should contain entity name"
@@ -61,8 +57,7 @@ fn test_entity_lands_in_both_formats() {
     assert!(axi_content.contains("hardness"), "Should contain attribute");
 
     // Verify PathDB
-    let pathdb = storage.pathdb();
-    let db = pathdb.read();
+    let db = storage.pathdb();
     let materials = db.find_by_type("Material");
     assert!(materials.is_some(), "Should find Materials in PathDB");
     assert!(
@@ -72,8 +67,8 @@ fn test_entity_lands_in_both_formats() {
 }
 
 #[test]
-fn test_relation_lands_in_both_formats() {
-    let (storage, dir) = test_storage();
+fn test_relation_lands_in_query_cache_and_review_proposal() {
+    let (storage, _dir) = test_storage();
 
     let facts = vec![
         StorableFact::Entity {
@@ -104,14 +99,97 @@ fn test_relation_lands_in_both_formats() {
             },
         )
         .unwrap();
-    storage.flush().unwrap();
+    let results = storage.flush().unwrap();
 
-    // Verify .axi
-    let axi_path = dir.path().join("api_additions.axi");
-    let content = std::fs::read_to_string(&axi_path).unwrap();
+    let content = results[0].axi_lines.join("\n");
     assert!(content.contains("usedWith"), "Should contain relation type");
     assert!(content.contains("EndMill"), "Should contain source");
     assert!(content.contains("Ti6Al4V"), "Should contain target");
+
+    // Verify PathDB relation endpoints use resolved entity IDs, not placeholder
+    // IDs from insertion order.
+    let db = storage.pathdb();
+    let source_ids = UnifiedStorage::entity_ids_by_storage_name(&db, "EndMill");
+    let target_ids = UnifiedStorage::entity_ids_by_storage_name(&db, "Ti6Al4V");
+    assert_eq!(source_ids.len(), 1);
+    assert_eq!(target_ids.len(), 1);
+    assert!(
+        db.follow_one(source_ids[0], "usedWith")
+            .contains(target_ids[0]),
+        "PathDB should store EndMill -> Ti6Al4V"
+    );
+    assert!(
+        !db.follow_one(target_ids[0], "usedWith")
+            .contains(source_ids[0]),
+        "PathDB should not store the old placeholder Ti6Al4V -> EndMill edge"
+    );
+}
+
+#[test]
+fn test_relation_with_unresolved_endpoint_fails_closed() {
+    let (storage, dir) = test_storage();
+
+    let facts = vec![
+        StorableFact::Entity {
+            name: "Ti6Al4V".to_string(),
+            entity_type: "Material".to_string(),
+            attributes: vec![],
+        },
+        StorableFact::Relation {
+            name: Some("bad_recommendation".to_string()),
+            rel_type: "usedWith".to_string(),
+            source: "MissingTool".to_string(),
+            target: "Ti6Al4V".to_string(),
+            confidence: 0.9,
+            attributes: vec![],
+        },
+    ];
+
+    storage
+        .add_facts(
+            facts,
+            ChangeSource::API {
+                client_id: "test".to_string(),
+            },
+        )
+        .unwrap();
+
+    let err = storage.flush().unwrap_err();
+    let semantic = err
+        .downcast_ref::<StorageSemanticError>()
+        .expect("expected typed storage semantic error");
+    assert!(matches!(
+        semantic,
+        StorageSemanticError::UnresolvedRelationEndpoint {
+            relation_name,
+            rel_type,
+            endpoint: RelationEndpointRole::Source,
+            entity_name,
+        } if relation_name.as_deref() == Some("bad_recommendation")
+            && rel_type == "usedWith"
+            && entity_name == "MissingTool"
+    ));
+    assert!(
+        storage.pathdb().relations.is_empty(),
+        "failed relation should not create a placeholder PathDB edge"
+    );
+    assert!(
+        storage.pathdb().entities.is_empty(),
+        "failed relation should reject the full change before partial entity writes"
+    );
+    assert!(
+        storage.changelog().is_empty(),
+        "failed relation should not be recorded as applied"
+    );
+    assert_eq!(
+        storage.pending().len(),
+        1,
+        "failed changes must remain pending for inspection or retry"
+    );
+    assert!(
+        !dir.path().join("api_additions.axi").exists(),
+        "failed relation should not append .axi output"
+    );
 }
 
 #[test]
@@ -139,15 +217,14 @@ fn test_tacit_knowledge_storage() {
     storage.flush().unwrap();
 
     // Verify in PathDB
-    let pathdb = storage.pathdb();
-    let db = pathdb.read();
+    let db = storage.pathdb();
     let tacit = db.find_by_type("TacitKnowledge");
     assert!(tacit.is_some());
 }
 
 #[test]
 fn test_constraint_storage() {
-    let (storage, dir) = test_storage();
+    let (storage, _dir) = test_storage();
 
     let facts = vec![StorableFact::Constraint {
         name: "SpeedLimit".to_string(),
@@ -159,111 +236,287 @@ fn test_constraint_storage() {
     storage
         .add_facts(facts, ChangeSource::UserEdit { user_id: None })
         .unwrap();
-    storage.flush().unwrap();
+    let results = storage.flush().unwrap();
 
-    // Constraints go to .axi only
-    let axi_path = dir.path().join("user_edits.axi");
-    let content = std::fs::read_to_string(&axi_path).unwrap();
+    let content = results[0].axi_lines.join("\n");
     assert!(content.contains("constraint"));
     assert!(content.contains("SpeedLimit"));
     assert!(content.contains("speed <= 60"));
 }
 
 #[test]
-fn test_changelog_persistence() {
-    let (storage, dir) = test_storage();
+fn review_required_constraint_stays_pending_until_explicit_approval() {
+    let dir = tempdir().unwrap();
+    let storage = UnifiedStorage::new(StorageConfig {
+        axi_dir: dir.path().to_path_buf(),
+        watch_files: false,
+        require_review: ReviewPolicy {
+            constraints: true,
+            low_confidence_threshold: None,
+            schema_changes: false,
+        },
+        max_pending: 10,
+    })
+    .unwrap();
+    let change_id = storage
+        .add_facts(
+            vec![StorableFact::Constraint {
+                name: "SpeedLimit".to_string(),
+                condition: "speed <= 60".to_string(),
+                severity: "error".to_string(),
+                message: None,
+            }],
+            ChangeSource::UserEdit { user_id: None },
+        )
+        .unwrap();
 
-    // Add multiple batches
+    assert!(storage.flush().unwrap().is_empty());
+    assert_eq!(storage.pending().len(), 1);
+    assert!(storage.changelog().is_empty());
+
+    let approved = storage.approve_change(change_id).unwrap();
+    assert_eq!(approved.change_id, change_id);
+    assert!(approved
+        .axi_lines
+        .iter()
+        .any(|line| line.contains("SpeedLimit")));
+    assert!(storage.pending().is_empty());
+    assert!(matches!(
+        storage.changelog().as_slice(),
+        [Change {
+            status: ChangeStatus::Applied,
+            ..
+        }]
+    ));
+}
+
+#[test]
+fn low_confidence_fact_stays_pending_for_review() {
+    let dir = tempdir().unwrap();
+    let storage = UnifiedStorage::new(StorageConfig {
+        axi_dir: dir.path().to_path_buf(),
+        watch_files: false,
+        require_review: ReviewPolicy {
+            constraints: false,
+            low_confidence_threshold: Some(0.7),
+            schema_changes: false,
+        },
+        max_pending: 10,
+    })
+    .unwrap();
+    let change_id = storage
+        .add_facts(
+            vec![StorableFact::TacitKnowledge {
+                name: "WeakRule".to_string(),
+                rule: "possibly_use_coolant".to_string(),
+                confidence: 0.4,
+                domain: "machining".to_string(),
+                source: "weak evidence".to_string(),
+            }],
+            ChangeSource::LLMExtraction {
+                session_id: uuid::Uuid::new_v4(),
+                model: "test-model".to_string(),
+                confidence: 0.4,
+            },
+        )
+        .unwrap();
+
+    assert!(storage.flush().unwrap().is_empty());
+    assert_eq!(storage.pending()[0].id, change_id);
+    assert!(storage.pathdb().entities.is_empty());
+}
+
+#[test]
+fn unknown_schema_type_stays_pending_for_review() {
+    let dir = tempdir().unwrap();
+    let storage = UnifiedStorage::new(StorageConfig {
+        axi_dir: dir.path().to_path_buf(),
+        watch_files: false,
+        require_review: ReviewPolicy {
+            constraints: false,
+            low_confidence_threshold: None,
+            schema_changes: true,
+        },
+        max_pending: 10,
+    })
+    .unwrap();
+    let change_id = storage
+        .add_facts(
+            vec![StorableFact::Entity {
+                name: "NovelEntity".to_string(),
+                entity_type: "PreviouslyUnknownType".to_string(),
+                attributes: vec![],
+            }],
+            ChangeSource::UserEdit { user_id: None },
+        )
+        .unwrap();
+
+    assert!(storage.flush().unwrap().is_empty());
+    assert_eq!(storage.pending()[0].id, change_id);
+    assert!(storage.pathdb().entities.is_empty());
+}
+
+#[test]
+fn review_change_can_be_explicitly_rejected_without_mutating_pathdb() {
+    let dir = tempdir().unwrap();
+    let storage = UnifiedStorage::new(StorageConfig {
+        axi_dir: dir.path().to_path_buf(),
+        watch_files: false,
+        require_review: ReviewPolicy {
+            constraints: true,
+            low_confidence_threshold: None,
+            schema_changes: false,
+        },
+        max_pending: 10,
+    })
+    .unwrap();
+    let change_id = storage
+        .add_facts(
+            vec![StorableFact::Constraint {
+                name: "UnsafeRule".to_string(),
+                condition: "always".to_string(),
+                severity: "error".to_string(),
+                message: None,
+            }],
+            ChangeSource::UserEdit { user_id: None },
+        )
+        .unwrap();
+
+    storage
+        .reject_change(change_id, "unsupported rule")
+        .unwrap();
+    assert!(storage.pending().is_empty());
+    assert!(storage.pathdb().entities.is_empty());
+    assert!(matches!(
+        storage.changelog().as_slice(),
+        [Change {
+            status: ChangeStatus::Rejected { reason },
+            ..
+        }] if reason == "unsupported rule"
+    ));
+}
+
+#[test]
+fn non_finite_evidence_confidence_is_rejected_before_queueing() {
+    let (storage, _dir) = test_storage();
+    let error = storage
+        .add_facts(
+            vec![StorableFact::TacitKnowledge {
+                name: "InvalidRule".to_string(),
+                rule: "invalid".to_string(),
+                confidence: f32::NAN,
+                domain: "test".to_string(),
+                source: "test".to_string(),
+            }],
+            ChangeSource::UserEdit { user_id: None },
+        )
+        .expect_err("non-finite confidence must fail closed");
+    assert!(error.to_string().contains("confidence"));
+    assert!(storage.pending().is_empty());
+}
+
+#[test]
+fn review_confidence_threshold_must_be_a_finite_probability() {
+    for threshold in [f32::NAN, f32::INFINITY, -0.1, 1.1] {
+        let dir = tempdir().unwrap();
+        let error = UnifiedStorage::new(StorageConfig {
+            axi_dir: dir.path().to_path_buf(),
+            watch_files: false,
+            require_review: ReviewPolicy {
+                constraints: false,
+                low_confidence_threshold: Some(threshold),
+                schema_changes: false,
+            },
+            max_pending: 1,
+        })
+        .err()
+        .expect("invalid review threshold must fail closed");
+        assert!(error.to_string().contains("low_confidence_threshold"));
+    }
+}
+
+#[test]
+fn zero_pending_limit_is_rejected_at_construction() {
+    let dir = tempdir().unwrap();
+    let error = UnifiedStorage::new(StorageConfig {
+        axi_dir: dir.path().to_path_buf(),
+        watch_files: false,
+        require_review: ReviewPolicy {
+            constraints: false,
+            low_confidence_threshold: None,
+            schema_changes: false,
+        },
+        max_pending: 0,
+    })
+    .err()
+    .expect("zero pending limit must fail closed");
+    assert!(error.to_string().contains("max_pending"));
+}
+
+#[test]
+fn pending_review_queue_fails_closed_at_configured_limit() {
+    let dir = tempdir().unwrap();
+    let storage = UnifiedStorage::new(StorageConfig {
+        axi_dir: dir.path().to_path_buf(),
+        watch_files: false,
+        require_review: ReviewPolicy {
+            constraints: true,
+            low_confidence_threshold: None,
+            schema_changes: false,
+        },
+        max_pending: 1,
+    })
+    .unwrap();
+    storage
+        .add_facts(
+            vec![StorableFact::Constraint {
+                name: "First".to_string(),
+                condition: "one".to_string(),
+                severity: "error".to_string(),
+                message: None,
+            }],
+            ChangeSource::UserEdit { user_id: None },
+        )
+        .unwrap();
+
+    let error = storage
+        .add_facts(
+            vec![StorableFact::Constraint {
+                name: "Second".to_string(),
+                condition: "two".to_string(),
+                severity: "error".to_string(),
+                message: None,
+            }],
+            ChangeSource::UserEdit { user_id: None },
+        )
+        .expect_err("pending review queue must remain bounded");
+    assert!(error.to_string().contains("pending change limit"));
+    assert_eq!(storage.pending().len(), 1);
+}
+
+#[test]
+fn test_in_memory_changelog_tracks_applied_changes() {
+    let (storage, _dir) = test_storage();
     for i in 0..3 {
         storage
             .add_facts(
                 vec![StorableFact::Entity {
-                    name: format!("Entity{}", i),
+                    name: format!("Entity{i}"),
                     entity_type: "Test".to_string(),
                     attributes: vec![],
                 }],
                 ChangeSource::System {
-                    reason: format!("test batch {}", i),
+                    reason: format!("test batch {i}"),
                 },
             )
             .unwrap();
         storage.flush().unwrap();
     }
-
-    // Verify changelog
-    let changelog_path = dir.path().join("changelog.json");
-    assert!(changelog_path.exists());
-    let changelog_content = std::fs::read_to_string(&changelog_path).unwrap();
-    let changelog: Vec<Change> = serde_json::from_str(&changelog_content).unwrap();
-    assert_eq!(changelog.len(), 3, "Should have 3 changes");
-
-    // Verify all marked as Applied
-    for change in &changelog {
-        assert!(matches!(change.status, ChangeStatus::Applied));
-    }
-}
-
-#[test]
-fn test_source_segregation() {
-    let (storage, dir) = test_storage();
-
-    // Add from different sources
-    storage
-        .add_facts(
-            vec![StorableFact::Entity {
-                name: "LLMEntity".to_string(),
-                entity_type: "Test".to_string(),
-                attributes: vec![],
-            }],
-            ChangeSource::LLMExtraction {
-                session_id: uuid::Uuid::new_v4(),
-                model: "test".to_string(),
-                confidence: 0.9,
-            },
-        )
-        .unwrap();
-
-    storage
-        .add_facts(
-            vec![StorableFact::Entity {
-                name: "UserEntity".to_string(),
-                entity_type: "Test".to_string(),
-                attributes: vec![],
-            }],
-            ChangeSource::UserEdit {
-                user_id: Some("user1".to_string()),
-            },
-        )
-        .unwrap();
-
-    storage
-        .add_facts(
-            vec![StorableFact::Entity {
-                name: "APIEntity".to_string(),
-                entity_type: "Test".to_string(),
-                attributes: vec![],
-            }],
-            ChangeSource::API {
-                client_id: "api-client".to_string(),
-            },
-        )
-        .unwrap();
-
-    storage.flush().unwrap();
-
-    // Verify separate .axi files
-    assert!(dir.path().join("llm_extracted.axi").exists());
-    assert!(dir.path().join("user_edits.axi").exists());
-    assert!(dir.path().join("api_additions.axi").exists());
-
-    // Verify content separation
-    let llm_content = std::fs::read_to_string(dir.path().join("llm_extracted.axi")).unwrap();
-    assert!(llm_content.contains("LLMEntity"));
-    assert!(!llm_content.contains("UserEntity"));
-
-    let user_content = std::fs::read_to_string(dir.path().join("user_edits.axi")).unwrap();
-    assert!(user_content.contains("UserEntity"));
-    assert!(!user_content.contains("LLMEntity"));
+    assert_eq!(storage.changelog().len(), 3);
+    assert!(storage
+        .changelog()
+        .iter()
+        .all(|change| matches!(change.status, ChangeStatus::Applied)));
 }
 
 #[test]
@@ -273,7 +526,7 @@ fn test_batch_operations() {
     // Add many facts in batch
     let facts: Vec<StorableFact> = (0..50)
         .map(|i| StorableFact::Entity {
-            name: format!("BatchEntity{}", i),
+            name: format!("BatchEntity{i}"),
             entity_type: "BatchTest".to_string(),
             attributes: vec![("index".to_string(), i.to_string())],
         })
@@ -290,8 +543,7 @@ fn test_batch_operations() {
     storage.flush().unwrap();
 
     // Verify all in PathDB
-    let pathdb = storage.pathdb();
-    let db = pathdb.read();
+    let db = storage.pathdb();
     let entities = db.find_by_type("BatchTest");
     assert!(entities.is_some());
     assert_eq!(entities.unwrap().len(), 50);
@@ -329,59 +581,49 @@ fn test_pending_and_flush() {
 }
 
 #[test]
-fn test_pathdb_persistence() {
-    let dir = tempdir().unwrap();
-    let pathdb_path = dir.path().join("persistent.axpd");
+fn rollback_updates_log_and_rebuilds_in_memory_pathdb() {
+    let (storage, _dir) = test_storage();
+    let first_change = storage
+        .add_facts(
+            vec![StorableFact::Entity {
+                name: "Keep".to_string(),
+                entity_type: "Test".to_string(),
+                attributes: vec![],
+            }],
+            ChangeSource::UserEdit { user_id: None },
+        )
+        .unwrap();
+    storage.flush().unwrap();
+    storage
+        .add_facts(
+            vec![StorableFact::Concept {
+                name: "RemoveAfterRollback".to_string(),
+                description: "temporary".to_string(),
+                difficulty: "easy".to_string(),
+                prerequisites: vec![],
+            }],
+            ChangeSource::UserEdit { user_id: None },
+        )
+        .unwrap();
+    storage.flush().unwrap();
 
-    // Create and populate
-    {
-        let config = StorageConfig {
-            axi_dir: dir.path().to_path_buf(),
-            pathdb_path: pathdb_path.clone(),
-            changelog_path: dir.path().join("changelog.json"),
-            watch_files: false,
-            ..Default::default()
-        };
-        let storage = UnifiedStorage::new(config).unwrap();
+    storage.rollback_to(first_change).unwrap();
 
-        storage
-            .add_facts(
-                vec![StorableFact::Entity {
-                    name: "Persistent".to_string(),
-                    entity_type: "Test".to_string(),
-                    attributes: vec![],
-                }],
-                ChangeSource::UserEdit { user_id: None },
-            )
-            .unwrap();
-        storage.flush().unwrap();
-    }
-
-    // Verify file exists
-    assert!(pathdb_path.exists());
-
-    // Reload and verify
-    {
-        let config = StorageConfig {
-            axi_dir: dir.path().to_path_buf(),
-            pathdb_path: pathdb_path.clone(),
-            changelog_path: dir.path().join("changelog.json"),
-            watch_files: false,
-            ..Default::default()
-        };
-        let storage = UnifiedStorage::new(config).unwrap();
-
-        let pathdb = storage.pathdb();
-        let db = pathdb.read();
-        let entities = db.find_by_type("Test");
-        assert!(entities.is_some());
-        assert!(!entities.unwrap().is_empty());
-    }
+    let changelog = storage.changelog();
+    assert_eq!(changelog.len(), 2);
+    assert!(matches!(changelog[0].status, ChangeStatus::Applied));
+    assert!(matches!(changelog[1].status, ChangeStatus::Rolled { .. }));
+    let db = storage.pathdb();
+    assert_eq!(
+        UnifiedStorage::entity_ids_by_storage_name(&db, "Keep").len(),
+        1
+    );
+    assert!(UnifiedStorage::entity_ids_by_storage_name(&db, "RemoveAfterRollback").is_empty());
 }
 
 #[test]
 fn test_concept_and_guideline_storage() {
-    let (storage, dir) = test_storage();
+    let (storage, _dir) = test_storage();
 
     let facts = vec![
         StorableFact::Concept {
@@ -401,16 +643,14 @@ fn test_concept_and_guideline_storage() {
     storage
         .add_facts(facts, ChangeSource::UserEdit { user_id: None })
         .unwrap();
-    storage.flush().unwrap();
+    let results = storage.flush().unwrap();
 
     // Verify in PathDB
-    let pathdb = storage.pathdb();
-    let db = pathdb.read();
+    let db = storage.pathdb();
     assert!(db.find_by_type("Concept").is_some());
     assert!(db.find_by_type("SafetyGuideline").is_some());
 
-    // Verify in .axi
-    let content = std::fs::read_to_string(dir.path().join("user_edits.axi")).unwrap();
+    let content = results[0].axi_lines.join("\n");
     assert!(content.contains("concept ChipFormation"));
     assert!(content.contains("guideline CoolantRequired"));
 }

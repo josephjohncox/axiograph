@@ -8,6 +8,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::OnceLock;
 
 // ============================================================================
 // PDF Document Types
@@ -276,7 +277,7 @@ pub fn extract_facts_from_pdf(doc: &PdfDocument, domain: &str) -> Vec<ExtractedF
 
     // Extract section headers from outline
     for item in &doc.outline {
-        extract_outline_facts(&mut facts, item, domain);
+        extract_outline_facts(&mut facts, item);
     }
 
     // Pattern-based extraction from text
@@ -285,7 +286,7 @@ pub fn extract_facts_from_pdf(doc: &PdfDocument, domain: &str) -> Vec<ExtractedF
     facts
 }
 
-fn extract_outline_facts(facts: &mut Vec<ExtractedFact>, item: &OutlineItem, domain: &str) {
+fn extract_outline_facts(facts: &mut Vec<ExtractedFact>, item: &OutlineItem) {
     facts.push(ExtractedFact {
         fact_type: "Section".to_string(),
         content: item.title.clone(),
@@ -297,7 +298,7 @@ fn extract_outline_facts(facts: &mut Vec<ExtractedFact>, item: &OutlineItem, dom
     });
 
     for child in &item.children {
-        extract_outline_facts(facts, child, domain);
+        extract_outline_facts(facts, child);
     }
 }
 
@@ -311,32 +312,51 @@ fn extract_pattern_facts(facts: &mut Vec<ExtractedFact>, text: &str, domain: &st
 }
 
 fn extract_machining_facts(facts: &mut Vec<ExtractedFact>, text: &str) {
+    // Keep compiled constants fallible so a pattern defect cannot become a
+    // process panic in document ingestion.
+    static SPEED_RE: OnceLock<Result<regex::Regex, regex::Error>> = OnceLock::new();
+    static FEED_RE: OnceLock<Result<regex::Regex, regex::Error>> = OnceLock::new();
+
     // Speed patterns: "XXX SFM" or "XXX m/min"
-    let speed_re = regex::Regex::new(r"(\d+(?:\.\d+)?)\s*(?:SFM|sfm|m/min)").unwrap();
-    for cap in speed_re.captures_iter(text) {
-        facts.push(ExtractedFact {
-            fact_type: "CuttingSpeed".to_string(),
-            content: cap[1].to_string(),
-            confidence: 0.8,
-            source: "text_pattern".to_string(),
-            attributes: [("unit".to_string(), "SFM".to_string())]
-                .into_iter()
-                .collect(),
-        });
+    if let Ok(speed_re) = SPEED_RE
+        .get_or_init(|| regex::Regex::new(r"(\d+(?:\.\d+)?)\s*(?:SFM|sfm|m/min)"))
+        .as_ref()
+    {
+        for cap in speed_re.captures_iter(text) {
+            let Some(value) = cap.get(1) else {
+                continue;
+            };
+            facts.push(ExtractedFact {
+                fact_type: "CuttingSpeed".to_string(),
+                content: value.as_str().to_string(),
+                confidence: 0.8,
+                source: "text_pattern".to_string(),
+                attributes: [("unit".to_string(), "SFM".to_string())]
+                    .into_iter()
+                    .collect(),
+            });
+        }
     }
 
     // Feed patterns: "0.XXX ipr" or "X.X mm/rev"
-    let feed_re = regex::Regex::new(r"(\d+(?:\.\d+)?)\s*(?:ipr|IPR|mm/rev)").unwrap();
-    for cap in feed_re.captures_iter(text) {
-        facts.push(ExtractedFact {
-            fact_type: "FeedRate".to_string(),
-            content: cap[1].to_string(),
-            confidence: 0.8,
-            source: "text_pattern".to_string(),
-            attributes: [("unit".to_string(), "ipr".to_string())]
-                .into_iter()
-                .collect(),
-        });
+    if let Ok(feed_re) = FEED_RE
+        .get_or_init(|| regex::Regex::new(r"(\d+(?:\.\d+)?)\s*(?:ipr|IPR|mm/rev)"))
+        .as_ref()
+    {
+        for cap in feed_re.captures_iter(text) {
+            let Some(value) = cap.get(1) else {
+                continue;
+            };
+            facts.push(ExtractedFact {
+                fact_type: "FeedRate".to_string(),
+                content: value.as_str().to_string(),
+                confidence: 0.8,
+                source: "text_pattern".to_string(),
+                attributes: [("unit".to_string(), "ipr".to_string())]
+                    .into_iter()
+                    .collect(),
+            });
+        }
     }
 }
 

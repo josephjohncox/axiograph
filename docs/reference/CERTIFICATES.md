@@ -1,584 +1,335 @@
-# Certificates (Rust → Lean)
+# Certificates
 
 **Diataxis:** Reference  
 **Audience:** contributors
 
-This repo follows **untrusted engine / trusted checker**:
+Axiograph uses an untrusted-runtime / trusted-checker split:
 
-- **Rust** computes results and emits a **certificate** (witness).
-- **Lean** checks the certificate against the formal semantics.
+- Rust elaborates canonical `.axi`, runs queries, builds runtime reports, and
+  emits certificates for supported fragments.
+- Lean re-checks the certificate against the formal semantics and the supplied
+  canonical `.axi` anchor.
 
-Certificates are currently JSON for ease of inspection. The intent is to keep the
-shape **stable and versioned**, and later add CBOR once the schema settles.
+Certificates are JSON today so they can be inspected, tested, and fed to the
+Lean executable. The verified service route is:
 
-## Versions
+```text
+exact accepted canonical .axi bytes
+  -> envelope-specific anchor (V3 query envelopes use RevisionDigestV2)
+  -> typed witness over stable facts / rewrite rules / compiled refs
+  -> caller expectations + Lean verifier receipt
+```
 
-### v1: reachability (float confidences)
+There is no direct emission-only query-certificate command. Query
+certification is exposed only where the caller can bind exact accepted `.axi`
+bytes, the compiled query digest, the exact answer digest, and an approved Lean
+checker receipt. Semantic MCP `verify` / `require_verified` is the service
+route. `axiograph check finite-query` is the file-oriented bound route used by
+the regulated-shipment acceptance fixture; it always invokes the approved
+checker and returns one report that distinguishes certifiable shape,
+certificate emission, and an accepted receipt bound to the exact answer.
 
-Rust:
-- `rust/crates/axiograph-pathdb/src/certificate.rs` (`Certificate`, version 1)
-- `rust/crates/axiograph-pathdb/src/verified.rs` (`ReachabilityProof`)
+## Active Families
 
-Lean:
-- `lean/Axiograph/Certificate/Format.lean` (`ReachabilityProof`, `Certificate.reachabilityV1`)
-- `lean/Axiograph/Certificate/Check.lean` (`verifyReachabilityProof`)
+The active families are the only public certificate surfaces. Some wire names
+carry explicit version suffixes because they are serialized contract names, but
+the docs and examples should teach the semantic role rather than a migration
+story.
 
-Shape:
+| Family | Role | Claim |
+| --- | --- | --- |
+| `axi_well_typed_v1` | Canonical module type gate | The anchored `.axi` module satisfies the supported well-typedness decision procedure. |
+| `axi_constraints_ok_v1` | Conservative theory-constraint gate | The anchored `.axi` module satisfies the supported key, functional, at-most, symmetry/transitivity closure, and builtin typing constraints. |
+| `query_result_v4` in envelope V3 | Query-and-answer-bound exact finite witness | Lean checks every row witness and proves equality with the declared bounded finite denotation under the exact accepted `.axi` bytes. The claim is `finite_exact_complete`; ontology closure and all out-of-fragment completeness claims remain excluded. |
+| `category_kernel_v3` in envelope V3 | Anchored finite category/groupoid presentation | Lean reconstructs the indexed presentation from exact `.axi`, checks endpoint-aware contextual equation congruence, syntactically replays both formal inverse-law cancellation traces for every generator, and checks bounded generator-reachability closure. This is decision procedure plus replay, not a wire-path denotation theorem. |
+| `reachability_v3` | Low-level canonical path witness | A path witness is valid against stable canonical `axi_fact_id` facts. Public verified query surfaces use `query_result_v4`. |
+| `rewrite_derivation_v3` | Anchored rewrite trace | Rewrite steps are replayable using builtin rules or rewrite rules declared in the anchored `.axi` module. |
+| `normalize_path_v2` | Groupoid path normalization | A mandatory endpoint-preserving rewrite trace reaches the checker-computed normal form; for the endpoint-retyped input, accepted replay preserves free-groupoid denotation. |
+| `path_equiv_v2` | Path equivalence | Mandatory traces take two endpoint-retyped expressions to one normal form; accepted replay implies equal free-groupoid denotation. Confidence is not part of this equality. |
+| `resolution_v2` | Fixed-point resolution decision | Lean recomputes the reconciliation decision from fixed-point inputs. |
+| `delta_f_v1` | Functorial pullback | Lean recomputes a finite `Delta_F` pullback for the supported schema/instance payload. |
+
+Unsupported or obsolete certificate payloads should fail closed. They should not
+be kept as public examples, Make targets, REPL flows, server options, or MCP
+tool outputs.
+
+## Anchors And Envelope Dispatch
+
+Envelope versions are semantic protocol versions, not aliases:
+
+- envelope V2 hosts the non-query certificate families that still have V2 wire contracts;
+- envelope V3 requires `CertificateAnchorV2 { revision_digest_v2 }` and hosts
+  `query_result_v4` or `category_kernel_v3`;
+- a V2 payload, a missing anchor, an unknown field, or a changed version cannot
+  satisfy a V3 check.
+
+A V3 query anchor has this shape:
 
 ```json
 {
-  "version": 1,
-  "kind": "reachability",
-  "proof": {
-    "type": "step",
-    "from": 1,
-    "rel_type": 10,
-    "to": 2,
-    "rel_confidence": 0.9,
-    "rest": { "type": "reflexive", "entity": 2 }
+  "version": 3,
+  "kind": "query_result_v4",
+  "anchor": {
+    "revision_digest_v2": "axi:revision:v2:sha256:<64-lowercase-hex>"
   }
 }
 ```
 
-Lean treats v1 as transitional only: floats are *not* the long-term trusted representation.
+Rust and Lean independently hash the exact accepted UTF-8 bytes with the shared
+`AXIOGRAPH-ID` V2 framing. The accepted bytes remain the reviewable meaning
+plane. The digest identifies those bytes; PathDB, snapshots, indexes, and
+storage paths do not become semantic authority.
 
-### v2: reachability (fixed-point confidences)
+Stable fact references use the same domain-separated SHA-256 identity family as
+module/query/answer/certificate identities. The Lean index rejects any
+same-id/different-tuple ambiguity before it verifies a V4 row. No FNV query
+anchor, legacy query reader, or prefix-upgrade shim exists.
 
-v2 replaces float confidences with a **fixed-point numerator** (no floats in the checker).
+## Module Type Gate
 
-Shared invariant:
-- `0 ≤ rel_confidence_fp ≤ 1_000_000`
-- The denominator is shared with Lean: `Axiograph.Prob.Precision = 1_000_000`
+`axi_well_typed_v1` is a small decision procedure for canonical `.axi` modules.
+It checks that:
 
-Rust:
-- `rust/crates/axiograph-pathdb/src/certificate.rs` (`CertificateV2`, `FixedPointProbability`)
-- Example emitter: `rust/crates/axiograph-pathdb/examples/emit_reachability_cert_v2.rs`
+- instances reference declared schemas,
+- assignments use the expected object/relation shape,
+- relation tuples have exactly the declared fields,
+- tuple values and subtype reuse do not create ambiguous typed references.
 
-Lean:
-- `lean/Axiograph/Certificate/Format.lean` (`ReachabilityProofV2`, `Certificate.reachabilityV2`)
-- `lean/Axiograph/Prob/Verified.lean` (`VProb`, `vMult`)
-- `lean/Axiograph/Certificate/Check.lean` (`verifyReachabilityProofV2`)
-
-Shape:
-
-```json
-{
-  "version": 2,
-  "kind": "reachability_v2",
-  "proof": {
-    "type": "step",
-    "from": 1,
-    "rel_type": 10,
-    "to": 2,
-    "rel_confidence_fp": 900000,
-    "rest": { "type": "reflexive", "entity": 2 }
-  }
-}
-```
-
-Semantics:
-- Multiplication is fixed-point and rounds down:
-  - `(a/P) * (b/P)` is encoded as `((a*b)/P)/P`, i.e. numerator `((a*b)/P)`.
-
-#### Optional `.axi` anchors (snapshot-scoped)
-
-Any v2 certificate may additionally carry an optional anchor:
-
-```json
-{
-  "version": 2,
-  "anchor": { "axi_digest_v1": "fnv1a64:..." },
-  "kind": "...",
-  "proof": { "...": "..." }
-}
-```
-
-For **anchored reachability**, each step can also carry a `relation_id`:
-
-- `relation_id = N` refers to `Relation_N` in a `PathDBExportV1` snapshot.
-- Lean checks that every referenced `relation_id` exists in the snapshot `relation_info`
-  table and matches `(from, rel_type, to, rel_confidence_fp)` (the snapshot stores float bits;
-  Lean deterministically converts them to the fixed-point numerator to avoid trusting floats).
-
-Note: this “anchored to `PathDBExportV1`” scheme is an end-to-end scaffold.
-The long-term goal is to anchor certificates to canonical `.axi` inputs via stable
-fact IDs (module digest + extracted fact ids), so verification does not require the
-engine interchange snapshot format.
-
-Samples:
-- Anchor snapshot: `examples/anchors/pathdb_export_anchor_v1.axi`
-- Anchored reachability cert: `examples/certificates/reachability_v2_anchored.json`
-
-End-to-end:
-- `make verify-lean-e2e-v2-anchored`
-
-### v2: axi_well_typed_v1 (canonical `.axi` module typecheck gate)
-
-This certificate kind is a small “trusted gate” for canonical `.axi` inputs:
-
-- Rust parses the input module and emits a `axi_well_typed_v1` certificate **anchored to the module digest**.
-- Lean re-parses the anchored module and re-checks it with a small decision procedure.
-  In the trusted codebase, this corresponds to producing a `TypedModule` witness (a module packaged with a proof of well-typedness).
-
-What is checked today (intentionally small):
-- instances reference declared schemas
-- assignments are either ident-sets (objects) or tuple-sets (relations), not mixed
-- tuples have exactly the declared fields (no missing/extra/duplicate fields)
-- tuple values may introduce objects implicitly, but subtyping-based reuse must not become ambiguous
-
-Shape (sketch):
-
-```json
-{
-  "version": 2,
-  "anchor": { "axi_digest_v1": "fnv1a64:..." },
-  "kind": "axi_well_typed_v1",
-  "proof": {
-    "module_name": "EconomicFlows",
-    "schema_count": 1,
-    "theory_count": 1,
-    "instance_count": 1,
-    "assignment_count": 42,
-    "tuple_count": 100
-  }
-}
-```
-
-End-to-end:
-- `make verify-lean-e2e-axi-well-typed-v1`
-
-CLI usage:
+Emit and verify a module type certificate directly from canonical `.axi`:
 
 ```bash
 axiograph cert typecheck examples/economics/EconomicFlows.axi --out build/axi_well_typed.json
 make verify-lean-cert AXI=examples/economics/EconomicFlows.axi CERT=build/axi_well_typed.json
 ```
 
-### v2: axi_constraints_ok_v1 (core theory constraints gate)
+End-to-end target:
 
-This certificate kind is a conservative ontology-engineering gate:
-
-- Rust claims the anchored canonical `.axi` module satisfies a **small, high-ROI**
-  subset of theory constraints.
-- Lean re-parses the anchored module and re-checks the same subset (fail-closed).
-
-For the design rationale (open-world semantics + what we can/can’t certify as a
-single “module OK” gate), see `docs/explanation/CONSTRAINT_SEMANTICS.md`.
-
-Certified subset:
-- `constraint key Rel(field, ...)`
-- `constraint functional Rel.field -> Rel.field`
-  - Only **unary** FDs are canonical. Multi-field determinism should be written as a
-    composite key: `constraint key Rel(a, b, ...)`.
-- `constraint at_most N Rel.field -> Rel.field`
-  - Optional fiber params: `... param (ctx, time)` (enforced per fixed param assignment).
-- symmetry annotations:
-  - `constraint symmetric Rel`
-  - `constraint symmetric Rel where Rel.field in {A, B, ...}`
-  - optional carrier-field clause: `... on (field0, field1)`
-  - optional parameter-field clause: `... param (field0, field1, ...)`
-  Semantics: the checker does **not** require inverse tuples to be explicitly present.
-  Instead, it checks that the module’s **key/functional** constraints remain consistent
-  under symmetric closure (adding swapped-endpoint tuples) on the carrier fields.
-  By default the carrier fields are the first two relation fields; `on (field0, field1)`
-  makes the choice explicit.
-  If `param (..)` is present, symmetric closure is interpreted as operating on the
-  carrier pair **within each fixed assignment** of the parameter fields (e.g. `ctx`, `time`),
-  and other relation fields are treated as out-of-scope annotations/witnesses for the
-  purposes of this certificate.
-- transitivity annotations:
-  - `constraint transitive Rel`
-  - optional carrier-field clause: `constraint transitive Rel on (field0, field1)`
-  - optional parameter-field clause: `constraint transitive Rel ... param (field0, field1, ...)`
-  Semantics: the checker does **not** require the transitive closure to be explicitly
-  materialized. Instead, it checks that the module’s **key/functional** constraints
-  remain consistent under transitive closure on the relation’s carrier fields.
-  By default the carrier fields are the first two relation fields; `on (field0, field1)`
-  makes the choice explicit.
-  If `param (..)` is present, transitive closure is interpreted as operating on the
-  carrier pair within each fixed assignment of the parameter fields (e.g. `ctx`, `time`),
-  without inventing new parameter values.
-  If a key/functional constraint refers to non-carrier/non-param fields, the certificate
-  check fails (witness construction is out of scope for this certificate).
-- executable typing rules (small builtin set):
-  - `constraint typing Rel: preserves_manifold_and_increments_degree`
-  - `constraint typing Rel: preserves_manifold_and_adds_degree`
-  - `constraint typing Rel: depends_on_metric_and_dualizes_degree`
-  Semantics: the checker validates consistency against supporting “typing relations”
-  (`FormOn`, `FormDegree`, `MetricOn`, `ManifoldDimension`) and treats output facts as
-  derivable when omitted.
-
-Notes:
-- Opaque named blocks (`constraint Name:` followed by an indented body) are still
-  **preserved**, but are not part of `axi_constraints_ok_v1` yet.
-- Truly unknown constraints (`ConstraintV1.unknown`) are rejected by both:
-  - accepted-plane promotion (hard error), and
-  - `axi_constraints_ok_v1` (fail-closed).
-- If you have dialect-ish constraint formatting (e.g. multi-line `... where` guards),
-  run `axiograph check fmt --write your_file.axi` to canonicalize the constraint lines.
-
-Shape (sketch):
-
-```json
-{
-  "version": 2,
-  "anchor": { "axi_digest_v1": "fnv1a64:..." },
-  "kind": "axi_constraints_ok_v1",
-  "proof": {
-    "module_name": "ConstraintsOkDemo",
-    "constraint_count": 10,
-    "instance_count": 1,
-    "check_count": 10
-  }
-}
+```bash
+make verify-lean-e2e-axi-well-typed-v1
 ```
 
-End-to-end:
-- `make verify-lean-e2e-axi-constraints-ok-v1`
+## Constraint Gate
 
-CLI usage:
+`axi_constraints_ok_v1` is the conservative Lean-backed theory gate. It checks
+only the supported subset:
+
+- `constraint key Rel(field, ...)`
+- `constraint functional Rel.field -> Rel.field`
+- `constraint at_most N Rel.field -> Rel.field`
+- optional `param (...)` fibers for at-most, symmetry, and transitivity checks
+- supported symmetry/transitivity closure checks over carrier fields
+- selected builtin typing rules used by the examples
+
+Opaque theory blocks remain runtime-addressable obligations but are not
+certified by this gate. Unknown constraints fail closed.
+
+Emit and verify:
 
 ```bash
 axiograph cert constraints examples/ontology/OntologyRewrites.axi --out build/axi_constraints_ok.json
 make verify-lean-cert AXI=examples/ontology/OntologyRewrites.axi CERT=build/axi_constraints_ok.json
 ```
 
-### v2: query_result_v1 (certified conjunctive queries: AxQL / SQL-ish)
-
-This certificate kind supports “certified querying” for the *conjunctive query*
-kernel used by AxQL (REPL) and the SQL-ish surface.
-
-It proves **soundness of returned rows**:
-- each returned row satisfies the query under the anchored snapshot
-- it does **not** claim completeness (“these are all rows”)
-
-Anchoring:
-- the certificate carries an `.axi` digest anchor (`axi_digest_v1`)
-- path witnesses use `relation_id` fact ids that refer to `Relation_<id>` in a
-  `PathDBExportV1` snapshot
-
-What Lean checks:
-- type constraints against `entity_type`
-- attribute constraints against `entity_attribute`
-- path witnesses via anchored `ReachabilityProofV2` (each step must reference a real snapshot edge)
-- RPQ semantics using mathlib `RegularExpression` (so path-meaning is not hand-rolled)
-- optional context/world scoping (when present in the query) as an ordinary `path`
-  atom over `axi_fact_in_context` (single-context scoping is certifiable today; multi-context unions are execution-only for now)
-
-Shape (sketch):
-
-```json
-{
-  "version": 2,
-  "anchor": { "axi_digest_v1": "fnv1a64:..." },
-  "kind": "query_result_v1",
-  "proof": {
-    "query": { "select_vars": ["?y"], "atoms": [ /* ... */ ], "max_hops": 5 },
-    "rows": [
-      { "bindings": [{ "var": "?y", "entity": 2 }], "witnesses": [ /* ... */ ] }
-    ],
-    "truncated": false
-  }
-}
-```
-
-End-to-end:
-- `make verify-lean-e2e-query-result-v1`
-
-### v2: query_result_v3 (axi-anchored query results)
-
-`query_result_v3` removes the dependency on `PathDBExportV1` snapshot tables by
-anchoring directly to a canonical `.axi` module:
-
-- the certificate anchor is `axi_digest_v1` of the canonical module
-- witnesses reference edges by their stable `axi_fact_id` (derived from the
-  canonical tuple fact), rather than `relation_id` in a snapshot export
-
-This keeps `.axi` as the canonical truth and avoids “DB export semantics drift”
-in the checker.
-
-End-to-end:
-- `make verify-lean-e2e-query-result-module-v3`
-
-CLI usage (canonical module → certificate; optional `--anchor-out` only for debugging):
+End-to-end target:
 
 ```bash
-axiograph cert query examples/manufacturing/SupplyChainHoTT.axi \
-  --lang axql \
-  'select ?to where name("RawMetal_A") -Flow-> ?to limit 10' \
-  --out build/supply_chain_query_cert_v3.json
-
-make verify-lean-cert AXI=examples/manufacturing/SupplyChainHoTT.axi CERT=build/supply_chain_query_cert_v3.json
+make verify-lean-e2e-axi-constraints-ok-v1
 ```
 
-### v2: query_result_v2 (certified disjunction / UCQs)
+## Typed Query Witness
 
-This certificate kind extends `query_result_v1` with **top-level disjunction**
-(`or`): a query is a union of conjunctive branches (UCQ).
+`query_result_v4` binds three objects into one checked result:
 
-It proves **soundness of returned rows**, but does not claim completeness.
+1. the exact accepted `.axi` module bytes through `revision_digest_v2`;
+2. the prepared lowered query through `prepared_query_digest_v1`; and
+3. the ordered selected projections plus `runtime_truncated` through
+   `answer_digest_v1`.
 
-What changes compared to `query_result_v1`:
-- the query payload stores `disjuncts: [ [atoms...], [atoms...], ... ]`
-- each row carries `disjunct: <index>` to indicate which branch it satisfies
-- Lean checks each row against that branch using the same atom/witness rules
+`PreparedQueryBindingV1` contains only:
 
-End-to-end:
-- `make verify-lean-e2e-query-result-v2`
+- `version = 1`;
+- ordered selected variables;
+- ordered disjuncts, atoms, terms, and recursive regular-expression structure;
+- optional `max_hops`;
+- fixed-point `min_confidence_fp` numerator;
+- `row_limit`; and
+- `claim_kind = finite_exact_complete`.
 
-CLI usage (disjunction over a snapshot anchor):
+The digest excludes source text, diagnostic elaborated text, plans, inferred
+types, runtime kernel refs, DB tokens, rows, and truncation. Rust constructs and
+stores the binding from the prepared lowered AST. Certificate emission does not
+reparse diagnostic text or independently re-elaborate the source query.
+
+### Canonical digest framing
+
+Both prepared and answer digests use the V2 identity preimage from
+`Axiograph.Util.Sha256`: magic `AXIOGRAPH-ID`, version 2, a lowercase ASCII
+domain, an ordered field count, and each field as an unsigned 64-bit
+big-endian byte length followed by exact bytes.
+
+The prepared digest uses kind/domain `query`/`query`. Its ordered fields are:
+
+1. `prepared_query_binding_v1`, `1`, and `finite_exact_complete`;
+2. `select_count`, the decimal count, then `select`, variable for each selected
+   variable in order;
+3. `disjunct_count`, then for each branch `disjunct`, decimal branch index,
+   decimal atom count, and recursive atom fields in source-lowered order;
+4. atom tags `atom_type`, `atom_attr_eq`, or `atom_path`; term tags
+   `term_var`/`term_const`; and regex tags `regex_epsilon`, `regex_rel`,
+   `regex_seq`, `regex_alt`, `regex_star`, `regex_plus`, or `regex_opt`, with
+   decimal child counts for sequence and alternation;
+5. `max_hops_none` or `max_hops_some`, decimal value;
+6. `min_confidence_none` or `min_confidence_some`, decimal fixed-point
+   numerator; and
+7. `row_limit`, decimal value.
+
+The answer digest uses kind/domain `answer`/`answer`. Its ordered fields are
+`query_answer_v1`, the prepared digest, selected-variable names, row count,
+each row index and `(variable, stable entity id)` projection in selected-variable
+order, then `runtime_truncated_true` or `runtime_truncated_false`. Row order and
+duplicates are significant. Reordering, dropping, duplicating, or changing a
+row changes the digest.
+
+Lean recomputes both digests, validates every row, enforces
+`rows.size <= row_limit`, rejects `runtime_truncated = true`, evaluates the
+bounded finite query denotation, and proves exact row equality. The executable
+fragment is a finite UCQ over type, canonical derived-attribute equality, and
+regular paths; repeated paths require explicit `max_hops`. Syntax, regex, hop,
+and candidate-assignment bounds make the decision procedure total.
+`QueryAnswer<CertificateEmitted>` retains the exact certificate serialization
+and `CertificateIdV2`; only a matching accepted receipt transitions it to
+`LeanVerified` and permits the finite completeness claim.
+
+For service, REPL, and MCP query surfaces, policy remains controlled by
+`QueryCertificatePolicyV1`:
+
+- `none`: run without a returned certificate;
+- `emit`: emit envelope V3 / `query_result_v4`;
+- `verify`: run the stdio V2 checker and return its full receipt;
+- `require_verified`: fail closed unless the query is certifiable, the accepted
+  bytes and prepared/answer expectations match, and Lean accepts.
+
+The direct query-certificate CLI was removed rather than preserve an
+emission-only path that could be confused with a Lean-verified result.
+
+### Verifier protocol and receipt
+
+Query-bound verification uses `axiograph_verify --stdio-v2`, protocol
+`axiograph-verifier-stdio-v2`, and build id `axiograph-verify-main-v3`. The
+request requires non-null, well-formed `expected_prepared_query_digest` and
+`expected_answer_digest` strings. Missing, null, malformed, non-string, or
+unknown fields reject.
+
+`VerifierReceiptV2` returns the nonce, approved checker SHA-256 and build id,
+`anchor_digest_v2`, exact-certificate `certificate_digest_v2`, prepared digest,
+answer digest, certificate kind, claim kind, decision, and message. Rust accepts
+the receipt only when all fields match its caller expectations and the process
+exit status agrees with `accepted` or `rejected`. An old stdio V1 receipt or old
+build id cannot satisfy this protocol.
+
+## Rewrite And Path Families
+
+`rewrite_derivation_v3` is the active rewrite trace for accepted `.axi` rules.
+Each step references either a builtin rule or an `.axi` rule:
+
+```json
+{
+  "rule_ref": "axi-rule-v2|axi:revision:v2:sha256:<64-hex>|TheoryName|rule_name"
+}
+```
+
+Lean resolves the rule against the anchored module, replays each step, checks
+endpoints, and rejects derivations that do not produce the claimed output.
+
+`normalize_path_v2` and `path_equiv_v2` use a closed builtin groupoid rewrite
+vocabulary. Their traces are mandatory. The parser rejects missing traces,
+unknown fields, non-composable endpoints, invalid positions, and injected
+confidence fields. `Certificate.Invariants`, imported by `VerifyMain`, proves
+that accepted builtin traces preserve denotation after endpoint retyping in
+mathlib's free groupoid.
+Fixed-point confidence remains a separate syntax-directed fold because rounding
+at each multiplication is not associative.
+
+`category_kernel_v3` additionally carries exact-byte-anchored signed generator
+words. Rust emits one deterministic cancellation trace for `g ; g⁻¹` and one
+for `g⁻¹ ; g` for every presented generator. Lean reconstructs the same indexed
+presentation and requires exact coverage before accepting the certificate. It
+also requires one one-step forward congruence witness per equation and checks
+the equation's source and target at the replacement offset, so `id(A)` cannot
+be applied at `id(B)`.
+
+The V3 category anchor covers one exact defining module. Export rejects a schema
+whose forward equations were added by an importing module; the current envelope
+does not pretend to bind an ordered import closure. The cancellation replay is
+not connected to `GroupoidPath.denote` by an acceptance theorem, so this family
+is replay-only. A different valid reachability explanation for the same typed
+endpoint pair may be accepted; invalid or incomplete explanations reject.
+
+Useful targets:
 
 ```bash
-axiograph cert query examples/anchors/pathdb_export_anchor_v1.axi \
-  --lang axql \
-  'select ?y where 0 -r1-> ?y or 0 -r1/r2-> ?y' \
-  --out build/query_result_or_v2.json
-make verify-lean-cert AXI=examples/anchors/pathdb_export_anchor_v1.axi CERT=build/query_result_or_v2.json
+make verify-lean-e2e-rewrite-derivation-v3
+make verify-lean-e2e-normalize-path-v2
+make verify-lean-e2e-path-equiv-v2
+make verify-lean-e2e-path-equiv-congr-v2
+make verify-lean-indexed-path-theory
+make verify-lean-e2e-category-kernel-v3
 ```
 
-### v2: resolution (fixed-point)
+## Reconciliation And Migration Families
 
-This certificate claims a conflict-resolution decision and lets Lean re-compute
-the decision using `Axiograph.Prob.decideResolution`.
+`resolution_v2` and `delta_f_v1` are finite checker families used by
+reconciliation/migration examples:
 
-Rust:
-- `rust/crates/axiograph-pathdb/src/certificate.rs` (`ResolutionProofV2`)
-- Example emitter: `rust/crates/axiograph-pathdb/examples/emit_resolution_cert_v2.rs`
+- `resolution_v2` recomputes a fixed-point reconciliation decision.
+- `delta_f_v1` recomputes a finite functorial pullback.
 
-Lean:
-- `lean/Axiograph/Certificate/Format.lean` (`ResolutionProofV2`)
-- `lean/Axiograph/Certificate/Check.lean` (`verifyResolutionProofV2`)
+Targets:
 
-Shape:
-
-```json
-{
-  "version": 2,
-  "kind": "resolution_v2",
-  "proof": {
-    "first_confidence_fp": 800000,
-    "second_confidence_fp": 600000,
-    "threshold_fp": 200000,
-    "decision": { "tag": "choose_first" }
-  }
-}
+```bash
+make verify-lean-e2e-resolution-v2
+make verify-lean-e2e-delta-f-v1
 ```
 
-Decision tags:
-- `choose_first`
-- `choose_second`
-- `need_review`
-- `merge` (includes `w1_fp`, `w2_fp`)
+## Running The Checker
 
-Sample: `examples/certificates/resolution_v2.json`
+Recommended current gates:
 
-### v2: normalize_path (groupoid normalization + derivations)
-
-This certificate claims a normalized form of a path expression and (optionally)
-provides an explicit rewrite derivation.
-
-Expression constructors:
-- `reflexive` (identity)
-- `step` (generator edge)
-- `trans` (composition)
-- `inv` (formal inverse)
-
-Rust:
-- `rust/crates/axiograph-pathdb/src/certificate.rs` (`PathExprV2`, `NormalizePathProofV2`)
-- Example emitter: `rust/crates/axiograph-pathdb/examples/emit_normalize_path_cert_v2.rs`
-
-Lean:
-- `lean/Axiograph/Certificate/Format.lean` (`PathExprV2`, `NormalizePathProofV2`)
-- `lean/Axiograph/Certificate/Check.lean` (`verifyNormalizePathProofV2`)
-
-Shape:
-
-```json
-{
-  "version": 2,
-  "kind": "normalize_path_v2",
-  "proof": {
-    "input": { "type": "trans", "left": { "type": "reflexive", "entity": 1 }, "right": { "...": "..." } },
-    "normalized": { "type": "step", "from": 1, "rel_type": 10, "to": 2 },
-    "derivation": [
-      { "pos": [0, 1], "rule": "assoc_right" }
-    ]
-  }
-}
+```bash
+make verify-canonical-spine
+make verify-lean-certificates
+make verify-lean-e2e-suite
+make verify-lean-semantic-vcs
 ```
 
-Rewrite steps:
-- `rule` is one of:
-  - `assoc_right`, `id_left`, `id_right`
-  - `inv_refl`, `inv_inv`, `inv_trans`
-  - `cancel_head` (supports both `trans atom (trans invAtom rest)` and `trans atom invAtom`)
-- `pos` is a path from the root:
-  - `0` = `.trans.left`
-  - `1` = `.trans.right`
-  - `2` = `.inv.path`
+Custom certificate:
 
-Lean verifies `normalize_path_v2` by:
-- Checking endpoints match.
-- If `derivation` is present: replaying every step (congruence-aware via `pos`) and ensuring the
-  final expression equals the claimed `normalized`.
-- Always re-computing normalization and checking equality with the claimed `normalized`.
-
-Sample: `examples/certificates/normalize_path_v2.json`
-
-### v2: rewrite_derivation (replayable rewrite traces)
-
-This certificate claims that `output` is reachable from `input` by replaying a
-list of `(rule, position)` rewrite steps.
-
-Rust:
-- `rust/crates/axiograph-pathdb/src/certificate.rs` (`RewriteDerivationProofV2`)
-- Example emitter: `rust/crates/axiograph-pathdb/examples/emit_rewrite_derivation_cert_v2.rs`
-
-Lean:
-- `lean/Axiograph/Certificate/Format.lean` (`RewriteDerivationProofV2`)
-- `lean/Axiograph/Certificate/Check.lean` (`verifyRewriteDerivationProofV2`)
-
-Shape:
-
-```json
-{
-  "version": 2,
-  "kind": "rewrite_derivation_v2",
-  "proof": {
-    "input": { "type": "trans", "...": "..." },
-    "output": { "type": "step", "...": "..." },
-    "derivation": [{ "pos": [], "rule": "id_left" }]
-  }
-}
+```bash
+make verify-lean-cert AXI=path/to/module.axi CERT=path/to/certificate.json
 ```
 
-Sample: `examples/certificates/rewrite_derivation_v2.json`
+The `AXI=` argument is required for anchored families. Unanchored checker
+families are intentionally narrow and should not be used to make accepted
+ontology/query claims.
 
-### v2: rewrite_derivation_v3 (first-class rule references: builtin + `.axi`)
+## Non-Claims
 
-`rewrite_derivation_v3` generalizes `rewrite_derivation_v2` so rewrite steps can
-reference:
+A Lean-accepted certificate does not prove:
 
-- builtin groupoid rules (`builtin:<tag>`), or
-- rewrite rules declared in canonical `.axi` theories (`axi:<axi_digest_v1>:<theory>:<rule>`).
+- that source facts are true,
+- query completeness outside the explicit bounded finite denotation of an
+  accepted `query_result_v4`,
+- that the full Rust runtime is correct,
+- that external graph DB projections are authoritative,
+- that embedding/LLM evidence is accepted ontology truth,
+- or that Axiograph has global ontology closure.
 
-This is the certificate format we use for “**semantics = accepted rewrite rules**”:
-Rust can apply rules during execution/optimization and emit an auditable derivation;
-Lean replays the derivation by resolving each referenced rule against the anchored `.axi`.
+For runtime closure tiers and completeness claims, use
+`docs/reference/RUNTIME_THEORY_CHECKER.md`.
 
-Rust:
-- `rust/crates/axiograph-pathdb/src/certificate.rs` (`RewriteDerivationProofV3`, `PathRewriteStepV3`)
-- Example emitter: `rust/crates/axiograph-pathdb/examples/emit_rewrite_derivation_cert_v3.rs`
+## Derived Storage Boundary
 
-Lean:
-- `lean/Axiograph/Certificate/Format.lean` (`RewriteDerivationProofV3`)
-- `lean/Axiograph/Certificate/Check.lean` (`verifyRewriteDerivationProofV3Anchored`)
-
-Shape (sketch):
-
-```json
-{
-  "version": 2,
-  "anchor": { "axi_digest_v1": "fnv1a64:..." },
-  "kind": "rewrite_derivation_v3",
-  "proof": {
-    "input": { "type": "trans", "...": "..." },
-    "output": { "type": "step", "...": "..." },
-    "derivation": [{ "pos": [], "rule_ref": "axi:fnv1a64:...:T:id_left_axi" }]
-  }
-}
-```
-
-End-to-end:
-- `make verify-lean-e2e-rewrite-derivation-v3`
-
-Anchor and demo inputs:
-- `.axi` rule anchor: `examples/anchors/rewrite_rules_anchor_v1.axi`
-
-### v2: path_equiv (groupoid equivalence via normalization + optional derivations)
-
-This certificate claims that two path expressions are equivalent under the
-groupoid rewrite laws.
-
-Rust provides:
-- `left` and `right` path expressions,
-- a shared `normalized` form,
-- and (optionally) explicit rewrite derivations for both sides.
-
-Rust example emitters:
-- `rust/crates/axiograph-pathdb/examples/emit_path_equiv_cert_v2.rs`
-- `rust/crates/axiograph-pathdb/examples/emit_path_equiv_congr_cert_v2.rs` (congruence via post-composition)
-
-Lean verifies `path_equiv_v2` by:
-- checking endpoints match,
-- replaying `left_derivation` and `right_derivation` when present,
-- and recomputing normalization on both sides to ensure the claimed normal form
-  is correct.
-
-Sample: `examples/certificates/path_equiv_v2.json`
-
-### v2: delta_f (functorial pullback / Δ_F)
-
-This certificate claims the result of a **functorial data migration pullback**:
-
-- Given a schema morphism (functor) `F : S₁ → S₂`, and
-- a target instance `I : S₂ → Set`,
-- compute the pulled-back instance `Δ_F(I) = I ∘ F : S₁ → Set`.
-
-Rust:
-- `rust/crates/axiograph-pathdb/src/migration.rs` (`SchemaMorphismV1`, `DeltaFMigrationProofV1`)
-- `rust/crates/axiograph-pathdb/src/optimizer.rs` (`delta_f_v1`, `delta_f_certificate_v1`)
-- Example emitter: `rust/crates/axiograph-pathdb/examples/emit_delta_f_cert_v1.rs`
-
-Lean:
-- `lean/Axiograph/Certificate/Format.lean` (`Migration.*` parsers)
-- `lean/Axiograph/Certificate/Check.lean` (`Migration.verifyDeltaFMigrationProofV1`)
-
-Shape:
-
-```json
-{
-  "version": 2,
-  "kind": "delta_f_v1",
-  "proof": {
-    "morphism": {
-      "source_schema": "S1",
-      "target_schema": "S2",
-      "objects": [{ "source_object": "A", "target_object": "X" }],
-      "arrows": [{ "source_arrow": "f", "target_path": ["g"] }]
-    },
-    "source_schema": { "name": "S1", "objects": ["A"], "arrows": [], "subtypes": [], "relations": [], "equations": [] },
-    "target_instance": { "name": "I2", "schema": "S2", "objects": [], "arrows": [], "relations": [] },
-    "pulled_back_instance": { "name": "I2_delta_f", "schema": "S1", "objects": [], "arrows": [], "relations": [] }
-  }
-}
-```
-
-Lean verifies `delta_f_v1` by recomputing `Δ_F` from `(morphism, source_schema, target_instance)`
-and checking the claimed `pulled_back_instance` matches.
-
-Sample: `examples/certificates/delta_f_v1.json`
-
-## Running the checker
-
-- v1 sample: `make verify-lean`
-- v2 sample: `make verify-lean-v2`
-- v2 resolution sample: `make verify-lean-resolution-v2`
-- v2 normalize_path sample: `make verify-lean-normalize-path-v2`
-- v2 path_equiv sample: `make verify-lean-path-equiv-v2`
-- v2 delta_f sample: `make verify-lean-delta-f-v1`
-- Rust→Lean v1: `make verify-lean-e2e`
-- Rust→Lean v2: `make verify-lean-e2e-v2`
-- Rust→Lean v2 resolution: `make verify-lean-e2e-resolution-v2`
-- Rust→Lean v2 normalize_path: `make verify-lean-e2e-normalize-path-v2`
-- Rust→Lean v2 path_equiv: `make verify-lean-e2e-path-equiv-v2`
-- Rust→Lean v2 path_equiv congruence: `make verify-lean-e2e-path-equiv-congr-v2`
-- Rust→Lean v2 delta_f: `make verify-lean-e2e-delta-f-v1`
-- Focused suite: `make verify-semantics`
-
-## Next (planned)
-
-- Extend v2 rewrite derivations beyond `normalize_path_v2`:
-  reconciliation proofs and domain rewrite certificates.
-- Anchor certificates to canonical `.axi` input by referencing parsed `ModuleAST`
-  (or a stable hash + extracted facts) so checks are always against the same source.
+Derived PathDB rows and SQLite `.axpd` materializations are never certificate
+anchors or semantic interchange. Certificate checks bind to exact canonical
+`.axi` bytes; obsolete snapshot-export fixtures and fallback readers are not
+retained.

@@ -21,7 +21,7 @@ proptest! {
         let p = FixedPointProbability::try_new(n).expect("in-range numerator");
         prop_assert_eq!(p.numerator(), n);
         let f = p.to_f32();
-        prop_assert!(f >= 0.0 && f <= 1.0);
+        prop_assert!((0.0..=1.0).contains(&f));
     }
 
     #[test]
@@ -88,14 +88,20 @@ proptest! {
 #[test]
 fn fixed_prob_from_f32_bits_known_values() {
     // 0.0
-    assert_eq!(FixedPointProbability::from_f32_bits(0x0000_0000).numerator(), 0);
+    assert_eq!(
+        FixedPointProbability::from_f32_bits(0x0000_0000).numerator(),
+        0
+    );
     // 1.0
     assert_eq!(
         FixedPointProbability::from_f32_bits(0x3f80_0000).numerator(),
         FIXED_POINT_DENOMINATOR
     );
     // -0.0 (clamps to 0 because sign bit is set)
-    assert_eq!(FixedPointProbability::from_f32_bits(0x8000_0000).numerator(), 0);
+    assert_eq!(
+        FixedPointProbability::from_f32_bits(0x8000_0000).numerator(),
+        0
+    );
     // +∞
     assert_eq!(
         FixedPointProbability::from_f32_bits(0x7f80_0000).numerator(),
@@ -107,4 +113,3 @@ fn fixed_prob_from_f32_bits_known_values() {
         0
     );
 }
-

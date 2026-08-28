@@ -1,4 +1,6 @@
-use axiograph_pathdb::axi_meta::{ATTR_AXI_RELATION, ATTR_AXI_SCHEMA, META_REL_FACT_OF, REL_AXI_FACT_IN_CONTEXT};
+use axiograph_pathdb::axi_meta::{
+    ATTR_AXI_RELATION, ATTR_AXI_SCHEMA, META_REL_FACT_OF, REL_AXI_FACT_IN_CONTEXT,
+};
 use axiograph_pathdb::{CheckedDb, CheckedDbMut, PathDB};
 use proptest::prelude::*;
 
@@ -10,8 +12,8 @@ schema Demo:
   object Context
   object Time
 
-  relation Parent(child: Person, parent: Person) @context Context @temporal Time
-  relation Spouse(a: Person, b: Person) @context Context
+  relation Parent(child: Person, parent: Person, ctx: Context @context, time: Time @temporal)
+  relation Spouse(a: Person, b: Person, ctx: Context @context)
 
 theory DemoRules on Demo:
   constraint key Parent(child, parent, ctx, time)
@@ -21,9 +23,6 @@ instance DemoInst of Demo:
   Person = {P0, P1, P2, P3, P4, P5}
   Context = {C0, C1}
   Time = {T0, T1}
-
-  Parent = {}
-  Spouse = {}
 "#;
 
 fn demo_db() -> PathDB {
@@ -217,4 +216,3 @@ proptest! {
         }
     }
 }
-

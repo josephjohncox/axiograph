@@ -5,7 +5,7 @@
 //! - a runtime implementation that can optimize/transform data structures, and
 //! - a proof/certificate witness that a trusted checker can validate.
 //!
-//! This module provides a minimal, extensible scaffold:
+//! This module provides a small, extensible runtime slice:
 //!
 //! - **Path normalization** (free-groupoid word reduction) with explicit rewrite steps.
 //! - **Reconciliation** (resolution decision) with a recomputable proof payload.
@@ -18,12 +18,12 @@
 
 use crate::branding::DbBranded;
 use crate::certificate::{
-    CertificateV2, FixedProb, NormalizePathProofV2, PathEquivProofV2, PathExprV2,
+    CertificateV2, FixedPointProbability, NormalizePathProofV2, PathEquivProofV2, PathExprV2,
     ResolutionDecisionV2, ResolutionProofV2,
 };
 use crate::migration::{
-    ArrowMapV1, ArrowMappingV1, DeltaFMigrationProofV1, InstanceV1, ObjectElementsV1,
-    ObjectMappingV1, SchemaMorphismV1, SchemaV1, SigmaFMigrationProofV1,
+    ArrowMapV1, ArrowMappingV1, DeltaFMigrationProofV1, InstanceV1, MigrationFunctorKindV1,
+    ObjectElementsV1, ObjectMappingV1, SchemaMorphismV1, SchemaV1, SigmaFMigrationProofV1,
 };
 use crate::proof_mode::{ProofMode, Proved};
 use crate::typestate::{NormalizedPathExprV2, UnnormalizedPathExprV2};
@@ -57,7 +57,7 @@ pub enum MigrationOperatorV1 {
 // Path normalization (v2)
 // =============================================================================
 
-/// Proof-producing optimizer entrypoint (scaffold).
+/// Proof-producing optimizer entrypoint for supported runtime slices.
 #[derive(Debug, Default, Clone)]
 pub struct ProofProducingOptimizer;
 
@@ -67,24 +67,22 @@ impl ProofProducingOptimizer {
     pub fn normalize_path_typed_v2<M: ProofMode>(
         &self,
         input: UnnormalizedPathExprV2,
-    ) -> Proved<M, NormalizedPathExprV2, NormalizePathProofV2> {
+    ) -> Result<Proved<M, NormalizedPathExprV2, NormalizePathProofV2>> {
         let input = input.into_expr();
-        let normalized = input.normalize();
+        let (normalized, derivation) = input
+            .normalize_with_derivation()
+            .map_err(|error| anyhow!(error))?;
 
-        let proof = M::capture(|| {
-            let (normalized_with_derivation, derivation) = input.normalize_with_derivation();
-            debug_assert_eq!(normalized, normalized_with_derivation);
-            NormalizePathProofV2 {
-                input,
-                normalized: normalized_with_derivation,
-                derivation,
-            }
+        let proof = M::capture(|| NormalizePathProofV2 {
+            input,
+            normalized: normalized.clone(),
+            derivation,
         });
 
-        Proved {
+        Ok(Proved {
             value: NormalizedPathExprV2::new_unchecked(normalized),
             proof,
-        }
+        })
     }
 
     /// Normalize a `PathExprV2` and (optionally) return a full `NormalizePathProofV2`.
@@ -98,23 +96,21 @@ impl ProofProducingOptimizer {
     pub fn normalize_path_v2<M: ProofMode>(
         &self,
         input: PathExprV2,
-    ) -> Proved<M, PathExprV2, NormalizePathProofV2> {
-        let normalized = input.normalize();
+    ) -> Result<Proved<M, PathExprV2, NormalizePathProofV2>> {
+        let (normalized, derivation) = input
+            .normalize_with_derivation()
+            .map_err(|error| anyhow!(error))?;
 
-        let proof = M::capture(|| {
-            let (normalized_with_derivation, derivation) = input.normalize_with_derivation();
-            debug_assert_eq!(normalized, normalized_with_derivation);
-            NormalizePathProofV2 {
-                input,
-                normalized: normalized_with_derivation,
-                derivation,
-            }
+        let proof = M::capture(|| NormalizePathProofV2 {
+            input,
+            normalized: normalized.clone(),
+            derivation,
         });
 
-        Proved {
+        Ok(Proved {
             value: normalized,
             proof,
-        }
+        })
     }
 
     /// Normalize a `PathExprV2` and (optionally) return a DB-branded proof payload.
@@ -125,47 +121,47 @@ impl ProofProducingOptimizer {
         &self,
         db_token: DbToken,
         input: PathExprV2,
-    ) -> Proved<M, PathExprV2, DbBranded<NormalizePathProofV2>> {
-        let normalized = input.normalize();
+    ) -> Result<Proved<M, PathExprV2, DbBranded<NormalizePathProofV2>>> {
+        let (normalized, derivation) = input
+            .normalize_with_derivation()
+            .map_err(|error| anyhow!(error))?;
 
         let proof = M::capture(|| {
-            let (normalized_with_derivation, derivation) = input.normalize_with_derivation();
-            debug_assert_eq!(normalized, normalized_with_derivation);
             DbBranded::new(
                 db_token,
                 NormalizePathProofV2 {
                     input,
-                    normalized: normalized_with_derivation,
+                    normalized: normalized.clone(),
                     derivation,
                 },
             )
         });
 
-        Proved {
+        Ok(Proved {
             value: normalized,
             proof,
-        }
+        })
     }
 
     /// Normalize a `PathExprV2` and (optionally) emit a `CertificateV2` wrapper.
     pub fn normalize_path_certificate_v2<M: ProofMode>(
         &self,
         input: PathExprV2,
-    ) -> Proved<M, PathExprV2, CertificateV2> {
-        let normalized = input.normalize();
+    ) -> Result<Proved<M, PathExprV2, CertificateV2>> {
+        let (normalized, derivation) = input
+            .normalize_with_derivation()
+            .map_err(|error| anyhow!(error))?;
         let proof = M::capture(|| {
-            let (normalized_with_derivation, derivation) = input.normalize_with_derivation();
-            debug_assert_eq!(normalized, normalized_with_derivation);
             CertificateV2::normalize_path(NormalizePathProofV2 {
                 input,
-                normalized: normalized_with_derivation,
+                normalized: normalized.clone(),
                 derivation,
             })
         });
-        Proved {
+        Ok(Proved {
             value: normalized,
             proof,
-        }
+        })
     }
 
     // =============================================================================
@@ -192,8 +188,12 @@ impl ProofProducingOptimizer {
             ));
         }
 
-        let left_norm = left.normalize();
-        let right_norm = right.normalize();
+        let (left_norm, left_derivation) = left
+            .normalize_with_derivation()
+            .map_err(|error| anyhow!(error))?;
+        let (right_norm, right_derivation) = right
+            .normalize_with_derivation()
+            .map_err(|error| anyhow!(error))?;
         if left_norm != right_norm {
             return Err(anyhow!(
                 "path_equiv_v2: not equivalent by normalization (left_norm != right_norm)"
@@ -201,19 +201,12 @@ impl ProofProducingOptimizer {
         }
         let normalized = left_norm;
 
-        let proof = M::capture(|| {
-            let (left_norm2, left_derivation) = left.normalize_with_derivation();
-            let (right_norm2, right_derivation) = right.normalize_with_derivation();
-            debug_assert_eq!(left_norm2, normalized);
-            debug_assert_eq!(right_norm2, normalized);
-
-            PathEquivProofV2 {
-                left,
-                right,
-                normalized: left_norm2,
-                left_derivation,
-                right_derivation,
-            }
+        let proof = M::capture(|| PathEquivProofV2 {
+            left,
+            right,
+            normalized: normalized.clone(),
+            left_derivation,
+            right_derivation,
         });
 
         Ok(Proved {
@@ -239,8 +232,12 @@ impl ProofProducingOptimizer {
             ));
         }
 
-        let left_norm = left.normalize();
-        let right_norm = right.normalize();
+        let (left_norm, left_derivation) = left
+            .normalize_with_derivation()
+            .map_err(|error| anyhow!(error))?;
+        let (right_norm, right_derivation) = right
+            .normalize_with_derivation()
+            .map_err(|error| anyhow!(error))?;
         if left_norm != right_norm {
             return Err(anyhow!(
                 "path_equiv_v2: not equivalent by normalization (left_norm != right_norm)"
@@ -249,17 +246,12 @@ impl ProofProducingOptimizer {
         let normalized = left_norm;
 
         let proof = M::capture(|| {
-            let (left_norm2, left_derivation) = left.normalize_with_derivation();
-            let (right_norm2, right_derivation) = right.normalize_with_derivation();
-            debug_assert_eq!(left_norm2, normalized);
-            debug_assert_eq!(right_norm2, normalized);
-
             DbBranded::new(
                 db_token,
                 PathEquivProofV2 {
                     left,
                     right,
-                    normalized: left_norm2,
+                    normalized: normalized.clone(),
                     left_derivation,
                     right_derivation,
                 },
@@ -288,8 +280,12 @@ impl ProofProducingOptimizer {
             ));
         }
 
-        let left_norm = left.normalize();
-        let right_norm = right.normalize();
+        let (left_norm, left_derivation) = left
+            .normalize_with_derivation()
+            .map_err(|error| anyhow!(error))?;
+        let (right_norm, right_derivation) = right
+            .normalize_with_derivation()
+            .map_err(|error| anyhow!(error))?;
         if left_norm != right_norm {
             return Err(anyhow!(
                 "path_equiv_v2: not equivalent by normalization (left_norm != right_norm)"
@@ -298,15 +294,10 @@ impl ProofProducingOptimizer {
         let normalized = left_norm;
 
         let proof = M::capture(|| {
-            let (left_norm2, left_derivation) = left.normalize_with_derivation();
-            let (right_norm2, right_derivation) = right.normalize_with_derivation();
-            debug_assert_eq!(left_norm2, normalized);
-            debug_assert_eq!(right_norm2, normalized);
-
             CertificateV2::path_equiv(PathEquivProofV2 {
                 left,
                 right,
-                normalized: left_norm2,
+                normalized: normalized.clone(),
                 left_derivation,
                 right_derivation,
             })
@@ -464,9 +455,9 @@ impl ProofProducingOptimizer {
     /// Decide a reconciliation action (v2) and (optionally) return a full `ResolutionProofV2`.
     pub fn resolve_conflict_v2<M: ProofMode>(
         &self,
-        first_confidence_fp: FixedProb,
-        second_confidence_fp: FixedProb,
-        threshold_fp: FixedProb,
+        first_confidence_fp: FixedPointProbability,
+        second_confidence_fp: FixedPointProbability,
+        threshold_fp: FixedPointProbability,
     ) -> Proved<M, ResolutionDecisionV2, ResolutionProofV2> {
         let proof_payload =
             ResolutionProofV2::decide(first_confidence_fp, second_confidence_fp, threshold_fp);
@@ -483,9 +474,9 @@ impl ProofProducingOptimizer {
     pub fn resolve_conflict_v2_branded<M: ProofMode>(
         &self,
         db_token: DbToken,
-        first_confidence_fp: FixedProb,
-        second_confidence_fp: FixedProb,
-        threshold_fp: FixedProb,
+        first_confidence_fp: FixedPointProbability,
+        second_confidence_fp: FixedPointProbability,
+        threshold_fp: FixedPointProbability,
     ) -> Proved<M, ResolutionDecisionV2, DbBranded<ResolutionProofV2>> {
         let proof_payload =
             ResolutionProofV2::decide(first_confidence_fp, second_confidence_fp, threshold_fp);
@@ -501,9 +492,9 @@ impl ProofProducingOptimizer {
     /// Decide a reconciliation action (v2) and (optionally) emit a `CertificateV2` wrapper.
     pub fn resolve_conflict_certificate_v2<M: ProofMode>(
         &self,
-        first_confidence_fp: FixedProb,
-        second_confidence_fp: FixedProb,
-        threshold_fp: FixedProb,
+        first_confidence_fp: FixedPointProbability,
+        second_confidence_fp: FixedPointProbability,
+        threshold_fp: FixedPointProbability,
     ) -> Proved<M, ResolutionDecisionV2, CertificateV2> {
         let proof_payload =
             ResolutionProofV2::decide(first_confidence_fp, second_confidence_fp, threshold_fp);
@@ -516,7 +507,7 @@ impl ProofProducingOptimizer {
     }
 
     // =============================================================================
-    // Δ_F / Σ_F schema migration (v1 scaffold)
+    // Δ_F / Σ_F schema migration (v1 runtime slice)
     // =============================================================================
 
     /// Compute the pullback (Δ_F) of an instance along a schema morphism.
@@ -541,6 +532,7 @@ impl ProofProducingOptimizer {
         let pulled_back = delta_f_compute(&morphism, &source_schema, &target_instance)?;
 
         let proof = M::capture(|| DeltaFMigrationProofV1 {
+            operator: MigrationFunctorKindV1::DeltaF,
             morphism,
             source_schema,
             target_instance,
@@ -564,6 +556,7 @@ impl ProofProducingOptimizer {
 
         let proof = M::capture(|| {
             CertificateV2::delta_f_v1(DeltaFMigrationProofV1 {
+                operator: MigrationFunctorKindV1::DeltaF,
                 morphism,
                 source_schema,
                 target_instance,
@@ -577,7 +570,7 @@ impl ProofProducingOptimizer {
         })
     }
 
-    /// Left pushforward (Σ_F) scaffold.
+    /// Left pushforward (Σ_F) partial runtime operator.
     ///
     /// In general Σ_F is a left Kan extension and may require:
     /// - generating new IDs,
@@ -697,10 +690,7 @@ fn delta_f_compute(
 
             if !codomain_set.contains(image.as_str()) {
                 return Err(anyhow!(
-                    "delta_f: arrow `{source_arrow_name}` maps `{}` to `{}`, but `{}` is not in the codomain object `{target_dst_object}`",
-                    domain_elem,
-                    image,
-                    image
+                    "delta_f: arrow `{source_arrow_name}` maps `{domain_elem}` to `{image}`, but `{image}` is not in the codomain object `{target_dst_object}`"
                 ));
             }
 
@@ -729,9 +719,8 @@ fn build_arrow_functions(instance: &InstanceV1) -> Result<HashMap<&str, HashMap<
         for (src, dst) in &entry.pairs {
             if mapping.insert(src.as_str(), dst.as_str()).is_some() {
                 return Err(anyhow!(
-                    "delta_f: duplicate mapping for arrow `{}` at source element `{}`",
-                    entry.arrow,
-                    src
+                    "delta_f: duplicate mapping for arrow `{}` at source element `{src}`",
+                    entry.arrow
                 ));
             }
         }
@@ -743,20 +732,18 @@ fn build_arrow_functions(instance: &InstanceV1) -> Result<HashMap<&str, HashMap<
 
 fn apply_arrow_path(
     arrow_functions: &HashMap<&str, HashMap<&str, &str>>,
-    start: &String,
+    start: &str,
     path: &[String],
 ) -> Result<String> {
-    let mut current: &str = start.as_str();
+    let mut current: &str = start;
 
     for arrow_name in path {
         let Some(f) = arrow_functions.get(arrow_name.as_str()) else {
-            return Err(anyhow!("missing arrow function for `{}`", arrow_name));
+            return Err(anyhow!("missing arrow function for `{arrow_name}`"));
         };
         let Some(next) = f.get(current) else {
             return Err(anyhow!(
-                "arrow `{}` missing mapping for input element `{}`",
-                arrow_name,
-                current
+                "arrow `{arrow_name}` missing mapping for input element `{current}`"
             ));
         };
         current = next;
@@ -772,51 +759,57 @@ mod tests {
 
     #[test]
     fn optimizer_normalize_path_v2_produces_proof_in_with_proof_mode() {
-        let optimizer = ProofProducingOptimizer::default();
+        let optimizer = ProofProducingOptimizer;
 
-        let input = PathExprV2::Trans {
-            left: Box::new(PathExprV2::Inv {
-                path: Box::new(PathExprV2::Trans {
-                    left: Box::new(PathExprV2::Step {
-                        from: 1,
-                        rel_type: 10,
-                        to: 2,
-                    }),
-                    right: Box::new(PathExprV2::Step {
-                        from: 2,
-                        rel_type: 20,
-                        to: 3,
-                    }),
-                }),
-            }),
-            right: Box::new(PathExprV2::Trans {
-                left: Box::new(PathExprV2::Step {
-                    from: 3,
-                    rel_type: 30,
-                    to: 4,
-                }),
-                right: Box::new(PathExprV2::Inv {
-                    path: Box::new(PathExprV2::Step {
-                        from: 3,
-                        rel_type: 30,
-                        to: 4,
-                    }),
-                }),
-            }),
-        };
+        let forward = PathExprV2::compose(
+            PathExprV2::Step {
+                from: 1,
+                rel_type: 10,
+                to: 2,
+            },
+            PathExprV2::Step {
+                from: 2,
+                rel_type: 20,
+                to: 3,
+            },
+        )
+        .unwrap();
+        let detour = PathExprV2::compose(
+            PathExprV2::Step {
+                from: 3,
+                rel_type: 30,
+                to: 4,
+            },
+            PathExprV2::inverse(PathExprV2::Step {
+                from: 3,
+                rel_type: 30,
+                to: 4,
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        let input = PathExprV2::compose(
+            PathExprV2::inverse(forward.clone()).unwrap(),
+            PathExprV2::compose(forward, detour).unwrap(),
+        )
+        .unwrap();
 
-        let proved = optimizer.normalize_path_v2::<WithProof>(input.clone());
+        let proved = optimizer
+            .normalize_path_v2::<WithProof>(input.clone())
+            .expect("well-typed path must normalize");
         assert_eq!(proved.value, input.normalize());
         assert_eq!(proved.proof.normalized, proved.value);
-        assert!(proved.proof.derivation.is_some());
+        assert!(!proved.proof.derivation.is_empty());
 
-        let proved_no = optimizer.normalize_path_v2::<NoProof>(input);
+        let proved_no = optimizer
+            .normalize_path_v2::<NoProof>(input)
+            .expect("well-typed path must normalize");
         let _: () = proved_no.proof;
     }
 
     #[test]
     fn branded_optimizer_proofs_cannot_cross_db_tokens() {
-        let optimizer = ProofProducingOptimizer::default();
+        let optimizer = ProofProducingOptimizer;
         let db1 = DbToken::new();
         let db2 = DbToken::new();
 
@@ -835,14 +828,16 @@ mod tests {
             }),
         };
 
-        let proved = optimizer.normalize_path_v2_branded::<WithProof>(db1, input);
+        let proved = optimizer
+            .normalize_path_v2_branded::<WithProof>(db1, input)
+            .expect("well-typed path must normalize");
         assert!(proved.proof.assert_token(db1).is_ok());
         assert!(proved.proof.assert_token(db2).is_err());
     }
 
     #[test]
     fn branded_equivalence_proofs_cannot_cross_db_tokens() {
-        let optimizer = ProofProducingOptimizer::default();
+        let optimizer = ProofProducingOptimizer;
         let db1 = DbToken::new();
         let db2 = DbToken::new();
 
@@ -869,15 +864,15 @@ mod tests {
 
     #[test]
     fn branded_reconciliation_proofs_cannot_cross_db_tokens() {
-        let optimizer = ProofProducingOptimizer::default();
+        let optimizer = ProofProducingOptimizer;
         let db1 = DbToken::new();
         let db2 = DbToken::new();
 
         let proved = optimizer.resolve_conflict_v2_branded::<WithProof>(
             db1,
-            FixedProb::new_unchecked(900_000),
-            FixedProb::new_unchecked(850_000),
-            FixedProb::new_unchecked(800_000),
+            FixedPointProbability::new_unchecked(900_000),
+            FixedPointProbability::new_unchecked(850_000),
+            FixedPointProbability::new_unchecked(800_000),
         );
         assert!(proved.proof.assert_token(db1).is_ok());
         assert!(proved.proof.assert_token(db2).is_err());
@@ -885,7 +880,7 @@ mod tests {
 
     #[test]
     fn path_equiv_congruence_builders_produce_valid_equivalence_proofs() {
-        let optimizer = ProofProducingOptimizer::default();
+        let optimizer = ProofProducingOptimizer;
 
         // Base equivalence: two different spellings of `p ; q`.
         let p = PathExprV2::Step {
@@ -986,7 +981,7 @@ mod tests {
 
     #[test]
     fn branded_congruence_rejects_mismatched_base_proof_token() {
-        let optimizer = ProofProducingOptimizer::default();
+        let optimizer = ProofProducingOptimizer;
         let db1 = DbToken::new();
         let db2 = DbToken::new();
 
@@ -1034,7 +1029,7 @@ mod tests {
 
     #[test]
     fn delta_f_copies_objects_and_composes_arrows() {
-        let optimizer = ProofProducingOptimizer::default();
+        let optimizer = ProofProducingOptimizer;
 
         let source_schema = SchemaV1 {
             name: "S1".to_string(),

@@ -116,22 +116,36 @@ pub(crate) fn sanitize_axi_ident(s: &str) -> String {
     out
 }
 
-fn uniq_name(used: &mut HashSet<String>, base: &str) -> String {
+fn uniq_name(used: &mut HashSet<String>, base: &str) -> Result<String> {
     let base = if base.is_empty() { "_" } else { base };
     if used.insert(base.to_string()) {
-        return base.to_string();
+        return Ok(base.to_string());
     }
-    for i in 2.. {
-        let candidate = format!("{base}_{i}");
+
+    // At function entry there are N used names. Searching N+1 distinct
+    // suffixes guarantees a free candidate without an unbounded loop or a
+    // duplicate overflow sentinel.
+    let largest_suffix = used
+        .len()
+        .checked_add(2)
+        .ok_or_else(|| anyhow!("generated identifier suffix range overflow"))?;
+    for suffix in 2..=largest_suffix {
+        let candidate = format!("{base}_{suffix}");
         if used.insert(candidate.clone()) {
-            return candidate;
-        }
-        if i > 10_000 {
-            // Safety valve; should never happen for reasonable inputs.
-            return format!("{base}_overflow");
+            return Ok(candidate);
         }
     }
-    unreachable!("infinite loop above has a return");
+    Err(anyhow!(
+        "failed to allocate a unique generated identifier for `{base}`"
+    ))
+}
+
+fn role_type_hole(rel: &str, role: &str) -> String {
+    format!(
+        "TypeHole_{}_{}",
+        sanitize_axi_ident(rel),
+        sanitize_axi_ident(role)
+    )
 }
 
 pub fn draft_axi_module_from_proposals(
@@ -171,8 +185,10 @@ pub fn draft_axi_module_from_proposals_with_suggestions(
         );
     }
 
-    // 2) Collect relations and ensure endpoints exist (importer semantics).
+    // 2) Collect relations. Missing endpoints remain explicit typed holes; we
+    // do not synthesize generic `Entity` inhabitants in evidence-plane drafts.
     let mut relations: Vec<RelationRec> = Vec::new();
+    let mut endpoint_holes: BTreeSet<String> = BTreeSet::new();
     for p in &file.proposals {
         let ProposalV1::Relation {
             rel_type,
@@ -198,16 +214,9 @@ pub fn draft_axi_module_from_proposals_with_suggestions(
             if entities_by_id.contains_key(endpoint) {
                 continue;
             }
-            // Synthetic placeholder: treat as an untyped entity.
-            entities_by_id.insert(
-                endpoint.clone(),
-                EntityRec {
-                    entity_id: endpoint.clone(),
-                    entity_type_raw: "Entity".to_string(),
-                    entity_type_axi: "Entity".to_string(),
-                    name_raw: endpoint.clone(),
-                },
-            );
+            endpoint_holes.insert(format!(
+                "relation `{rel_type}` references missing endpoint `{endpoint}`; bind it to a typed object before promotion"
+            ));
         }
 
         // If the relation carries an explicit context, ensure the context entity exists.
@@ -241,13 +250,12 @@ pub fn draft_axi_module_from_proposals_with_suggestions(
 
     for e in entities_sorted {
         let base = sanitize_axi_ident(&e.name_raw);
-        let name = uniq_name(&mut used_names, &base);
+        let name = uniq_name(&mut used_names, &base)?;
         entity_axi_name.insert(e.entity_id.clone(), name);
     }
 
     // 4) Object types and memberships.
     let mut object_types: BTreeSet<String> = BTreeSet::new();
-    object_types.insert("Entity".to_string());
 
     let mut members_by_type: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for e in entities_by_id.values() {
@@ -264,6 +272,7 @@ pub fn draft_axi_module_from_proposals_with_suggestions(
     // 5) Per-relation observed endpoint types (for field typing).
     let mut rel_src_types: HashMap<String, BTreeSet<String>> = HashMap::new();
     let mut rel_dst_types: HashMap<String, BTreeSet<String>> = HashMap::new();
+    let mut typed_hole_subtypes: BTreeSet<(String, String)> = BTreeSet::new();
 
     // Also gather instance tuples.
     //
@@ -278,11 +287,13 @@ pub fn draft_axi_module_from_proposals_with_suggestions(
         let src_ty = entities_by_id
             .get(&r.source_id)
             .map(|e| e.entity_type_axi.clone())
-            .unwrap_or_else(|| "Entity".to_string());
+            .unwrap_or_else(|| role_type_hole(&r.rel_type_axi, "from"));
         let dst_ty = entities_by_id
             .get(&r.target_id)
             .map(|e| e.entity_type_axi.clone())
-            .unwrap_or_else(|| "Entity".to_string());
+            .unwrap_or_else(|| role_type_hole(&r.rel_type_axi, "to"));
+        object_types.insert(src_ty.clone());
+        object_types.insert(dst_ty.clone());
 
         rel_src_types
             .entry(r.rel_type_axi.clone())
@@ -292,6 +303,9 @@ pub fn draft_axi_module_from_proposals_with_suggestions(
             .entry(r.rel_type_axi.clone())
             .or_default()
             .insert(dst_ty);
+        if r.context_id.is_some() {
+            rel_has_context.insert(r.rel_type_axi.clone());
+        }
 
         let Some(src_name) = entity_axi_name.get(&r.source_id).cloned() else {
             continue;
@@ -304,7 +318,6 @@ pub fn draft_axi_module_from_proposals_with_suggestions(
             let Some(ctx_name) = entity_axi_name.get(ctx_id).cloned() else {
                 continue;
             };
-            rel_has_context.insert(r.rel_type_axi.clone());
             rel_tuples_ctx
                 .entry(r.rel_type_axi.clone())
                 .or_default()
@@ -317,12 +330,43 @@ pub fn draft_axi_module_from_proposals_with_suggestions(
         }
     }
 
+    let mut relation_role_holes: BTreeMap<String, (Option<String>, Option<String>)> =
+        BTreeMap::new();
+    let mut rel_names_for_holes: Vec<String> = rel_tuples.keys().cloned().collect();
+    rel_names_for_holes.extend(rel_tuples_ctx.keys().cloned());
+    rel_names_for_holes.extend(rel_src_types.keys().cloned());
+    rel_names_for_holes.extend(rel_dst_types.keys().cloned());
+    rel_names_for_holes.sort();
+    rel_names_for_holes.dedup();
+    for rel in &rel_names_for_holes {
+        if rel_src_types.get(rel).map(|s| s.len()).unwrap_or(0) > 1 {
+            let hole = role_type_hole(rel, "from");
+            object_types.insert(hole.clone());
+            if let Some(types) = rel_src_types.get(rel) {
+                for ty in types {
+                    typed_hole_subtypes.insert((ty.clone(), hole.clone()));
+                }
+            }
+            relation_role_holes.entry(rel.clone()).or_default().0 = Some(hole);
+        }
+        if rel_dst_types.get(rel).map(|s| s.len()).unwrap_or(0) > 1 {
+            let hole = role_type_hole(rel, "to");
+            object_types.insert(hole.clone());
+            if let Some(types) = rel_dst_types.get(rel) {
+                for ty in types {
+                    typed_hole_subtypes.insert((ty.clone(), hole.clone()));
+                }
+            }
+            relation_role_holes.entry(rel.clone()).or_default().1 = Some(hole);
+        }
+    }
+
     // 6) Emit `.axi`.
     let mut out = String::new();
 
     writeln!(
         &mut out,
-        "-- Draft `.axi` module generated from `proposals.json`.\n--\n-- This output is *untrusted* (evidence-plane). Review before promotion.\n--\n-- Design notes:\n-- - Entities become object inhabitants.\n-- - Relations become binary tuples: `Rel(from, to)`.\n-- - If proposals include a `context` attribute on relations, we preserve it:\n--     - relation decls gain `@context Context`\n--     - tuples add `ctx=...`\n-- - `Entity` is a supertype so heterogeneous endpoints remain well-typed.\n-- - Optional constraints are inferred *extensionally* from current tuples.\n"
+        "-- Draft `.axi` module generated from `proposals.json`.\n--\n-- This output is *untrusted* (evidence-plane). Review before promotion.\n--\n-- Design notes:\n-- - Entities become object inhabitants.\n-- - Relations become binary tuples: `Rel(from, to)`.\n-- - If proposals include a `context` attribute on relations, we preserve it:\n--     - relation decls gain an explicit `ctx: Context @context` role\n--     - tuples add `ctx=...`\n-- - Missing or heterogeneous endpoint types become explicit `TypeHole_*` review obligations.\n-- - Optional constraints are inferred *extensionally* from current tuples.\n"
     )?;
 
     writeln!(&mut out, "module {}", options.module_name)?;
@@ -330,29 +374,34 @@ pub fn draft_axi_module_from_proposals_with_suggestions(
 
     // Schema.
     writeln!(&mut out, "schema {}:", options.schema_name)?;
-    writeln!(
-        &mut out,
-        "  -- Supertype used as a safe fallback for heterogeneous endpoints."
-    )?;
-    writeln!(&mut out, "  object Entity")?;
 
     // Objects.
     writeln!(&mut out)?;
     writeln!(
         &mut out,
-        "  -- Object types observed in proposals (entity_type → object)."
+        "  -- Object types observed in proposals plus explicit typed holes."
     )?;
-    for ty in object_types.iter().filter(|t| t.as_str() != "Entity") {
+    for ty in &object_types {
         writeln!(&mut out, "  object {ty}")?;
     }
 
-    writeln!(&mut out)?;
-    writeln!(
-        &mut out,
-        "  -- Each object type is a subtype of `Entity` (so relations can use `Entity`)."
-    )?;
-    for ty in object_types.iter().filter(|t| t.as_str() != "Entity") {
-        writeln!(&mut out, "  subtype {ty} < Entity")?;
+    if !endpoint_holes.is_empty() || !typed_hole_subtypes.is_empty() {
+        writeln!(&mut out)?;
+        writeln!(&mut out, "  -- Typed refinement holes:")?;
+        for hole in &endpoint_holes {
+            writeln!(&mut out, "  -- - {hole}")?;
+        }
+        for (sub, sup) in &typed_hole_subtypes {
+            writeln!(
+                &mut out,
+                "  -- - `{sub}` observed in a heterogeneous role; refine `{sup}` before promotion if this is too weak."
+            )?;
+        }
+        for (sub, sup) in &typed_hole_subtypes {
+            if sub != sup {
+                writeln!(&mut out, "  subtype {sub} < {sup}")?;
+            }
+        }
     }
 
     // Extra subtyping (optional, untrusted).
@@ -366,11 +415,9 @@ pub fn draft_axi_module_from_proposals_with_suggestions(
         // Track already-emitted edges and avoid introducing cycles.
         let mut adj: HashMap<String, Vec<String>> = HashMap::new();
         let mut emitted: HashSet<(String, String)> = HashSet::new();
-        for ty in object_types.iter().filter(|t| t.as_str() != "Entity") {
-            adj.entry(ty.clone())
-                .or_default()
-                .push("Entity".to_string());
-            emitted.insert((ty.clone(), "Entity".to_string()));
+        for (sub, sup) in &typed_hole_subtypes {
+            adj.entry(sub.clone()).or_default().push(sup.clone());
+            emitted.insert((sub.clone(), sup.clone()));
         }
 
         let would_create_cycle = |adj: &HashMap<String, Vec<String>>, sub: &str, sup: &str| {
@@ -428,7 +475,7 @@ pub fn draft_axi_module_from_proposals_with_suggestions(
                 let mut r = r.replace('\n', " ");
                 if r.len() > 160 {
                     r.truncate(160);
-                    r.push_str("…");
+                    r.push('…');
                 }
                 writeln!(&mut out, "  -- {r}")?;
             }
@@ -448,6 +495,8 @@ pub fn draft_axi_module_from_proposals_with_suggestions(
 
     let mut rel_names: Vec<String> = rel_tuples.keys().cloned().collect();
     rel_names.extend(rel_tuples_ctx.keys().cloned());
+    rel_names.extend(rel_src_types.keys().cloned());
+    rel_names.extend(rel_dst_types.keys().cloned());
     rel_names.sort();
     rel_names.dedup();
 
@@ -456,23 +505,32 @@ pub fn draft_axi_module_from_proposals_with_suggestions(
             Some(1) => rel_src_types
                 .get(rel)
                 .and_then(|s| s.iter().next().cloned())
-                .unwrap_or_else(|| "Entity".to_string()),
-            _ => "Entity".to_string(),
+                .unwrap_or_else(|| role_type_hole(rel, "from")),
+            _ => relation_role_holes
+                .get(rel)
+                .and_then(|holes| holes.0.clone())
+                .unwrap_or_else(|| role_type_hole(rel, "from")),
         };
         let to_ty = match rel_dst_types.get(rel).map(|s| s.len()) {
             Some(1) => rel_dst_types
                 .get(rel)
                 .and_then(|s| s.iter().next().cloned())
-                .unwrap_or_else(|| "Entity".to_string()),
-            _ => "Entity".to_string(),
+                .unwrap_or_else(|| role_type_hole(rel, "to")),
+            _ => relation_role_holes
+                .get(rel)
+                .and_then(|holes| holes.1.clone())
+                .unwrap_or_else(|| role_type_hole(rel, "to")),
         };
         if rel_has_context.contains(rel) {
             writeln!(
                 &mut out,
-                "  relation {rel}(from: {from_ty}, to: {to_ty}) @context Context"
+                "  relation {rel}(from: {from_ty} @data, to: {to_ty} @data, ctx: Context @context)"
             )?;
         } else {
-            writeln!(&mut out, "  relation {rel}(from: {from_ty}, to: {to_ty})")?;
+            writeln!(
+                &mut out,
+                "  relation {rel}(from: {from_ty} @data, to: {to_ty} @data)"
+            )?;
         }
     }
 
@@ -521,7 +579,7 @@ pub fn draft_axi_module_from_proposals_with_suggestions(
                 let mut r = r.replace('\n', " ");
                 if r.len() > 160 {
                     r.truncate(160);
-                    r.push_str("…");
+                    r.push('…');
                 }
                 writeln!(&mut out, "  -- {r}")?;
             }
@@ -600,12 +658,8 @@ pub fn draft_axi_module_from_proposals_with_suggestions(
         options.instance_name, options.schema_name
     )?;
 
-    // Object assignments (skip the `Entity` supertype to keep output smaller;
-    // elements become `Entity` implicitly via the subtype closure and relation fields).
+    // Object assignments.
     for (ty, members) in &members_by_type {
-        if ty == "Entity" {
-            continue;
-        }
         writeln!(&mut out, "  {ty} = {{")?;
         for (idx, name) in members.iter().enumerate() {
             if idx + 1 == members.len() {
@@ -664,4 +718,147 @@ pub fn draft_axi_module_from_proposals_with_suggestions(
     }
 
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axiograph_ingest_docs::{ProposalMetaV1, ProposalSourceV1};
+
+    fn meta(id: &str) -> ProposalMetaV1 {
+        ProposalMetaV1 {
+            proposal_id: id.to_string(),
+            confidence: 0.9,
+            evidence: Vec::new(),
+            public_rationale: "test".to_string(),
+            metadata: HashMap::new(),
+            schema_hint: None,
+        }
+    }
+
+    fn options() -> DraftAxiModuleOptions {
+        DraftAxiModuleOptions {
+            module_name: "Draft".to_string(),
+            schema_name: "DraftSchema".to_string(),
+            instance_name: "DraftInstance".to_string(),
+            infer_constraints: false,
+        }
+    }
+
+    #[test]
+    fn unique_names_remain_unique_beyond_the_retired_overflow_sentinel() -> Result<()> {
+        let mut used = HashSet::from(["Node".to_string()]);
+        for suffix in 2..=10_001 {
+            used.insert(format!("Node_{suffix}"));
+        }
+
+        let generated = uniq_name(&mut used, "Node")?;
+
+        assert_eq!(generated, "Node_10002");
+        assert!(used.contains(&generated));
+        Ok(())
+    }
+
+    #[test]
+    fn missing_relation_endpoint_becomes_typed_hole_not_entity_fallback() -> Result<()> {
+        let file = ProposalsFileV1 {
+            version: 1,
+            generated_at: "0".to_string(),
+            source: ProposalSourceV1 {
+                source_type: "test".to_string(),
+                locator: "schema_discovery_test".to_string(),
+            },
+            schema_hint: None,
+            proposals: vec![
+                ProposalV1::Entity {
+                    meta: meta("entity:a"),
+                    entity_id: "a".to_string(),
+                    entity_type: "Account".to_string(),
+                    name: "AccountA".to_string(),
+                    attributes: HashMap::new(),
+                    description: None,
+                },
+                ProposalV1::Relation {
+                    meta: meta("rel:1"),
+                    relation_id: "rel:1".to_string(),
+                    rel_type: "depends_on".to_string(),
+                    source: "a".to_string(),
+                    target: "missing".to_string(),
+                    attributes: HashMap::new(),
+                },
+            ],
+        };
+
+        let axi = draft_axi_module_from_proposals(&file, &options())?;
+        assert!(axi.contains("object TypeHole_depends_on_to"));
+        assert!(axi.contains("references missing endpoint `missing`"));
+        assert!(!axi.contains("object Entity"));
+        assert!(!axi.contains("subtype Account < Entity"));
+        Ok(())
+    }
+
+    #[test]
+    fn heterogeneous_relation_roles_get_refinement_hole_supertypes() -> Result<()> {
+        let file = ProposalsFileV1 {
+            version: 1,
+            generated_at: "0".to_string(),
+            source: ProposalSourceV1 {
+                source_type: "test".to_string(),
+                locator: "schema_discovery_test".to_string(),
+            },
+            schema_hint: None,
+            proposals: vec![
+                ProposalV1::Entity {
+                    meta: meta("entity:a"),
+                    entity_id: "a".to_string(),
+                    entity_type: "Account".to_string(),
+                    name: "AccountA".to_string(),
+                    attributes: HashMap::new(),
+                    description: None,
+                },
+                ProposalV1::Entity {
+                    meta: meta("entity:o"),
+                    entity_id: "o".to_string(),
+                    entity_type: "Order".to_string(),
+                    name: "OrderO".to_string(),
+                    attributes: HashMap::new(),
+                    description: None,
+                },
+                ProposalV1::Entity {
+                    meta: meta("entity:p"),
+                    entity_id: "p".to_string(),
+                    entity_type: "Policy".to_string(),
+                    name: "PolicyP".to_string(),
+                    attributes: HashMap::new(),
+                    description: None,
+                },
+                ProposalV1::Relation {
+                    meta: meta("rel:1"),
+                    relation_id: "rel:1".to_string(),
+                    rel_type: "governs".to_string(),
+                    source: "a".to_string(),
+                    target: "p".to_string(),
+                    attributes: HashMap::new(),
+                },
+                ProposalV1::Relation {
+                    meta: meta("rel:2"),
+                    relation_id: "rel:2".to_string(),
+                    rel_type: "governs".to_string(),
+                    source: "o".to_string(),
+                    target: "p".to_string(),
+                    attributes: HashMap::new(),
+                },
+            ],
+        };
+
+        let axi = draft_axi_module_from_proposals(&file, &options())?;
+        assert!(axi.contains("object TypeHole_governs_from"));
+        assert!(axi.contains("subtype Account < TypeHole_governs_from"));
+        assert!(axi.contains("subtype Order < TypeHole_governs_from"));
+        assert!(
+            axi.contains("relation governs(from: TypeHole_governs_from @data, to: Policy @data)")
+        );
+        assert!(!axi.contains("Entity"));
+        Ok(())
+    }
 }

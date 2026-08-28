@@ -1,5 +1,5 @@
--- Family Ontology Example
--- Demonstrates basic schema, theory, and instance definitions
+-- Family ontology example
+-- Small canonical `axi_v1` module with explicit context/time roles.
 
 module Family
 
@@ -8,11 +8,11 @@ schema Fam:
   object Context
   object Time
 
-  -- Parent relation: (child, parent) pairs
-  relation Parent(child: Person, parent: Person) @context Context @temporal Time
+  -- Parent relation: (child, parent) scoped by context and time.
+  relation Parent(child: Person, parent: Person, ctx: Context @context, time: Time @temporal)
 
-  -- Spouse relation: symmetric
-  relation Spouse(a: Person, b: Person) @context Context
+  -- Spouse relation: symmetric and context-scoped.
+  relation Spouse(a: Person, b: Person, ctx: Context @context)
 
   -- Sibling relation: symmetric
   relation Sibling(a: Person, b: Person)

@@ -1,0 +1,51 @@
+{
+  "version": "behavior_case_check_request_v1",
+  "behavior_case": {
+    "case_id": "software_authoring.reserve_credit",
+    "title": "Reserve credit establishes payment evidence before shipment eligibility",
+    "summary": "Domain-only behavior case. DDD/fDDD context maps, surfaces, code refs, coverage policy, and codegen live in the tooling overlay.",
+    "given": {
+      "snapshot_label": "accepted order fulfillment ontology seed",
+      "world": "accepted",
+      "facts": [
+        "OrderHasReservation(order=Order_1001, reservation=Reservation_9001, ctx=Accepted, time=T0)",
+        "ReservationApprovesPayment(reservation=Reservation_9001, payment=Payment_9001, ctx=Accepted, time=T0)",
+        "PaymentAuthorizesShipment(payment=Payment_9001, shipment=Shipment_7001, ctx=Accepted, time=T1)"
+      ],
+      "notes": [
+        "These are domain facts, not implementation-surface claims."
+      ]
+    },
+    "when": {
+      "kind": "query",
+      "label": "Ask whether the accepted order can be treated as shipment-eligible after credit reservation"
+    },
+    "then": {
+      "expected_outcomes": [
+        "The reservation supports an accepted payment fact for the order.",
+        "The accepted payment authorizes the shipment.",
+        "The order is eligible for shipment in the accepted world."
+      ],
+      "rule_scopes": [
+        {
+          "schema": "OrderFulfillment",
+          "scope_class": "relation",
+          "relation": "OrderHasReservation"
+        },
+        {
+          "schema": "OrderFulfillment",
+          "scope_class": "relation",
+          "relation": "OrderEligibleForShipment"
+        }
+      ],
+      "trust_target": "strong",
+      "notes": [
+        "Strong behavior-case use still depends on overlay coverage and theory-check status."
+      ]
+    },
+    "notes": [
+      "This payload intentionally has no context, implementation_surfaces, or coverage_edges fields."
+    ]
+  },
+  "lifecycle_state": "accepted"
+}

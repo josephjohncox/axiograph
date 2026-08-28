@@ -2,44 +2,33 @@
 name = "axiograph-pathdb"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
 description = "PathDB: Efficient binary path-indexed knowledge graph storage"
 
+[lints]
+workspace = true
+
 [dependencies]
 axiograph-dsl = { path = "../axiograph-dsl" }
+axiograph-kernel = { path = "../axiograph-kernel" }
+axiograph-security = { path = "../axiograph-security" }
+axiograph-store = { path = "../axiograph-store" }
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-
-# Efficient binary encoding
-rkyv = { version = "0.8", features = ["bytecheck"] }  # Zero-copy deserialization + validation
-bincode = "1"
+schemars.workspace = true
 
 # Bitmap indexing (like Roaring bitmaps)
 roaring.workspace = true
 
-# Memory-mapped files
-memmap2 = "0.9"
-
-# B-tree and succinct data structures
-succinct = { version = "0.5", optional = true }
-
 # Hashing for string interning
 ahash.workspace = true
-dashmap = "6"
-ciborium.workspace = true
-
-# Parallel processing
-rayon = "1"
-
-[features]
-default = []
-succinct = ["dep:succinct"]
-
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(verus)'] }
+dashmap.workspace = true
+parking_lot.workspace = true
 
 [dev-dependencies]
 tempfile = "3"
 proptest.workspace = true
+trybuild = "1"

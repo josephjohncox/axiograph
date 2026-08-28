@@ -21,17 +21,17 @@ struct ExtractionPattern {
 }
 
 impl PatternExtractor {
-    pub fn new() -> Self {
-        Self {
+    pub fn new() -> Result<Self, regex::Error> {
+        Ok(Self {
             patterns: vec![
                 // "X is a Y"
                 ExtractionPattern {
                     name: "is_a",
-                    regex: Regex::new(r"(?i)(\w+(?:\s+\w+)?)\s+is\s+(?:a|an)\s+(\w+)").unwrap(),
+                    regex: Regex::new(r"(?i)(\w+(?:\s+\w+)?)\s+is\s+(?:a|an)\s+(\w+)")?,
                     extract: |cap| {
                         Some(StructuredFact::Entity {
-                            entity_type: cap[2].to_string(),
-                            name: cap[1].to_string(),
+                            entity_type: cap.get(2)?.as_str().to_string(),
+                            name: cap.get(1)?.as_str().to_string(),
                             attributes: HashMap::new(),
                         })
                     },
@@ -40,14 +40,16 @@ impl PatternExtractor {
                 // "X has Y of Z"
                 ExtractionPattern {
                     name: "has_property",
-                    regex: Regex::new(r"(?i)(\w+)\s+has\s+(?:a\s+)?(\w+)\s+of\s+([^\.,]+)")
-                        .unwrap(),
+                    regex: Regex::new(r"(?i)(\w+)\s+has\s+(?:a\s+)?(\w+)\s+of\s+([^\.,]+)")?,
                     extract: |cap| {
                         let mut attrs = HashMap::new();
-                        attrs.insert(cap[2].to_string(), cap[3].trim().to_string());
+                        attrs.insert(
+                            cap.get(2)?.as_str().to_string(),
+                            cap.get(3)?.as_str().trim().to_string(),
+                        );
                         Some(StructuredFact::Entity {
                             entity_type: "Unknown".to_string(),
-                            name: cap[1].to_string(),
+                            name: cap.get(1)?.as_str().to_string(),
                             attributes: attrs,
                         })
                     },
@@ -58,13 +60,12 @@ impl PatternExtractor {
                     name: "relation",
                     regex: Regex::new(
                         r"(?i)(\w+)\s+(requires|produces|uses|contains|includes)\s+(\w+)",
-                    )
-                    .unwrap(),
+                    )?,
                     extract: |cap| {
                         Some(StructuredFact::Relation {
-                            rel_type: cap[2].to_lowercase(),
-                            source: cap[1].to_string(),
-                            target: cap[3].to_string(),
+                            rel_type: cap.get(2)?.as_str().to_lowercase(),
+                            source: cap.get(1)?.as_str().to_string(),
+                            target: cap.get(3)?.as_str().to_string(),
                             attributes: HashMap::new(),
                         })
                     },
@@ -75,12 +76,11 @@ impl PatternExtractor {
                     name: "tacit_rule",
                     regex: Regex::new(
                         r"(?i)(always|never|should|must)\s+(.+?)\s+when\s+(.+?)(?:\.|$)",
-                    )
-                    .unwrap(),
+                    )?,
                     extract: |cap| {
-                        let modal = &cap[1].to_lowercase();
-                        let action = &cap[2];
-                        let condition = &cap[3];
+                        let modal = cap.get(1)?.as_str().to_lowercase();
+                        let action = cap.get(2)?.as_str();
+                        let condition = cap.get(3)?.as_str();
                         Some(StructuredFact::TacitKnowledge {
                             rule: format!("{} -> {} {}", condition.trim(), modal, action.trim()),
                             confidence: 0.7,
@@ -92,11 +92,16 @@ impl PatternExtractor {
                 // "because/due to" causal patterns
                 ExtractionPattern {
                     name: "causal",
-                    regex: Regex::new(r"(?i)(\w+(?:\s+\w+)*)\s+(?:because|due to)\s+(.+?)(?:\.|$)")
-                        .unwrap(),
+                    regex: Regex::new(
+                        r"(?i)(\w+(?:\s+\w+)*)\s+(?:because|due to)\s+(.+?)(?:\.|$)",
+                    )?,
                     extract: |cap| {
                         Some(StructuredFact::TacitKnowledge {
-                            rule: format!("{} <- {}", cap[1].trim(), cap[2].trim()),
+                            rule: format!(
+                                "{} <- {}",
+                                cap.get(1)?.as_str().trim(),
+                                cap.get(2)?.as_str().trim()
+                            ),
                             confidence: 0.65,
                             domain: "causal".to_string(),
                         })
@@ -104,7 +109,7 @@ impl PatternExtractor {
                     confidence: 0.65,
                 },
             ],
-        }
+        })
     }
 
     /// Extract facts from text using patterns
@@ -165,13 +170,13 @@ impl PatternExtractor {
                 attributes,
             } => {
                 if attributes.is_empty() {
-                    format!("{} is a {}", name, entity_type)
+                    format!("{name} is a {entity_type}")
                 } else {
                     let attrs: Vec<String> = attributes
                         .iter()
-                        .map(|(k, v)| format!("{}: {}", k, v))
+                        .map(|(k, v)| format!("{k}: {v}"))
                         .collect();
-                    format!("{} is a {} with {}", name, entity_type, attrs.join(", "))
+                    format!("{name} is a {entity_type} with {}", attrs.join(", "))
                 }
             }
             StructuredFact::Relation {
@@ -180,23 +185,17 @@ impl PatternExtractor {
                 target,
                 ..
             } => {
-                format!("{} {} {}", source, rel_type, target)
+                format!("{source} {rel_type} {target}")
             }
             StructuredFact::Constraint {
                 name, condition, ..
             } => {
-                format!("Constraint {}: {}", name, condition)
+                format!("Constraint {name}: {condition}")
             }
             StructuredFact::TacitKnowledge { rule, .. } => {
-                format!("Rule: {}", rule)
+                format!("Rule: {rule}")
             }
         }
-    }
-}
-
-impl Default for PatternExtractor {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -208,20 +207,20 @@ pub struct DomainExtractor {
 
 impl DomainExtractor {
     /// Create machining domain extractor
-    pub fn machining() -> Self {
-        Self {
+    pub fn machining() -> Result<Self, regex::Error> {
+        Ok(Self {
             domain: "machining".to_string(),
             patterns: vec![
                 ExtractionPattern {
                     name: "speed_limit",
-                    regex: Regex::new(r"(?i)(?:speed|sfm|rpm)\s*(?:of|:)?\s*(\d+)\s*(?:sfm|rpm)?")
-                        .unwrap(),
+                    regex: Regex::new(r"(?i)(?:speed|sfm|rpm)\s*(?:of|:)?\s*(\d+)\s*(?:sfm|rpm)?")?,
                     extract: |cap| {
+                        let speed = cap.get(1)?.as_str();
                         let mut attrs = HashMap::new();
-                        attrs.insert("speed".to_string(), cap[1].to_string());
+                        attrs.insert("speed".to_string(), speed.to_string());
                         Some(StructuredFact::Entity {
                             entity_type: "CuttingParameter".to_string(),
-                            name: format!("speed_{}", &cap[1]),
+                            name: format!("speed_{speed}"),
                             attributes: attrs,
                         })
                     },
@@ -229,7 +228,7 @@ impl DomainExtractor {
                 },
                 ExtractionPattern {
                     name: "coolant_rule",
-                    regex: Regex::new(r"(?i)(use|apply|need)\s+coolant").unwrap(),
+                    regex: Regex::new(r"(?i)(use|apply|need)\s+coolant")?,
                     extract: |_| {
                         Some(StructuredFact::TacitKnowledge {
                             rule: "cutting -> useCoolant".to_string(),
@@ -243,40 +242,42 @@ impl DomainExtractor {
                     name: "material_hardness",
                     regex: Regex::new(
                         r"(?i)(\w+)\s+(?:has\s+)?hardness\s+(?:of\s+)?(\d+)\s*(?:hrc|bhn)?",
-                    )
-                    .unwrap(),
+                    )?,
                     extract: |cap| {
                         let mut attrs = HashMap::new();
-                        attrs.insert("hardness".to_string(), cap[2].to_string());
+                        attrs.insert("hardness".to_string(), cap.get(2)?.as_str().to_string());
                         Some(StructuredFact::Entity {
                             entity_type: "Material".to_string(),
-                            name: cap[1].to_string(),
+                            name: cap.get(1)?.as_str().to_string(),
                             attributes: attrs,
                         })
                     },
                     confidence: 0.9,
                 },
             ],
-        }
+        })
     }
 
     /// Create physics domain extractor
-    pub fn physics() -> Self {
-        Self {
+    pub fn physics() -> Result<Self, regex::Error> {
+        Ok(Self {
             domain: "physics".to_string(),
             patterns: vec![ExtractionPattern {
                 name: "unit_equation",
-                regex: Regex::new(r"(?i)(\w+)\s*=\s*(\w+)\s*/\s*(\w+)").unwrap(),
+                regex: Regex::new(r"(?i)(\w+)\s*=\s*(\w+)\s*/\s*(\w+)")?,
                 extract: |cap| {
+                    let quantity = cap.get(1)?.as_str();
+                    let numerator = cap.get(2)?.as_str();
+                    let denominator = cap.get(3)?.as_str();
                     Some(StructuredFact::Constraint {
-                        name: format!("dim_{}", &cap[1]),
-                        condition: format!("{} = {} / {}", &cap[1], &cap[2], &cap[3]),
+                        name: format!("dim_{quantity}"),
+                        condition: format!("{quantity} = {numerator} / {denominator}"),
                         severity: "info".to_string(),
                     })
                 },
                 confidence: 0.8,
             }],
-        }
+        })
     }
 
     pub fn extract(&self, text: &str) -> Vec<(StructuredFact, f32, &'static str)> {
@@ -298,7 +299,7 @@ mod tests {
 
     #[test]
     fn test_is_a_pattern() {
-        let extractor = PatternExtractor::new();
+        let extractor = PatternExtractor::new().expect("static extraction patterns compile");
         let results = extractor.extract("Titanium is a Material");
 
         assert!(!results.is_empty());
@@ -315,7 +316,7 @@ mod tests {
 
     #[test]
     fn test_tacit_rule_pattern() {
-        let extractor = PatternExtractor::new();
+        let extractor = PatternExtractor::new().expect("static extraction patterns compile");
         let results = extractor.extract("Always use coolant when cutting titanium.");
 
         assert!(!results.is_empty());
@@ -329,7 +330,7 @@ mod tests {
 
     #[test]
     fn test_machining_domain() {
-        let extractor = DomainExtractor::machining();
+        let extractor = DomainExtractor::machining().expect("static machining patterns compile");
         let results = extractor.extract("Steel has hardness of 30 HRC");
 
         assert!(!results.is_empty());

@@ -4,57 +4,76 @@
 //! - Validating canonical `.axi` modules (`axi_v1`)
 //! - Ingesting sources into `proposals.json` (Evidence/Proposals schema)
 //! - Promoting proposals into candidate domain `.axi` modules (explicit, reviewable)
-//! - Managing PathDB snapshots (`.axpd` ↔ `.axi`)
+//! - Publishing and inspecting authenticated SQLite `.axpd` materializations
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use clap::{Args, Parser, Subcommand};
 use colored::Colorize;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::BTreeSet;
 use std::env;
 use std::fs;
-use std::io::{self, Read};
-use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::io;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-mod accepted_plane;
 mod analyze;
+mod authoring_workspace;
 mod axi_fmt;
+mod axi_input;
 mod axql;
+mod behavior_case;
 mod competency_questions;
+mod context_report;
 mod db_server;
 mod doc_chunks;
 mod embeddings;
+mod evolution_preview;
 mod github;
 mod llm;
+mod mcp;
 mod nlq;
-mod pathdb_wal;
 mod perf;
+mod predictive_proposal_input;
+mod predictive_proposals;
 mod profiling;
+mod projection;
 mod proposal_gen;
 mod proposals_import;
 mod proposals_validate;
 mod proto;
-mod query_ir;
 mod quality;
+mod query_ir;
 mod relation_resolution;
 mod repl;
+mod repl_command;
+mod route_preview;
+mod route_preview_tools;
+mod runtime_theory_check;
 mod schema_discovery;
+mod security;
+mod semantic_claim;
+mod semantic_merge_lattice;
+mod semantic_model;
+mod semantic_tools;
 mod sqlish;
-mod store_sync;
 mod synthetic_pathdb;
+mod transport_preview_tools;
+mod trust_contract;
+mod typed_authoring;
+mod typed_refinement;
+mod verifier_bridge;
 mod viz;
 mod web;
-mod world_model;
-mod world_model_input;
 
 #[derive(Parser)]
 #[command(name = "axiograph")]
 #[command(
     author,
     version,
-    about = "Axiograph: Dependently typed ontology language"
+    about = "Axiograph: proof-carrying ontology workbench with canonical .axi authority"
 )]
 struct Cli {
     #[command(flatten)]
@@ -66,179 +85,48 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     /// Ingest sources (docs/SQL/JSON/RDF/Proto/Web/Repo) into `proposals.json` (+ optional `chunks.json`).
-    ///
-    /// This is the preferred, "clean" ingestion entrypoint. Older top-level
-    /// ingestion commands still exist for compatibility but are hidden from help.
     Ingest {
         #[command(subcommand)]
         command: IngestCommands,
     },
 
-    /// Check/lint canonical `.axi` modules and `.axpd` snapshots.
+    /// Check/lint exact canonical `.axi` modules.
     ///
-    /// This is the preferred, "clean" entrypoint for:
-    /// - Rust-side `.axi` validation, and
-    /// - practical quality/lint reports.
+    /// Runs Rust-side validation and quality reports over reviewable inputs.
     Check {
         #[command(subcommand)]
         command: CheckCommands,
     },
 
-    /// Emit certificates (Rust computes, Lean verifies).
+    /// Emit untrusted certificates; this command does not invoke Lean.
     ///
-    /// Certificates are untrusted proof objects emitted by the Rust engine
-    /// and checked by the Lean trusted checker (`axiograph_verify`).
+    /// Verify emitted certificates separately with the trusted
+    /// `axiograph_verify` checker or a `make verify-lean-*` target.
     Cert {
         #[command(subcommand)]
         command: CertCommands,
     },
 
-    /// Tooling commands (visualization, analysis, perf harnesses).
+    /// Tooling commands (visualization, analysis, performance runners).
     Tools {
         #[command(subcommand)]
         command: ToolsCommands,
     },
 
-    /// Database commands (snapshot store + PathDB snapshots/WAL).
-    ///
-    /// This is the preferred, "clean" entrypoint for:
-    /// - accepted-plane management (canonical `.axi` snapshots), and
-    /// - PathDB (`.axpd`) import/export and WAL-based overlays.
+    /// Software-authoring, codegen, overlay, and editor-integration commands.
+    Authoring {
+        #[command(subcommand)]
+        command: AuthoringCommands,
+    },
+
+    /// Manage accepted state and serve authenticated AxiStore materializations.
     Db {
         #[command(subcommand)]
         command: DbCommands,
     },
 
-    /// Ingest SQL DDL → `proposals.json`
-    #[command(hide = true)]
-    Sql {
-        /// Input SQL file
-        input: PathBuf,
-        /// Output proposals JSON (Evidence/Proposals schema)
-        #[arg(short, long)]
-        out: PathBuf,
-    },
-
-    /// Ingest document (text, markdown)
-    #[command(hide = true)]
-    Doc {
-        /// Input document
-        input: PathBuf,
-        /// Output proposals JSON (Evidence/Proposals schema)
-        #[arg(short, long)]
-        out: PathBuf,
-        /// Output chunks JSON (for RAG)
-        #[arg(long)]
-        chunks: Option<PathBuf>,
-        /// Output extracted facts JSON
-        #[arg(long)]
-        facts: Option<PathBuf>,
-        /// Treat as machining knowledge
-        #[arg(long)]
-        machining: bool,
-        /// Domain for fact extraction (default: general)
-        #[arg(long, default_value = "general")]
-        domain: String,
-    },
-
-    /// Ingest conversation transcript
-    #[command(hide = true)]
-    Conversation {
-        /// Input transcript file
-        input: PathBuf,
-        /// Output proposals JSON (Evidence/Proposals schema)
-        #[arg(short, long)]
-        out: PathBuf,
-        /// Output chunks JSON
-        #[arg(long)]
-        chunks: Option<PathBuf>,
-        /// Output extracted facts JSON
-        #[arg(long)]
-        facts: Option<PathBuf>,
-        /// Format: slack, meeting
-        #[arg(long, default_value = "slack")]
-        format: String,
-    },
-
-    /// Ingest Confluence HTML export
-    #[command(hide = true)]
-    Confluence {
-        /// Input HTML file
-        input: PathBuf,
-        /// Output proposals JSON (Evidence/Proposals schema)
-        #[arg(short, long)]
-        out: PathBuf,
-        /// Confluence space name
-        #[arg(long, default_value = "DOCS")]
-        space: String,
-        /// Output chunks JSON
-        #[arg(long)]
-        chunks: Option<PathBuf>,
-        /// Output extracted facts JSON
-        #[arg(long)]
-        facts: Option<PathBuf>,
-    },
-
-    /// Ingest JSON data → `proposals.json`
-    #[command(hide = true)]
-    Json {
-        /// Input JSON file
-        input: PathBuf,
-        /// Output proposals JSON (Evidence/Proposals schema)
-        #[arg(short, long)]
-        out: PathBuf,
-    },
-
-    /// Ingest recommended readings (BibTeX or markdown list)
-    #[command(hide = true)]
-    Readings {
-        /// Input file (BibTeX or markdown)
-        input: PathBuf,
-        /// Output proposals JSON (Evidence/Proposals schema)
-        #[arg(short, long)]
-        out: PathBuf,
-        /// Output chunks JSON
-        #[arg(long)]
-        chunks: Option<PathBuf>,
-        /// Format: bibtex, markdown
-        #[arg(long, default_value = "markdown")]
-        format: String,
-    },
-
-    /// Convert PathDB snapshots between `.axpd` and `.axi` (export schema `PathDBExportV1`)
-    #[command(hide = true)]
-    Pathdb {
-        #[command(subcommand)]
-        command: PathdbCommands,
-    },
-
-    /// Validate an .axi file
-    #[command(hide = true)]
-    Validate {
-        /// Input .axi file
-        input: PathBuf,
-    },
-
-    /// Index a repository / codebase into chunks + lightweight graph edges
-    #[command(hide = true)]
-    Repo {
-        #[command(subcommand)]
-        command: RepoCommands,
-    },
-
-    /// Import a GitHub repo (or local repo path) into merged `proposals.json` + `chunks.json`
-    #[command(hide = true)]
-    Github {
-        #[command(subcommand)]
-        command: github::GithubCommands,
-    },
-
-    /// Scrape/crawl web pages into `chunks.json` + `proposals.json` (discovery tooling)
-    #[command(hide = true)]
-    Web {
-        #[command(subcommand)]
-        command: web::WebCommands,
-    },
+    /// Run a read-only stdio MCP transport over typed semantic services.
+    Mcp(McpArgs),
 
     /// Run discovery tasks over ingestion artifacts (chunks/facts/edges)
     Discover {
@@ -246,56 +134,8 @@ enum Commands {
         command: DiscoverCommands,
     },
 
-    /// Manage the accepted/canonical `.axi` plane (append-only log + snapshot ids).
-    #[command(hide = true)]
-    Accept {
-        #[command(subcommand)]
-        command: AcceptedCommands,
-    },
-
-    /// Ingest a directory of heterogeneous sources (docs, SQL, RDF/OWL, JSON, Confluence)
-    #[command(hide = true)]
-    IngestDir {
-        /// Root directory to ingest
-        root: PathBuf,
-        /// Output directory for ingestion artifacts
-        #[arg(short, long, default_value = "build/ingest")]
-        out_dir: PathBuf,
-        /// Confluence space name (used for `.html` ingestion)
-        #[arg(long, default_value = "DOCS")]
-        confluence_space: String,
-        /// Domain for document fact extraction
-        #[arg(long, default_value = "general")]
-        domain: String,
-        /// Output aggregated chunks JSON (for RAG)
-        #[arg(long)]
-        chunks: Option<PathBuf>,
-        /// Output aggregated extracted-facts JSON
-        #[arg(long)]
-        facts: Option<PathBuf>,
-        /// Output generic proposals JSON (Evidence/Proposals schema)
-        #[arg(long)]
-        proposals: Option<PathBuf>,
-        /// Maximum file size to ingest (bytes)
-        #[arg(long, default_value_t = 524288)]
-        max_file_bytes: u64,
-        /// Maximum number of files to ingest
-        #[arg(long, default_value_t = 50000)]
-        max_files: usize,
-    },
-
-    /// Performance harnesses (synthetic ingestion/query timings).
-    #[command(hide = true)]
-    Perf {
-        #[command(subcommand)]
-        command: perf::PerfCommands,
-    },
-
-    /// Interactive REPL for PathDB snapshots and reversible `.axi` exports.
+    /// Interactive REPL with process-local query state.
     Repl {
-        /// Optional `.axpd` file to load on startup.
-        #[arg(long)]
-        axpd: Option<PathBuf>,
         /// Run a non-interactive REPL script (one command per line). Use `-` to read from stdin.
         #[arg(long)]
         script: Option<PathBuf>,
@@ -309,124 +149,6 @@ enum Commands {
         #[arg(long)]
         quiet: bool,
     },
-
-    /// Run an AxQL/SQL-ish query over a `PathDBExportV1` `.axi` snapshot and emit a certificate.
-    ///
-    /// This is a helper for “Rust computes, Lean verifies” end-to-end checks:
-    /// - the `.axi` snapshot is the canonical anchor (digest),
-    /// - the query runs over the imported PathDB,
-    /// - and Rust emits a query-result certificate anchored to the snapshot digest:
-    ///   - `query_result_v1` for conjunctive queries
-    ///   - `query_result_v2` for disjunctions (`or`, i.e. UCQs)
-    #[command(hide = true)]
-    QueryCert {
-        /// Input `.axi` file.
-        ///
-        /// This may be either:
-        /// - a `PathDBExportV1` snapshot export (reversible `.axi` export), or
-        /// - a canonical `axi_v1` module (schema/theory/instance).
-        ///
-        /// If the input is a canonical module, you must pass `--anchor-out` so
-        /// this command can write a derived `PathDBExportV1` snapshot anchor for
-        /// `axiograph_verify`.
-        input: PathBuf,
-
-        /// Query language: `axql` or `sql`.
-        #[arg(long, default_value = "axql")]
-        lang: String,
-
-        /// Query text (quote it in your shell).
-        query: String,
-
-        /// Write certificate JSON to this path (defaults to stdout).
-        #[arg(short, long)]
-        out: Option<PathBuf>,
-
-        /// Write the derived `PathDBExportV1` anchor snapshot to this `.axi` path.
-        ///
-        /// Required when `input` is a canonical module (because the Lean verifier
-        /// currently anchors query-result certificates to snapshot exports).
-        #[arg(long)]
-        anchor_out: Option<PathBuf>,
-    },
-
-    /// Typecheck a canonical `.axi` module and emit an `axi_well_typed_v1` certificate.
-    ///
-    /// This is the smallest "trusted gate" for the canonical input language:
-    /// Rust emits a certificate envelope anchored to the input module digest,
-    /// and Lean re-parses + re-checks the module.
-    #[command(hide = true)]
-    TypecheckCert {
-        /// Input `.axi` file (canonical `axi_v1` schema/theory/instance module).
-        input: PathBuf,
-
-        /// Write certificate JSON to this path (defaults to stdout).
-        #[arg(short, long)]
-        out: Option<PathBuf>,
-    },
-
-    /// Check a conservative subset of theory constraints and emit an `axi_constraints_ok_v1` certificate.
-    ///
-    /// This is intended as a future “promotion gate” for canonical `.axi` inputs:
-    /// Rust emits an envelope anchored to the input module digest, and Lean re-parses +
-    /// re-checks the same constraint subset.
-    #[command(hide = true)]
-    ConstraintsCert {
-        /// Input `.axi` file (canonical `axi_v1` schema/theory/instance module).
-        input: PathBuf,
-
-        /// Write certificate JSON to this path (defaults to stdout).
-        #[arg(short, long)]
-        out: Option<PathBuf>,
-    },
-
-    /// Protobuf / gRPC ingestion (`buf build` → descriptor set → proposals).
-    #[command(hide = true)]
-    Proto {
-        #[command(subcommand)]
-        command: proto::ProtoCommands,
-    },
-
-    /// Visualize a `.axpd` snapshot or imported `.axi` module as a neighborhood graph.
-    ///
-    /// Output formats:
-    /// - `dot`: Graphviz DOT (use `dot -Tsvg graph.dot -o graph.svg`)
-    /// - `html`: self-contained offline explorer
-    /// - `json`: raw graph JSON for custom frontends
-    #[command(hide = true)]
-    Viz(VizArgs),
-
-    /// Tooling-focused analysis commands (untrusted / evidence-plane friendly).
-    #[command(hide = true)]
-    Analyze {
-        #[command(subcommand)]
-        command: analyze::AnalyzeCommands,
-    },
-
-    /// Lint/quality checks for `.axi` modules and `.axpd` snapshots.
-    ///
-    /// This is a practical ontology-engineering helper. It produces a structured
-    /// report (JSON) and exits non-zero when errors are found.
-    #[command(hide = true)]
-    Quality {
-        /// Input `.axpd` or `.axi` file.
-        input: PathBuf,
-        /// Output report path (defaults to stdout).
-        #[arg(short, long)]
-        out: Option<PathBuf>,
-        /// Output format: json|text
-        #[arg(long, default_value = "text")]
-        format: String,
-        /// Profile: fast|strict
-        #[arg(long, default_value = "fast")]
-        profile: String,
-        /// Plane selection: data|meta|both
-        #[arg(long, default_value = "both")]
-        plane: String,
-        /// Do not fail the process even if errors are found (always exit 0).
-        #[arg(long)]
-        no_fail: bool,
-    },
 }
 
 #[derive(Subcommand)]
@@ -436,6 +158,15 @@ enum CheckCommands {
         /// Input `.axi` file.
         input: PathBuf,
     },
+
+    /// Classify compiled theory obligations under an explicit runtime scope.
+    Theory(CheckTheoryArgs),
+
+    /// Execute and Lean-verify one exact finite query against canonical `.axi` bytes.
+    FiniteQuery(CheckFiniteQueryArgs),
+
+    /// Check behavior-case software coverage against a typed tooling overlay.
+    SoftwareCoverage(CheckSoftwareCoverageArgs),
 
     /// Format a canonical `.axi` module (surgically; preserves comments).
     ///
@@ -453,13 +184,13 @@ enum CheckCommands {
         write: bool,
     },
 
-    /// Lint/quality checks for `.axi` modules and `.axpd` snapshots.
+    /// Lint/quality checks for canonical `.axi` modules.
     ///
     /// This is a practical ontology-engineering helper. It produces a structured
     /// report (JSON/text) and exits non-zero when errors are found (unless
     /// `--no-fail` is set).
     Quality {
-        /// Input `.axpd` or `.axi` file.
+        /// Input canonical `.axi` file.
         input: PathBuf,
         /// Output report path (defaults to stdout).
         #[arg(short, long)]
@@ -479,9 +210,132 @@ enum CheckCommands {
     },
 }
 
+#[derive(Args, Debug, Clone)]
+struct CheckTheoryArgs {
+    /// Input canonical `.axi` module.
+    input: PathBuf,
+
+    /// Optional theory id or local theory name filter.
+    #[arg(long)]
+    theory: Option<String>,
+
+    /// Closure tier: finite_fragment|evidence_weighted|global_indexed.
+    #[arg(long, default_value = "finite_fragment")]
+    closure_tier: String,
+
+    /// Declared world id for scoped closure.
+    #[arg(long)]
+    world_id: Option<String>,
+
+    /// Treat the declared world as non-finite, making closure advisory.
+    #[arg(long = "non-finite-world", action = clap::ArgAction::SetFalse, default_value_t = true)]
+    finite_world: bool,
+
+    /// Include a semantic ref in the declared global/indexed universe.
+    #[arg(long = "included-ref")]
+    included_refs: Vec<String>,
+
+    /// Include a world id in the declared global/indexed universe.
+    #[arg(long = "included-world")]
+    included_worlds: Vec<String>,
+
+    /// Include a semantic slice id in the declared global/indexed universe.
+    #[arg(long = "included-slice")]
+    included_slices: Vec<String>,
+
+    /// Include an import anchor in the declared global/indexed universe.
+    #[arg(long = "included-import")]
+    included_imports: Vec<String>,
+
+    /// Declare an import that should make global_indexed closure fail closed.
+    #[arg(long = "undeclared-import")]
+    undeclared_imports: Vec<String>,
+
+    /// Evidence threshold in parts per million.
+    #[arg(long)]
+    evidence_threshold_ppm: Option<u32>,
+
+    /// Evidence semantics: thresholded_world|weighted_lattice|deferred.
+    #[arg(long, default_value = "thresholded_world")]
+    evidence_semantics: String,
+
+    /// Enable conservative weighted-lattice propagation before thresholding.
+    #[arg(long)]
+    weighted_evidence: bool,
+
+    /// Per-obligation evidence weight as obligation_id=ppm.
+    #[arg(long = "evidence-weight")]
+    evidence_weights: Vec<String>,
+
+    /// Emit JSON to stdout unless --out is provided.
+    #[arg(long)]
+    json: bool,
+
+    /// Output JSON path.
+    #[arg(short, long)]
+    out: Option<PathBuf>,
+}
+
+#[derive(Args, Debug, Clone)]
+struct CheckFiniteQueryArgs {
+    /// Exact canonical `.axi` module and finite instance used as the query anchor.
+    input: PathBuf,
+
+    /// JSON-encoded `query_ir_v1` request.
+    #[arg(long)]
+    query: PathBuf,
+
+    /// Approved Lean verifier executable.
+    #[arg(long)]
+    verify_bin: PathBuf,
+
+    /// SHA-256 of the approved verifier executable.
+    #[arg(long)]
+    verify_sha256: String,
+
+    /// Approved stdio V2 checker build id.
+    #[arg(long, default_value = "axiograph-verify-main-v3")]
+    verify_build_id: String,
+
+    /// Verifier timeout in seconds.
+    #[arg(long, default_value_t = 30)]
+    verify_timeout_secs: u64,
+
+    /// Output verification report. Defaults to stdout.
+    #[arg(short, long)]
+    out: Option<PathBuf>,
+}
+
+#[derive(Args, Debug, Clone)]
+struct CheckSoftwareCoverageArgs {
+    /// Input canonical `.axi` module.
+    input: PathBuf,
+
+    /// Typed behavior-case request payload file (`BehaviorCaseCheckRequestV1`).
+    #[arg(long)]
+    behavior_case: PathBuf,
+
+    /// Typed tooling overlay payload file (`ToolingOverlayBundleV1`).
+    #[arg(long)]
+    overlay: PathBuf,
+
+    /// Optional `.cq` or `competency_question_bundle_v1` JSON file to attach
+    /// before building the coverage report. Prefer `.cq` for authored CQs.
+    #[arg(long = "cq-file")]
+    cq_files: Vec<PathBuf>,
+
+    /// Repository root used to resolve code_refs.
+    #[arg(long, default_value = ".")]
+    repo_root: PathBuf,
+
+    /// Output JSON path. Defaults to stdout.
+    #[arg(short, long)]
+    out: Option<PathBuf>,
+}
+
 #[derive(Subcommand)]
 enum ToolsCommands {
-    /// Visualize a `.axpd` snapshot or imported `.axi` module as a neighborhood graph.
+    /// Visualize a canonical `.axi` module as a neighborhood graph.
     Viz(VizArgs),
 
     /// Tooling-focused analysis commands (untrusted / evidence-plane friendly).
@@ -490,43 +344,191 @@ enum ToolsCommands {
         command: analyze::AnalyzeCommands,
     },
 
-    /// Performance harnesses (synthetic ingestion/query timings).
+    /// Performance runners (synthetic ingestion/query timings).
     Perf {
         #[command(subcommand)]
         command: perf::PerfCommands,
+    },
+
+    /// Emit and audit capability-declared derived backend projections.
+    Projection {
+        #[command(subcommand)]
+        command: projection::ProjectionCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum AuthoringCommands {
+    /// Run a cataloged software-authoring example flow and emit `authoring_suite_run_report_v1`.
+    Run {
+        /// Typed suite catalog file, for example examples/software_authoring/software_authoring_examples.json.
+        #[arg(long)]
+        suite: PathBuf,
+        /// Example id from the suite catalog.
+        #[arg(long)]
+        example: String,
+        /// Coverage profile: advisory, strict, or ci.
+        #[arg(long, default_value = "advisory")]
+        profile: String,
+        /// Repository root used to resolve code_refs.
+        #[arg(long, default_value = ".")]
+        repo_root: PathBuf,
+        /// Optional directory for typed per-step report files.
+        #[arg(long)]
+        out_dir: Option<PathBuf>,
+        /// Output `authoring_suite_run_report_v1` path. Defaults to stdout.
+        #[arg(short, long)]
+        out: Option<PathBuf>,
+        /// Return a non-zero exit code when the selected profile fails.
+        #[arg(long)]
+        fail_on_blocking: bool,
+    },
+
+    /// Return codegen skeleton file hints from a typed tooling overlay.
+    CodegenPlan {
+        /// Typed tooling overlay payload file (`ToolingOverlayBundleV1`).
+        #[arg(long)]
+        overlay: PathBuf,
+        /// Output JSON path. Defaults to stdout.
+        #[arg(short, long)]
+        out: Option<PathBuf>,
+    },
+
+    /// Run the unified workspace-aware typed authoring service from one JSON request.
+    Workspace {
+        /// Workspace root. Every source path in the request is resolved beneath it.
+        #[arg(long, default_value = ".")]
+        workspace: PathBuf,
+        /// JSON-encoded `authoring_workspace_request_v1`.
+        #[arg(long)]
+        request: PathBuf,
+        /// Output JSON path. Defaults to stdout.
+        #[arg(short, long)]
+        out: Option<PathBuf>,
+    },
+
+    /// Materialize generated test skeleton previews from a behavior-case report.
+    MaterializeSkeletons {
+        /// Path to a behavior_case_report_v1 JSON file.
+        #[arg(long)]
+        behavior_report: PathBuf,
+        /// Output directory for generated skeletons.
+        #[arg(long)]
+        out_dir: PathBuf,
+        /// Optional comma-separated language filter.
+        #[arg(long, value_delimiter = ',')]
+        language: Vec<String>,
+        /// Overwrite existing generated files.
+        #[arg(long)]
+        overwrite: bool,
+        /// Output JSON path. Defaults to stdout.
+        #[arg(short, long)]
+        out: Option<PathBuf>,
+    },
+
+    /// Check a behavior-case report as a continuous software-coverage gate.
+    ContinuousCheck {
+        /// Path to a behavior_case_report_v1 JSON file.
+        #[arg(long)]
+        behavior_report: PathBuf,
+        /// Repository root used to resolve code_refs from the behavior report.
+        #[arg(long, default_value = ".")]
+        repo_root: PathBuf,
+        /// Comma-separated list of generated languages required in codegen_previews.
+        #[arg(
+            long,
+            value_delimiter = ',',
+            default_value = "rust,typescript,python,go"
+        )]
+        require_codegen: Vec<String>,
+        /// Fail when ontology rules are not mapped to implementation/test coverage.
+        #[arg(long)]
+        strict_coverage: bool,
+        /// Fail when code_refs do not exist on disk.
+        #[arg(long)]
+        require_code_refs: bool,
+        /// Fail unless the report carries a runtime theory-check summary.
+        #[arg(long)]
+        require_runtime_theory: bool,
+        /// Output JSON path. Defaults to stdout.
+        #[arg(short, long)]
+        out: Option<PathBuf>,
+    },
+
+    /// Emit software-coverage, overlay-codegen, and workspace-service tool metadata.
+    ToolSpecs {
+        /// Output JSON path. Defaults to stdout.
+        #[arg(short, long)]
+        out: Option<PathBuf>,
+    },
+
+    /// Emit minimal LSP capability metadata for editor integrations.
+    LspCapabilities {
+        /// Output JSON path. Defaults to stdout.
+        #[arg(short, long)]
+        out: Option<PathBuf>,
+    },
+
+    /// Emit launch metadata for the unified LSP/MCP/HTTP authoring adapters.
+    IntegrationManifest {
+        /// Workspace root embedded in adapter launch commands.
+        #[arg(long, default_value = ".")]
+        workspace: PathBuf,
+        /// Output JSON path. Defaults to stdout.
+        #[arg(short, long)]
+        out: Option<PathBuf>,
+    },
+
+    /// Run the stdio LSP adapter over the unified workspace service.
+    Lsp {
+        #[arg(long, default_value = ".")]
+        workspace: PathBuf,
+        /// Default workspace-relative `.axi` root used when diagnosing `.cq` buffers.
+        #[arg(long)]
+        axi: Option<String>,
+    },
+
+    /// Run the read-only stdio MCP adapter over the unified workspace service.
+    Mcp {
+        #[arg(long, default_value = ".")]
+        workspace: PathBuf,
+    },
+
+    /// Run the read-only HTTP adapter over the unified workspace service.
+    Serve {
+        #[arg(long, default_value = ".")]
+        workspace: PathBuf,
+        #[arg(long, default_value = "127.0.0.1:8787")]
+        listen: std::net::SocketAddr,
     },
 }
 
 #[derive(Subcommand)]
 enum DbCommands {
-    /// Manage the accepted/canonical `.axi` plane (append-only log + snapshot ids).
-    Accept {
-        #[command(subcommand)]
-        command: AcceptedCommands,
+    /// Publish a deterministic SQLite materialization from an explicit JSON build spec.
+    Materialize {
+        /// Initialized AxiStore root.
+        #[arg(long)]
+        dir: PathBuf,
+        /// JSON-encoded `AxpdBuildSpec` with exact semantic anchors.
+        #[arg(long)]
+        spec: PathBuf,
     },
 
-    /// Convert PathDB snapshots between `.axpd` and `.axi` and import chunk overlays.
-    Pathdb {
-        #[command(subcommand)]
-        command: PathdbCommands,
+    /// Verify and print one immutable materialization receipt.
+    MaterializationShow {
+        /// Initialized AxiStore root.
+        #[arg(long)]
+        dir: PathBuf,
+        /// Exact `MaterializationIdV2`.
+        #[arg(long)]
+        materialization: String,
     },
 
-    /// Run a database server process over a loaded snapshot.
+    /// Serve one immutable, authenticated AxiStore materialization read-only.
     ///
-    /// This keeps a `.axpd` snapshot loaded in memory and serves:
-    /// - `/healthz`
-    /// - `/status`
-    /// - `/snapshots` (store-backed only; list snapshots for time-travel)
-    /// - `/query` (AxQL)
-    /// - `/viz` (HTML), `/viz.json` (graph JSON), `/viz.dot` (Graphviz DOT)
-    ///
-    /// Time travel:
-    /// - `GET /viz?...&snapshot=<id>` renders an older snapshot (store-backed only).
-    ///
-    /// In `--role master` mode, the server can also accept write operations
-    /// that mutate the snapshot store (accepted plane + PathDB WAL). Treat
-    /// this as an **untrusted** runtime surface: trusted correctness remains
-    /// certificate checking in Lean.
+    /// Startup verifies the receipt, exact SQLite image, logical rows, and
+    /// semantic anchors before publishing `/healthz`, `/status`, and `/query`.
     Serve(DbServeArgs),
 }
 
@@ -536,187 +538,72 @@ struct DbServeArgs {
     #[arg(long, default_value = "127.0.0.1:7878")]
     listen: std::net::SocketAddr,
 
-    /// Role: `standalone` (read-only), `master` (read/write), or `replica` (read-only + watch).
-    #[arg(long, default_value = "standalone")]
-    role: String,
-
-    /// Load a `.axpd` snapshot directly.
+    /// AxiStore root containing the immutable materialization and receipt.
     #[arg(long)]
-    axpd: Option<PathBuf>,
+    dir: PathBuf,
 
-    /// Load from a snapshot store directory (accepted plane + PathDB WAL).
-    ///
-    /// Use with `--layer` + `--snapshot`.
+    /// Exact immutable `MaterializationIdV2` to verify and serve.
     #[arg(long)]
-    dir: Option<PathBuf>,
+    materialization: String,
 
-    /// Which store layer to serve: `pathdb` (WAL head) or `accepted` (canonical head).
-    #[arg(long, default_value = "pathdb")]
-    layer: String,
+    /// Maximum number of simultaneously open HTTP connections.
+    #[arg(long, default_value_t = 128)]
+    max_connections: usize,
 
-    /// Snapshot id (or `head`/`latest`) when loading from `--dir`.
-    #[arg(long, default_value = "head")]
-    snapshot: String,
+    /// Maximum lifetime of an HTTP connection in seconds.
+    #[arg(long, default_value_t = 300)]
+    connection_timeout_secs: u64,
 
-    /// Reload when `HEAD` changes (polling).
-    #[arg(long)]
-    watch_head: bool,
-
-    /// Polling interval for `--watch-head`.
-    #[arg(long, default_value_t = 2)]
-    poll_interval_secs: u64,
-
-    /// Optional admin token required for write endpoints (recommended for `--role master`).
-    #[arg(long)]
-    admin_token: Option<String>,
-
-    /// If set, write a small JSON file once the server is listening.
-    ///
-    /// Useful for scripts/tests to learn the chosen port when `--listen ...:0`.
+    /// Write a readiness receipt after verification and listener publication.
     #[arg(long)]
     ready_file: Option<PathBuf>,
 
-    /// Optional Lean verifier executable (axiograph_verify) to validate certificates server-side.
-    ///
-    /// If omitted, the server will try (in order):
-    /// - `AXIOGRAPH_VERIFY_BIN`,
-    /// - `axiograph_verify` next to the running `axiograph` binary,
-    /// - `lean/.lake/build/bin/axiograph_verify` (when running from repo root).
-    #[arg(long)]
-    verify_bin: Option<PathBuf>,
-
-    /// Certificate verification timeout (seconds). `0` disables the timeout.
-    ///
-    /// This is only used for server-side verification calls (e.g. `POST /query`
-    /// with `"verify": true`).
-    #[arg(long, default_value_t = 30)]
-    verify_timeout_secs: u64,
-
-    /// Enable LLM endpoints for the server UI (`/viz`).
-    ///
-    /// This is an untrusted convenience feature: the model proposes tool calls
-    /// and/or structured queries; Rust executes them against the loaded snapshot.
-    /// Trusted correctness remains certificate-checking in Lean.
-    ///
-    /// Choose at most one backend: `--llm-mock`, `--llm-ollama`, `--llm-openai`, `--llm-anthropic`, or `--llm-plugin ...`.
-    #[arg(long)]
-    llm_mock: bool,
-
-    /// Optional LLM plugin executable (supports v2 query mode and v3 tool-loop mode).
-    #[arg(long)]
-    llm_plugin: Option<PathBuf>,
-
-    /// Extra args for `--llm-plugin` (repeatable).
-    #[arg(long)]
-    llm_plugin_arg: Vec<String>,
-
-    /// Use the built-in Ollama backend (local models via Ollama).
-    #[arg(long)]
-    llm_ollama: bool,
-
-    /// Optional Ollama host override (defaults to `OLLAMA_HOST` or `http://127.0.0.1:11434`).
-    #[arg(long)]
-    llm_ollama_host: Option<String>,
-
-    /// Use the built-in OpenAI backend (networked).
-    #[arg(long)]
-    llm_openai: bool,
-
-    /// Optional OpenAI base URL override (defaults to `OPENAI_BASE_URL` or `https://api.openai.com`).
-    #[arg(long)]
-    llm_openai_base_url: Option<String>,
-
-    /// Use the built-in Anthropic backend (networked).
-    #[arg(long)]
-    llm_anthropic: bool,
-
-    /// Optional Anthropic base URL override (defaults to `ANTHROPIC_BASE_URL` or `https://api.anthropic.com`).
-    #[arg(long)]
-    llm_anthropic_base_url: Option<String>,
-
-    /// Optional model name for the plugin, or for Ollama (required when `--llm-ollama` is set).
-    #[arg(long)]
-    llm_model: Option<String>,
-
-    /// Enable world model plugin endpoints for proposal generation.
-    ///
-    /// Choose at most one backend: `--world-model-stub`, `--world-model-plugin ...`,
-    /// `--world-model-http ...`, or `--world-model-llm`.
-    #[arg(long)]
-    world_model_stub: bool,
-
-    /// Optional world model plugin executable (speaks `axiograph_world_model_v1`).
-    #[arg(long)]
-    world_model_plugin: Option<PathBuf>,
-
-    /// Extra args for `--world-model-plugin` (repeatable).
-    #[arg(long)]
-    world_model_plugin_arg: Vec<String>,
-
-    /// Optional world model HTTP endpoint (speaks `axiograph_world_model_v1`).
-    #[arg(long)]
-    world_model_http: Option<String>,
-
-    /// Use the built-in LLM-backed world model plugin.
-    #[arg(long)]
-    world_model_llm: bool,
-
-    /// Optional world model model name for provenance (free-form).
-    #[arg(long)]
-    world_model_model: Option<String>,
-
-    /// Number of worker slots reserved for world-model jobs.
-    #[arg(long, default_value_t = 2)]
-    world_model_workers: usize,
-
-    /// LRU capacity (number of path signatures) for deeper-than-indexed paths.
-    /// `0` disables the LRU cache.
+    /// LRU capacity for deeper-than-indexed paths; zero disables it.
     #[arg(long, default_value_t = 0)]
     path_index_lru_capacity: usize,
 
-    /// Enable async updates for the deeper-path LRU cache.
+    /// Enable asynchronous updates for the process-local path LRU.
     #[arg(long)]
     path_index_lru_async: bool,
 
-    /// Async queue size for deeper-path LRU updates (ignored unless async is enabled).
+    /// Async path-LRU update queue size.
     #[arg(long, default_value_t = 1024)]
     path_index_lru_queue: usize,
 }
 
+#[derive(Args, Debug, Clone)]
+struct McpArgs {
+    /// AxiStore root containing the immutable materialization and receipt.
+    #[arg(long)]
+    dir: PathBuf,
+
+    /// Exact immutable `MaterializationIdV2` to verify and expose.
+    #[arg(long)]
+    materialization: String,
+
+    /// Hard cap for rows returned by `axql_run` calls.
+    #[arg(long, default_value_t = 50)]
+    tool_max_rows: usize,
+
+    /// Approved Lean verifier executable for MCP query verification.
+    #[arg(long)]
+    verify_bin: Option<PathBuf>,
+
+    /// SHA-256 of the approved verifier executable.
+    #[arg(long)]
+    verify_sha256: Option<String>,
+
+    /// Approved stdio V2 checker build id.
+    #[arg(long)]
+    verify_build_id: Option<String>,
+
+    /// Query verifier timeout in seconds.
+    #[arg(long, default_value_t = 30)]
+    verify_timeout_secs: u64,
+}
+
 #[derive(Subcommand)]
 enum CertCommands {
-    /// Run an AxQL/SQL-ish query over a `.axi` snapshot/module and emit a query-result certificate.
-    Query {
-        /// Input `.axi` file.
-        ///
-        /// This may be either:
-        /// - a `PathDBExportV1` snapshot export (reversible `.axi` export), or
-        /// - a canonical `axi_v1` module (schema/theory/instance).
-        ///
-        /// If the input is a canonical module, you must pass `--anchor-out` so
-        /// this command can write a derived `PathDBExportV1` snapshot anchor for
-        /// `axiograph_verify`.
-        input: PathBuf,
-
-        /// Query language: `axql` or `sql`.
-        #[arg(long, default_value = "axql")]
-        lang: String,
-
-        /// Query text (quote it in your shell).
-        query: String,
-
-        /// Write certificate JSON to this path (defaults to stdout).
-        #[arg(short, long)]
-        out: Option<PathBuf>,
-
-        /// Write the derived `PathDBExportV1` anchor snapshot to this `.axi` path.
-        ///
-        /// Required when `input` is a canonical module (because the Lean verifier
-        /// currently anchors query-result certificates to snapshot exports).
-        #[arg(long)]
-        anchor_out: Option<PathBuf>,
-    },
-
     /// Typecheck a canonical `.axi` module and emit an `axi_well_typed_v1` certificate.
     Typecheck {
         /// Input `.axi` file (canonical `axi_v1` schema/theory/instance module).
@@ -740,7 +627,7 @@ enum CertCommands {
 
 #[derive(Args)]
 struct VizArgs {
-    /// Input `.axpd` or `.axi` file.
+    /// Input canonical `.axi` file.
     input: PathBuf,
     /// Output file (extension does not matter; use `--format`).
     #[arg(short, long)]
@@ -971,12 +858,12 @@ enum IngestCommands {
         schema_hint: Option<String>,
     },
 
-    /// Run a world model plugin to propose new facts/relations (evidence plane).
-    WorldModel(WorldModelProposeArgs),
+    /// Run a predictive proposal adapter plugin to propose new facts/relations (evidence plane).
+    PredictiveProposal(PredictiveProposalsArgs),
 
-    /// Built-in world model plugin (LLM-backed). Reads request JSON from stdin and writes a response to stdout.
-    #[command(name = "world-model-plugin-llm")]
-    WorldModelPluginLlm(WorldModelPluginLlmArgs),
+    /// Built-in predictive proposal adapter plugin (LLM-backed). Reads request JSON from stdin and writes a response to stdout.
+    #[command(name = "predictive-proposals-llm")]
+    PredictiveProposalPluginLlm(PredictiveProposalsLlmArgs),
 }
 
 #[derive(Subcommand)]
@@ -1027,65 +914,6 @@ enum RepoCommands {
         /// Maximum number of suggestions per run
         #[arg(long, default_value_t = 1000)]
         max_suggestions: usize,
-    },
-}
-
-#[derive(Subcommand)]
-enum PathdbCommands {
-    /// Export a `.axpd` PathDB file to a reversible `.axi` snapshot (`PathDBExportV1`)
-    ExportAxi {
-        /// Input `.axpd` file
-        input: PathBuf,
-        /// Output `.axi` file
-        #[arg(short, long)]
-        out: PathBuf,
-    },
-
-    /// Export a canonical `.axi` module from a `.axpd` file (schema/theory/instance).
-    ///
-    /// This requires that the PathDB contains the `.axi` meta-plane produced by
-    /// importing a canonical `.axi` module (e.g. via `axiograph db pathdb import-axi`
-    /// or `axiograph repl import_axi`).
-    ///
-    /// If multiple modules are present, pass `--module <name>`.
-    ExportModule {
-        /// Input `.axpd` file
-        input: PathBuf,
-        /// Output `.axi` file
-        #[arg(short, long)]
-        out: PathBuf,
-        /// Module name to export (required if multiple modules are present).
-        #[arg(long)]
-        module: Option<String>,
-    },
-
-    /// Import a `.axi` file into a `.axpd` PathDB file
-    ///
-    /// Accepts either:
-    /// - a reversible PathDB snapshot export (schema `PathDBExportV1`), or
-    /// - a canonical `axi_v1` module (schema/theory/instance), which is imported into a fresh PathDB.
-    ImportAxi {
-        /// Input `.axi` file
-        input: PathBuf,
-        /// Output `.axpd` file
-        #[arg(short, long)]
-        out: PathBuf,
-    },
-
-    /// Import `chunks.json` into a `.axpd` snapshot as `DocChunk` entities.
-    ///
-    /// This is an **extension layer** intended for discovery workflows:
-    /// - enables `fts(...)` / `contains(...)` queries over chunk text
-    /// - links chunk evidence to typed entities when chunk metadata permits
-    ImportChunks {
-        /// Input `.axpd` file
-        input: PathBuf,
-        /// Input chunks JSON (array of `Chunk` objects)
-        #[arg(long)]
-        chunks: PathBuf,
-        /// Output `.axpd` file
-        #[arg(short, long)]
-        out: PathBuf,
     },
 }
 
@@ -1269,16 +1097,17 @@ enum DiscoverCommands {
         llm_timeout_secs: Option<u64>,
     },
 
-    /// Export JEPA/SSL training pairs from a canonical `.axi` module.
+    /// Export masked-tuple SSL training pairs from a canonical `.axi` module.
     ///
     /// This exports **full** schema+theory+instance context and a list of
     /// masked targets derived from instance tuples. It is anchored to the
-    /// module's `axi_digest_v1` and is suitable for self-supervised training
-    /// pipelines.
-    JepaExport {
-        /// Input `.axi` module (canonical `axi_v1`)
+    /// module's exact-byte `revision_digest_v2` and is suitable for
+    /// self-supervised training pipelines.
+    #[command(name = "training-export")]
+    MaskedTupleTrainingExport {
+        /// Input canonical `.axi` module
         input: PathBuf,
-        /// Output JSON file
+        /// Output `MaskedTupleTrainingExportV1` (`version=axi_training_export_v1`).
         #[arg(short, long)]
         out: PathBuf,
         /// Optional instance name filter (only export targets from this instance)
@@ -1295,39 +1124,400 @@ enum DiscoverCommands {
         seed: u64,
     },
 
-    /// Generate or translate competency questions (AxQL) for coverage checks.
+    /// Generate, load, or lower competency questions for coverage checks.
     CompetencyQuestions(CompetencyQuestionsArgs),
 
-    /// Run a world model plugin to propose new facts/relations (evidence plane).
-    WorldModelPropose(WorldModelProposeArgs),
+    /// Check a typed olog fragment against canonical `.axi` and optionally
+    /// apply one typed refinement handle before re-checking.
+    CheckOlog(DiscoverCheckOlogArgs),
+
+    /// Compose a read-only bounded-context report over existing semantic, CQ,
+    /// trust, and optional evolution-preview contracts.
+    ContextReport(DiscoverContextReportArgs),
+
+    /// Validate a typed DDD/fDDD/software tooling overlay against reviewable `.axi`.
+    OverlayCheck(DiscoverOverlayCheckArgs),
+
+    /// Run an advisory software coverage lookup over ontology plus optional overlay.
+    CoverageQuery(DiscoverCoverageQueryArgs),
+
+    /// Define a process, function, business rule, relation, or surface from advisory prompts.
+    Define(DiscoverDefineArgs),
+
+    /// Discover advisory embedding-derived relationship evidence from an embeddings JSON file.
+    EmbeddingRelationships(DiscoverEmbeddingRelationshipsArgs),
+
+    /// Check a typed BehaviorCaseV1 request and emit trust receipts plus test skeleton previews.
+    BehaviorCase(DiscoverBehaviorCaseArgs),
+
+    /// Preview a concrete route and optional route equivalence over a snapshot.
+    RoutePreview(DiscoverRoutePreviewArgs),
+
+    /// Preview schema-morphism transport over canonical `.axi` as an EvolutionPreviewV1.
+    TransportPreview(DiscoverTransportPreviewArgs),
+
+    /// Emit runtime theory-obligation graphs from a canonical `.axi` module.
+    TheoryGraph(DiscoverTheoryGraphArgs),
+
+    /// Inspect the derived runtime semantic index for canonical `.axi`.
+    KernelSurface(DiscoverKernelSurfaceArgs),
+
+    /// Emit scoped runtime theory checker reports from canonical `.axi`.
+    TheoryCheck(DiscoverTheoryCheckArgs),
+
+    /// Run a predictive proposal adapter plugin to propose new facts/relations (evidence plane).
+    PredictiveProposalPropose(PredictiveProposalsArgs),
 }
 
 #[derive(Args, Debug, Clone)]
-struct WorldModelProposeArgs {
-    /// Input `.axi` or `.axpd` snapshot (used for guardrails / validation).
+struct DiscoverCheckOlogArgs {
+    /// Input canonical `.axi` module.
     input: PathBuf,
 
-    /// Optional JEPA export JSON (if provided, passed to the world model).
+    /// Input JSON file containing `OlogFragmentV1`.
     #[arg(long)]
-    export: Option<PathBuf>,
+    fragment: PathBuf,
 
-    /// Optional output path for a generated JEPA export.
+    /// Optional schema name if the module contains multiple schemas.
     #[arg(long)]
-    export_out: Option<PathBuf>,
+    schema: Option<String>,
 
-    /// Instance filter for generated JEPA export (only when `--export` is not set).
+    /// Optional runtime refinement handle id to apply before returning the report.
+    #[arg(long)]
+    apply_refinement_handle_id: Option<String>,
+
+    /// Output JSON path (defaults to stdout).
+    #[arg(short, long)]
+    out: Option<PathBuf>,
+}
+
+#[derive(Args, Debug, Clone)]
+struct DiscoverTheoryGraphArgs {
+    /// Input canonical `.axi` module.
+    input: PathBuf,
+
+    /// Optional theory id or local theory name filter.
+    #[arg(long)]
+    theory: Option<String>,
+
+    /// Output JSON path. Defaults to stdout.
+    #[arg(short, long)]
+    out: Option<PathBuf>,
+}
+
+#[derive(Args, Debug, Clone)]
+struct DiscoverKernelSurfaceArgs {
+    /// Input canonical `.axi` module.
+    input: PathBuf,
+
+    /// Output JSON path. Defaults to stdout.
+    #[arg(short, long)]
+    out: Option<PathBuf>,
+}
+
+#[derive(Args, Debug, Clone)]
+struct DiscoverTheoryCheckArgs {
+    /// Input canonical `.axi` module.
+    input: PathBuf,
+
+    /// Optional theory id or local theory name filter.
+    #[arg(long)]
+    theory: Option<String>,
+
+    /// Closure tier: finite_fragment|evidence_weighted|global_indexed.
+    #[arg(long, default_value = "finite_fragment")]
+    closure_tier: String,
+
+    /// Declared world id for scoped closure.
+    #[arg(long)]
+    world_id: Option<String>,
+
+    /// Treat the declared world as non-finite, making closure advisory.
+    #[arg(long = "non-finite-world", action = clap::ArgAction::SetFalse, default_value_t = true)]
+    finite_world: bool,
+
+    /// Include a semantic ref in the declared global/indexed universe.
+    #[arg(long = "included-ref")]
+    included_refs: Vec<String>,
+
+    /// Include a world id in the declared global/indexed universe.
+    #[arg(long = "included-world")]
+    included_worlds: Vec<String>,
+
+    /// Include a semantic slice id in the declared global/indexed universe.
+    #[arg(long = "included-slice")]
+    included_slices: Vec<String>,
+
+    /// Include an import anchor in the declared global/indexed universe.
+    #[arg(long = "included-import")]
+    included_imports: Vec<String>,
+
+    /// Declare an import that should make global_indexed closure fail closed.
+    #[arg(long = "undeclared-import")]
+    undeclared_imports: Vec<String>,
+
+    /// Evidence threshold in parts per million.
+    #[arg(long)]
+    evidence_threshold_ppm: Option<u32>,
+
+    /// Evidence semantics: thresholded_world|weighted_lattice|deferred.
+    #[arg(long, default_value = "thresholded_world")]
+    evidence_semantics: String,
+
+    /// Enable conservative weighted-lattice propagation before thresholding.
+    #[arg(long)]
+    weighted_evidence: bool,
+
+    /// Per-obligation evidence weight as obligation_id=ppm.
+    #[arg(long = "evidence-weight")]
+    evidence_weights: Vec<String>,
+
+    /// Output JSON path. Defaults to stdout.
+    #[arg(short, long)]
+    out: Option<PathBuf>,
+}
+
+#[derive(Args, Debug, Clone)]
+struct DiscoverContextReportArgs {
+    /// Input canonical `.axi` module.
+    input: PathBuf,
+
+    /// Input JSON file containing `ContextReportRequestV1`.
+    #[arg(long)]
+    request: PathBuf,
+
+    /// Output JSON path (defaults to stdout).
+    #[arg(short, long)]
+    out: Option<PathBuf>,
+}
+
+#[derive(Args, Debug, Clone)]
+struct DiscoverOverlayCheckArgs {
+    /// Input canonical `.axi` module.
+    input: PathBuf,
+
+    /// Input JSON file containing `ToolingOverlayBundleV1`.
+    #[arg(long)]
+    overlay: PathBuf,
+
+    /// Output JSON path (defaults to stdout).
+    #[arg(short, long)]
+    out: Option<PathBuf>,
+}
+
+#[derive(Args, Debug, Clone)]
+struct DiscoverCoverageQueryArgs {
+    /// Input canonical `.axi` module.
+    input: PathBuf,
+
+    /// Optional input JSON file containing `CoverageQueryV1`.
+    #[arg(long)]
+    query: Option<PathBuf>,
+
+    /// Search term. Repeat for multiple terms.
+    #[arg(long = "term")]
+    terms: Vec<String>,
+
+    /// Relation name to probe. Repeat for multiple relations.
+    #[arg(long = "relation")]
+    relation_names: Vec<String>,
+
+    /// Competency-question name to probe. Repeat for multiple CQs.
+    #[arg(long = "cq-name")]
+    cq_names: Vec<String>,
+
+    /// Code reference to probe. Repeat for multiple refs.
+    #[arg(long = "code-ref")]
+    code_refs: Vec<String>,
+
+    /// Implementation surface hint to probe. Repeat for multiple hints.
+    #[arg(long = "surface-hint")]
+    surface_hints: Vec<String>,
+
+    /// Optional AxQL fragment for advanced/debug coverage probes.
+    #[arg(long)]
+    axql: Option<String>,
+
+    /// Maximum candidate matches to return.
+    #[arg(long)]
+    max_matches: Option<usize>,
+
+    /// Optional input JSON file containing `ToolingOverlayBundleV1`.
+    #[arg(long)]
+    overlay: Option<PathBuf>,
+
+    /// Output JSON path (defaults to stdout).
+    #[arg(short, long)]
+    out: Option<PathBuf>,
+}
+
+#[derive(Args, Debug, Clone)]
+struct DiscoverDefineArgs {
+    /// Input canonical `.axi` module.
+    input: PathBuf,
+
+    /// Weak prompt such as "define the reserve-credit process".
+    #[arg(long)]
+    prompt: String,
+
+    /// Optional kind hint: process|function|business_rule|domain_object|relation|invariant|policy|implementation_surface.
+    #[arg(long)]
+    kind_hint: Option<String>,
+
+    /// Optional context hint for authoring/discovery.
+    #[arg(long)]
+    context_hint: Option<String>,
+
+    /// Optional input JSON file containing `ToolingOverlayBundleV1`.
+    #[arg(long)]
+    overlay: Option<PathBuf>,
+
+    /// Include suggested AxQL query fragments in candidates.
+    #[arg(long)]
+    include_queries: bool,
+
+    /// Maximum candidate definitions to return.
+    #[arg(long)]
+    max_matches: Option<usize>,
+
+    /// Output JSON path (defaults to stdout).
+    #[arg(short, long)]
+    out: Option<PathBuf>,
+}
+
+#[derive(Args, Debug, Clone)]
+struct DiscoverEmbeddingRelationshipsArgs {
+    /// Input JSON file containing EmbeddingsFileV1.
+    #[arg(long)]
+    embeddings: PathBuf,
+
+    /// Review ref used to scope the advisory sidecar.
+    #[arg(long, default_value = "heads/main")]
+    accepted_ref: String,
+
+    /// Accepted snapshot id for the sidecar anchor.
+    #[arg(long)]
+    accepted_snapshot_id: String,
+
+    /// Canonical `.axi` digest for the sidecar anchor.
+    #[arg(long)]
+    axi_digest: String,
+
+    /// Optional compiled IR digest.
+    #[arg(long)]
+    compiled_ir_digest: Option<String>,
+
+    /// Optional module name.
+    #[arg(long)]
+    module_name: Option<String>,
+
+    /// Optional embedding model version for sidecar provenance.
+    #[arg(long)]
+    model_version: Option<String>,
+
+    /// Optional embedding model digest for sidecar provenance.
+    #[arg(long)]
+    model_digest: Option<String>,
+
+    /// Optional embedding deployment id for sidecar provenance.
+    #[arg(long)]
+    deployment_id: Option<String>,
+
+    /// Minimum cosine similarity in [-1, 1].
+    #[arg(long, default_value_t = 0.75)]
+    min_cosine_similarity: f32,
+
+    /// Maximum advisory relationships to emit.
+    #[arg(long, default_value_t = 32)]
+    max_relationships: usize,
+
+    /// Advisory relationship kind, for example similar_to or subtype_candidate.
+    #[arg(long, default_value = "similar_to")]
+    relationship: String,
+
+    /// Output JSON path (defaults to stdout).
+    #[arg(short, long)]
+    out: Option<PathBuf>,
+}
+
+#[derive(Args, Debug, Clone)]
+struct DiscoverBehaviorCaseArgs {
+    /// Input canonical `.axi` module.
+    input: PathBuf,
+
+    /// Typed behavior-case request payload file (`BehaviorCaseCheckRequestV1`).
+    #[arg(long)]
+    request: PathBuf,
+
+    /// Optional typed tooling overlay; when present, DDD/fDDD context,
+    /// implementation surfaces, coverage edges, and codegen are loaded from it.
+    #[arg(long)]
+    overlay: Option<PathBuf>,
+
+    /// Optional `.cq` or `competency_question_bundle_v1` JSON file to attach to
+    /// the behavior case before checking. Prefer `.cq` for user-authored CQs.
+    #[arg(long = "cq-file")]
+    cq_files: Vec<PathBuf>,
+
+    /// Output JSON path (defaults to stdout).
+    #[arg(short, long)]
+    out: Option<PathBuf>,
+}
+
+#[derive(Args, Debug, Clone)]
+struct DiscoverRoutePreviewArgs {
+    /// Input canonical `.axi` module.
+    input: PathBuf,
+
+    /// Input JSON file containing `RoutePreviewRequestV1`.
+    #[arg(long)]
+    request: PathBuf,
+
+    /// Output JSON path (defaults to stdout).
+    #[arg(short, long)]
+    out: Option<PathBuf>,
+}
+
+#[derive(Args, Debug, Clone)]
+struct DiscoverTransportPreviewArgs {
+    /// Input canonical `.axi` module.
+    input: PathBuf,
+
+    /// Input JSON file containing `SchemaMorphismV1`.
+    #[arg(long)]
+    morphism: PathBuf,
+
+    /// Optional schema name if the module contains multiple schemas.
+    #[arg(long)]
+    schema: Option<String>,
+
+    /// Optional runtime refinement handle id to apply before returning the preview.
+    #[arg(long)]
+    apply_refinement_handle_id: Option<String>,
+
+    /// Output JSON path (defaults to stdout).
+    #[arg(short, long)]
+    out: Option<PathBuf>,
+}
+
+#[derive(Args, Debug, Clone)]
+struct PredictiveProposalsArgs {
+    /// Exact canonical `.axi` input used for guardrails and validation.
+    input: PathBuf,
+
+    /// Instance filter for generated masked-tuple training input.
     #[arg(long)]
     export_instance: Option<String>,
 
-    /// Cap the number of JEPA items generated (0 = no cap).
+    /// Cap the number of masked-tuple training items generated (0 = no cap).
     #[arg(long, default_value_t = 0)]
     export_max_items: usize,
 
-    /// Number of fields to mask per JEPA item.
+    /// Number of fields to mask per training item.
     #[arg(long, default_value_t = 1)]
     export_mask_fields: usize,
 
-    /// Random seed for JEPA export masking.
+    /// Random seed for masked-tuple training item generation.
     #[arg(long, default_value_t = 1)]
     export_seed: u64,
 
@@ -1335,39 +1525,39 @@ struct WorldModelProposeArgs {
     #[arg(short, long)]
     out: PathBuf,
 
-    /// Optional world model plugin executable (speaks `axiograph_world_model_v1`).
-    #[arg(long)]
-    world_model_plugin: Option<PathBuf>,
+    /// Optional predictive proposal adapter plugin executable (speaks `axiograph_predictive_proposal_v1`).
+    #[arg(long = "proposal-adapter-plugin")]
+    predictive_proposal_plugin: Option<PathBuf>,
 
-    /// Extra args for `--world-model-plugin` (repeatable).
-    #[arg(long)]
-    world_model_plugin_arg: Vec<String>,
+    /// Extra args for `--proposal-adapter-plugin` (repeatable).
+    #[arg(long = "proposal-adapter-plugin-arg")]
+    predictive_proposal_plugin_arg: Vec<String>,
 
-    /// Optional world model HTTP endpoint (speaks `axiograph_world_model_v1`).
-    #[arg(long)]
-    world_model_http: Option<String>,
+    /// Optional predictive proposal adapter HTTP endpoint (speaks `axiograph_predictive_proposal_v1`).
+    #[arg(long = "proposal-adapter-http")]
+    predictive_proposal_http: Option<String>,
 
-    /// Use the built-in LLM-backed world model plugin.
-    #[arg(long)]
-    world_model_llm: bool,
+    /// Use the built-in LLM-backed predictive proposal adapter plugin.
+    #[arg(long = "proposal-adapter-llm")]
+    predictive_proposal_llm: bool,
 
-    /// Use the stub world model backend (emits no proposals).
-    #[arg(long)]
-    world_model_stub: bool,
+    /// Use the stub predictive proposal adapter backend (emits no proposals).
+    #[arg(long = "proposal-adapter-stub")]
+    predictive_proposal_stub: bool,
 
     /// Optional model name for provenance (free-form).
-    #[arg(long)]
-    world_model_model: Option<String>,
+    #[arg(long = "proposal-adapter-model")]
+    predictive_proposal_model: Option<String>,
 
     /// Max new proposals to keep (0 = no cap).
     #[arg(long, default_value_t = 0)]
     max_new_proposals: usize,
 
-    /// Optional goal strings passed to the world model (repeatable).
+    /// Optional goal strings passed to the predictive proposal adapter (repeatable).
     #[arg(long)]
     goal: Vec<String>,
 
-    /// Optional random seed passed to the world model.
+    /// Optional random seed passed to the predictive proposal adapter.
     #[arg(long)]
     seed: Option<u64>,
 
@@ -1390,46 +1580,22 @@ struct WorldModelProposeArgs {
     #[arg(long)]
     task_cost: Vec<String>,
 
-    /// Optional planning horizon (steps) passed to the world model.
+    /// Optional planning horizon (steps) passed to the predictive proposal adapter.
     #[arg(long)]
     horizon_steps: Option<usize>,
 
     /// Optional guardrail report output path.
     #[arg(long)]
     guardrail_out: Option<PathBuf>,
-
-    /// Commit proposals into the PathDB WAL under this accepted-plane directory.
-    #[arg(long)]
-    commit_dir: Option<PathBuf>,
-
-    /// Accepted snapshot id for WAL commit (default: head).
-    #[arg(long, default_value = "head")]
-    accepted_snapshot: String,
-
-    /// Commit message for WAL commit.
-    #[arg(long)]
-    commit_message: Option<String>,
-
-    /// Validate proposals before commit (default: true when committing).
-    #[arg(long)]
-    validate: Option<bool>,
-
-    /// Validation quality profile: off|fast|strict.
-    #[arg(long, default_value = "fast")]
-    quality: String,
-
-    /// Validation plane: meta|data|both.
-    #[arg(long, default_value = "both")]
-    quality_plane: String,
 }
 
 #[derive(Args, Debug, Clone)]
-struct WorldModelPluginLlmArgs {
-    /// Backend: openai|anthropic|ollama|mock (defaults to WORLD_MODEL_BACKEND or openai).
+struct PredictiveProposalsLlmArgs {
+    /// Backend: openai|anthropic|ollama|mock (defaults to PREDICTIVE_PROPOSAL_BACKEND or openai).
     #[arg(long)]
     backend: Option<String>,
 
-    /// Optional model name (defaults to WORLD_MODEL_MODEL or provider defaults).
+    /// Optional model name (defaults to PREDICTIVE_PROPOSAL_MODEL or provider defaults).
     #[arg(long)]
     model: Option<String>,
 
@@ -1448,7 +1614,7 @@ struct WorldModelPluginLlmArgs {
 
 #[derive(Args, Debug, Clone)]
 struct CompetencyQuestionsArgs {
-    /// Input `.axi` or `.axpd` snapshot (for schema + NL query translation).
+    /// Exact canonical `.axi` input for schema and NL query translation.
     input: PathBuf,
 
     /// Output JSON file (array of competency questions).
@@ -1458,6 +1624,11 @@ struct CompetencyQuestionsArgs {
     /// Optional natural-language question file (txt or json) to translate.
     #[arg(long)]
     from_nl: Option<PathBuf>,
+
+    /// Optional authored `.cq` file to load/lower without requiring users to
+    /// write JSON or AxQL directly.
+    #[arg(long)]
+    from_cq: Option<PathBuf>,
 
     /// Disable schema-based generation (use only `--from-nl`).
     #[arg(long)]
@@ -1532,281 +1703,6 @@ struct CompetencyQuestionsArgs {
     llm_model: Option<String>,
 }
 
-#[derive(Subcommand)]
-enum AcceptedCommands {
-    /// Initialize the accepted-plane + PathDB WAL directory layout.
-    ///
-    /// This is idempotent and safe to run even if the directory already exists.
-    Init {
-        /// Accepted-plane directory (contains `modules/`, `snapshots/`, `HEAD`, and logs).
-        #[arg(long, default_value = "build/accepted_plane")]
-        dir: PathBuf,
-    },
-
-    /// Sync an accepted-plane directory to another directory (master → replica).
-    ///
-    /// This is filesystem-only and intended to be used with:
-    /// - local disk copies (cp/rsync),
-    /// - shared storage (NFS),
-    /// - or object-store sync (future).
-    ///
-    /// The snapshot store is treated as:
-    /// - immutable, content-addressed objects (`modules/`, `snapshots/`, `pathdb/blobs/`, …), plus
-    /// - a small mutable pointer (`HEAD`) per layer.
-    ///
-    /// Sync copies missing immutable objects first, then optionally updates `HEAD`
-    /// pointers (so a replica becomes queryable immediately).
-    Sync {
-        /// Source accepted-plane directory (master).
-        #[arg(long)]
-        from: PathBuf,
-        /// Destination accepted-plane directory (replica).
-        #[arg(long, default_value = "build/accepted_plane")]
-        dir: PathBuf,
-        /// Which layer to sync: `accepted`, `pathdb`, or `both`.
-        #[arg(long, default_value = "both")]
-        layer: String,
-        /// Include PathDB `.axpd` checkpoints when syncing `pathdb`.
-        ///
-        /// If omitted, a replica can still rebuild checkpoints from manifests + blobs.
-        #[arg(long)]
-        include_checkpoints: bool,
-        /// Include append-only logs (`accepted_plane.log.jsonl`, `pathdb_wal.log.jsonl`).
-        #[arg(long)]
-        include_logs: bool,
-        /// Do not update `HEAD` pointers (copy immutable objects only).
-        #[arg(long)]
-        no_update_head: bool,
-        /// Print what would be copied, but do not write.
-        #[arg(long)]
-        dry_run: bool,
-    },
-
-    /// List accepted-plane and/or PathDB WAL snapshots (most recent first).
-    #[command(aliases = ["ls"])]
-    List {
-        /// Accepted-plane directory.
-        #[arg(long, default_value = "build/accepted_plane")]
-        dir: PathBuf,
-        /// Which layer to list: `accepted`, `pathdb`, or `both`.
-        #[arg(long, default_value = "accepted")]
-        layer: String,
-        /// Maximum number of snapshots to print.
-        #[arg(long, default_value_t = 20)]
-        limit: usize,
-        /// Print full snapshot ids (default prints shortened ids).
-        #[arg(long)]
-        full: bool,
-    },
-
-    /// Show details of an accepted-plane or PathDB WAL snapshot.
-    #[command(aliases = ["cat", "describe"])]
-    Show {
-        /// Accepted-plane directory.
-        #[arg(long, default_value = "build/accepted_plane")]
-        dir: PathBuf,
-        /// Which layer: `accepted` or `pathdb`.
-        #[arg(long, default_value = "accepted")]
-        layer: String,
-        /// Snapshot id (or `latest` / `head`, or a unique prefix).
-        #[arg(long, default_value = "head")]
-        snapshot: String,
-        /// Print the raw JSON manifest.
-        #[arg(long)]
-        json: bool,
-        /// Print full snapshot ids (default prints shortened ids).
-        #[arg(long)]
-        full: bool,
-    },
-
-    /// Promote a reviewed canonical `.axi` module into the accepted plane.
-    ///
-    /// This:
-    /// - parses + typechecks the module (Rust gate),
-    /// - stores it under `modules/<name>/<digest>.axi`,
-    /// - appends a JSONL log event, and
-    /// - writes a new snapshot manifest (content-derived snapshot id).
-    Promote {
-        /// Input canonical `.axi` module (axi_v1).
-        input: PathBuf,
-        /// Accepted-plane directory (contains `modules/`, `snapshots/`, `HEAD`, and `accepted_plane.log.jsonl`).
-        #[arg(long, default_value = "build/accepted_plane")]
-        dir: PathBuf,
-        /// Optional promotion message (for human audit trail).
-        #[arg(long)]
-        message: Option<String>,
-        /// Optional quality gate (and report attachment): off|fast|strict.
-        ///
-        /// - `off`: do not run quality checks (default)
-        /// - `fast`: run cheap lints + key/functional checks when meta-plane is present
-        /// - `strict`: run additional expensive lints (still untrusted tooling)
-        #[arg(long, default_value = "off")]
-        quality: String,
-    },
-
-    /// Rebuild a `.axpd` PathDB snapshot from an accepted-plane snapshot id.
-    BuildPathdb {
-        /// Accepted-plane directory.
-        #[arg(long, default_value = "build/accepted_plane")]
-        dir: PathBuf,
-        /// Snapshot id (or `latest` / `head`).
-        #[arg(long, default_value = "latest")]
-        snapshot: String,
-        /// Output `.axpd` file.
-        #[arg(short, long)]
-        out: PathBuf,
-    },
-
-    /// Commit a PathDB WAL snapshot (append-only) under the accepted-plane directory.
-    ///
-    /// This adds *extension-layer* overlays (currently: `chunks.json` + `proposals.json` imports) on
-    /// top of an accepted-plane snapshot. The resulting PathDB snapshot id is
-    /// content-derived and can be checked out later via `pathdb-build`.
-    PathdbCommit {
-        /// Accepted-plane directory.
-        #[arg(long, default_value = "build/accepted_plane")]
-        dir: PathBuf,
-        /// Accepted-plane snapshot id (or `latest` / `head`).
-        #[arg(long, default_value = "latest")]
-        accepted_snapshot: String,
-        /// One or more chunks JSON files (array of `Chunk`) to import.
-        #[arg(long)]
-        chunks: Vec<PathBuf>,
-        /// One or more proposals JSON files (`ProposalsFileV1`) to import.
-        #[arg(long)]
-        proposals: Vec<PathBuf>,
-        /// Optional message (for human audit trail).
-        #[arg(long)]
-        message: Option<String>,
-
-        /// Print phase timings (useful for profiling large overlay commits).
-        #[arg(long)]
-        timings: bool,
-
-        /// Write phase timings JSON to this path.
-        #[arg(long)]
-        timings_json: Option<PathBuf>,
-
-        /// Override path index depth for this commit (0 disables path indexing).
-        #[arg(long)]
-        path_index_depth: Option<usize>,
-    },
-
-    /// Compute and commit snapshot-scoped embeddings into the PathDB WAL (extension layer).
-    ///
-    /// This stores embeddings as immutable blobs under `pathdb/blobs/` and
-    /// references them from the PathDB snapshot manifest.
-    ///
-    /// Intended usage:
-    /// 1) `axiograph db accept pathdb-commit ... --chunks <chunks.json>`
-    /// 2) `axiograph db accept pathdb-embed --snapshot head --target docchunks --embed-backend ollama --embed-model nomic-embed-text`
-    PathdbEmbed {
-        /// Accepted-plane directory.
-        #[arg(long, default_value = "build/accepted_plane")]
-        dir: PathBuf,
-        /// Base PathDB snapshot id to embed (or `latest`/`head`).
-        #[arg(long, default_value = "head")]
-        snapshot: String,
-        /// What to embed: `docchunks`, `entities`, or `both`.
-        #[arg(long, default_value = "docchunks")]
-        target: String,
-        /// Which embedding backend to use: `ollama` or `openai`.
-        ///
-        /// Notes:
-        /// - Anthropic does not provide embeddings; use `openai` or rely on deterministic retrieval.
-        #[arg(long, default_value = "ollama")]
-        embed_backend: String,
-        /// Optional Ollama host override (defaults to `OLLAMA_HOST` or `http://127.0.0.1:11434`).
-        #[arg(long)]
-        ollama_host: Option<String>,
-        /// Embedding model name (backend-dependent).
-        ///
-        /// Common values:
-        /// - Ollama: `nomic-embed-text`
-        /// - OpenAI: `text-embedding-3-small` / `text-embedding-3-large`
-        ///
-        /// Back-compat: `--ollama-model` is accepted as an alias for `--embed-model`.
-        #[arg(long, alias = "ollama-model")]
-        embed_model: Option<String>,
-        /// Optional OpenAI base URL override (defaults to `OPENAI_BASE_URL` or `https://api.openai.com`).
-        #[arg(long)]
-        openai_base_url: Option<String>,
-        /// Max number of items to embed (safety valve).
-        #[arg(long, default_value_t = 25_000)]
-        max_items: usize,
-        /// Batch size for `/api/embed` (fallback to per-item calls when unsupported).
-        #[arg(long, default_value_t = 32)]
-        batch_size: usize,
-        /// Optional Ollama request timeout in seconds (0 disables). Can also be set via `AXIOGRAPH_LLM_TIMEOUT_SECS`.
-        #[arg(long)]
-        timeout_secs: Option<u64>,
-        /// Optional message (for human audit trail).
-        #[arg(long)]
-        message: Option<String>,
-    },
-
-    /// Build/check out a PathDB `.axpd` from a PathDB WAL snapshot id.
-    PathdbBuild {
-        /// Accepted-plane directory.
-        #[arg(long, default_value = "build/accepted_plane")]
-        dir: PathBuf,
-        /// PathDB snapshot id (or `latest` / `head`).
-        #[arg(long, default_value = "latest")]
-        snapshot: String,
-        /// Output `.axpd` file.
-        #[arg(short, long)]
-        out: PathBuf,
-
-        /// Print phase timings (useful for profiling large checkouts).
-        #[arg(long)]
-        timings: bool,
-
-        /// Write phase timings JSON to this path.
-        #[arg(long)]
-        timings_json: Option<PathBuf>,
-
-        /// Force a full rebuild (ignore any stored `.axpd` checkpoint).
-        ///
-        /// This is useful to:
-        /// - profile the rebuild hot-path (apply ops + build indexes), and
-        /// - sanity-check determinism vs checkpoints.
-        #[arg(long)]
-        rebuild: bool,
-
-        /// Override path index depth (0 disables path indexing).
-        #[arg(long)]
-        path_index_depth: Option<usize>,
-
-        /// Rewrite the checkpoint for this snapshot (implies rebuild).
-        #[arg(long)]
-        update_checkpoint: bool,
-    },
-
-    /// Show accepted-plane + PathDB WAL snapshot status (HEADs, counts).
-    ///
-    /// This is intended to be a “git status”-like quick diagnostic.
-    Status {
-        /// Accepted-plane directory.
-        #[arg(long, default_value = "build/accepted_plane")]
-        dir: PathBuf,
-    },
-
-    /// Show recent accepted-plane or PathDB WAL log events.
-    ///
-    /// This is intended to be a “git log”-like view over snapshot history.
-    Log {
-        /// Accepted-plane directory.
-        #[arg(long, default_value = "build/accepted_plane")]
-        dir: PathBuf,
-        /// Which log to show: `accepted`, `pathdb`, or `both`.
-        #[arg(long, default_value = "accepted")]
-        layer: String,
-        /// Maximum number of events to print (most recent first).
-        #[arg(long, default_value_t = 20)]
-        limit: usize,
-    },
-}
-
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let profiler = profiling::Profiler::start(&cli.profile)?;
@@ -1815,604 +1711,507 @@ fn main() -> Result<()> {
         match cli.command {
             Commands::Ingest { command } => match command {
                 IngestCommands::Sql { input, out, chunks } => {
-                    cmd_sql(&input, &out, chunks.as_ref())?;
+                    cmd_sql(&input, &out, chunks.as_deref())?;
                 }
-            IngestCommands::Doc {
-                input,
-                out,
-                chunks,
-                facts,
-                machining,
-                domain,
-            } => {
-                cmd_doc(&input, &out, chunks.as_ref(), facts.as_ref(), machining, &domain)?;
-            }
-            IngestCommands::Conversation {
-                input,
-                out,
-                chunks,
-                facts,
-                format,
-            } => {
-                cmd_conversation(&input, &out, chunks.as_ref(), facts.as_ref(), &format)?;
-            }
-            IngestCommands::Confluence {
-                input,
-                out,
-                space,
-                chunks,
-                facts,
-            } => {
-                cmd_confluence(&input, &out, &space, chunks.as_ref(), facts.as_ref())?;
-            }
-            IngestCommands::Json { input, out, chunks } => {
-                cmd_json(&input, &out, chunks.as_ref())?;
-            }
-            IngestCommands::Readings {
-                input,
-                out,
-                chunks,
-                format,
-            } => {
-                cmd_readings(&input, &out, chunks.as_ref(), &format)?;
-            }
-            IngestCommands::Proto { command } => {
-                proto::cmd_proto(command)?;
-            }
-            IngestCommands::Repo { command } => match command {
-                RepoCommands::Index {
-                    root,
+                IngestCommands::Doc {
+                    input,
                     out,
                     chunks,
-                    edges,
-                    max_file_bytes,
-                    max_files,
-                    lines_per_chunk,
+                    facts,
+                    machining,
+                    domain,
                 } => {
-                    cmd_repo_index(
-                        &root,
+                    cmd_doc(
+                        &input,
                         &out,
-                        chunks.as_ref(),
-                        edges.as_ref(),
+                        chunks.as_deref(),
+                        facts.as_deref(),
+                        machining,
+                        &domain,
+                    )?;
+                }
+                IngestCommands::Conversation {
+                    input,
+                    out,
+                    chunks,
+                    facts,
+                    format,
+                } => {
+                    cmd_conversation(&input, &out, chunks.as_deref(), facts.as_deref(), &format)?;
+                }
+                IngestCommands::Confluence {
+                    input,
+                    out,
+                    space,
+                    chunks,
+                    facts,
+                } => {
+                    cmd_confluence(&input, &out, &space, chunks.as_deref(), facts.as_deref())?;
+                }
+                IngestCommands::Json { input, out, chunks } => {
+                    cmd_json(&input, &out, chunks.as_deref())?;
+                }
+                IngestCommands::Readings {
+                    input,
+                    out,
+                    chunks,
+                    format,
+                } => {
+                    cmd_readings(&input, &out, chunks.as_deref(), &format)?;
+                }
+                IngestCommands::Proto { command } => {
+                    proto::cmd_proto(command)?;
+                }
+                IngestCommands::Repo { command } => match command {
+                    RepoCommands::Index {
+                        root,
+                        out,
+                        chunks,
+                        edges,
                         max_file_bytes,
                         max_files,
                         lines_per_chunk,
-                    )?;
-                }
-                RepoCommands::Watch {
-                    root,
-                    out,
-                    chunks,
-                    edges,
-                    trace,
-                    interval_secs,
-                    max_suggestions,
-                } => {
-                    cmd_repo_watch(
-                        &root,
-                        &out,
-                        chunks.as_ref(),
-                        edges.as_ref(),
-                        trace.as_ref(),
+                    } => {
+                        cmd_repo_index(
+                            &root,
+                            &out,
+                            chunks.as_deref(),
+                            edges.as_deref(),
+                            max_file_bytes,
+                            max_files,
+                            lines_per_chunk,
+                        )?;
+                    }
+                    RepoCommands::Watch {
+                        root,
+                        out,
+                        chunks,
+                        edges,
+                        trace,
                         interval_secs,
                         max_suggestions,
+                    } => {
+                        cmd_repo_watch(
+                            &root,
+                            &out,
+                            chunks.as_deref(),
+                            edges.as_deref(),
+                            trace.as_deref(),
+                            interval_secs,
+                            max_suggestions,
+                        )?;
+                    }
+                },
+                IngestCommands::Github { command } => {
+                    github::cmd_github(command)?;
+                }
+                IngestCommands::Web { command } => {
+                    web::cmd_web(command)?;
+                }
+                IngestCommands::Dir {
+                    root,
+                    out_dir,
+                    confluence_space,
+                    domain,
+                    chunks,
+                    facts,
+                    proposals,
+                    max_file_bytes,
+                    max_files,
+                } => {
+                    cmd_ingest_dir(
+                        &root,
+                        &out_dir,
+                        &confluence_space,
+                        &domain,
+                        chunks.as_deref(),
+                        facts.as_deref(),
+                        proposals.as_deref(),
+                        max_file_bytes,
+                        max_files,
+                    )?;
+                }
+                IngestCommands::Merge {
+                    proposals,
+                    chunks,
+                    out,
+                    chunks_out,
+                    schema_hint,
+                } => {
+                    cmd_ingest_merge(
+                        &proposals,
+                        &chunks,
+                        &out,
+                        chunks_out.as_deref(),
+                        schema_hint.as_deref(),
+                    )?;
+                }
+                IngestCommands::PredictiveProposal(args) => {
+                    cmd_predictive_proposals(&args)?;
+                }
+                IngestCommands::PredictiveProposalPluginLlm(args) => {
+                    cmd_predictive_proposal_plugin_llm(&args)?;
+                }
+            },
+            Commands::Check { command } => match command {
+                CheckCommands::Validate { input } => {
+                    cmd_validate(&input)?;
+                }
+                CheckCommands::Theory(args) => {
+                    cmd_check_theory(&args)?;
+                }
+                CheckCommands::FiniteQuery(args) => {
+                    cmd_check_finite_query(&args)?;
+                }
+                CheckCommands::SoftwareCoverage(args) => {
+                    cmd_check_software_coverage(&args)?;
+                }
+                CheckCommands::Fmt { input, out, write } => {
+                    axi_fmt::cmd_fmt_axi(&input, out.as_deref(), write)?;
+                }
+                CheckCommands::Quality {
+                    input,
+                    out,
+                    format,
+                    profile,
+                    plane,
+                    no_fail,
+                } => {
+                    quality::cmd_quality(
+                        &input,
+                        out.as_deref(),
+                        &format,
+                        &profile,
+                        &plane,
+                        no_fail,
                     )?;
                 }
             },
-            IngestCommands::Github { command } => {
-                github::cmd_github(command)?;
+            Commands::Cert { command } => match command {
+                CertCommands::Typecheck { input, out } => {
+                    cmd_typecheck_cert(&input, out.as_deref())?;
+                }
+                CertCommands::Constraints { input, out } => {
+                    cmd_constraints_cert(&input, out.as_deref())?;
+                }
+            },
+            Commands::Tools { command } => match command {
+                ToolsCommands::Viz(args) => {
+                    cmd_viz_from_args(&args)?;
+                }
+                ToolsCommands::Analyze { command } => {
+                    analyze::cmd_analyze(command)?;
+                }
+                ToolsCommands::Perf { command } => {
+                    perf::cmd_perf(command)?;
+                }
+                ToolsCommands::Projection { command } => {
+                    projection::cmd_projection(command)?;
+                }
+            },
+            Commands::Authoring { command } => {
+                cmd_authoring(command)?;
             }
-            IngestCommands::Web { command } => {
-                web::cmd_web(command)?;
+            Commands::Db { command } => match command {
+                DbCommands::Materialize { dir, spec } => {
+                    cmd_publish_materialization(&dir, &spec)?;
+                }
+                DbCommands::MaterializationShow {
+                    dir,
+                    materialization,
+                } => {
+                    cmd_show_materialization(&dir, &materialization)?;
+                }
+                DbCommands::Serve(args) => {
+                    db_server::cmd_db_serve(args)?;
+                }
+            },
+            Commands::Mcp(args) => {
+                mcp::cmd_mcp(args)?;
             }
-            IngestCommands::Dir {
-                root,
-                out_dir,
-                confluence_space,
-                domain,
-                chunks,
-                facts,
-                proposals,
-                max_file_bytes,
-                max_files,
-            } => {
-                cmd_ingest_dir(
-                    &root,
-                    &out_dir,
-                    &confluence_space,
-                    &domain,
-                    chunks.as_ref(),
-                    facts.as_ref(),
-                    proposals.as_ref(),
-                    max_file_bytes,
-                    max_files,
-                )?;
-            }
-            IngestCommands::Merge {
-                proposals,
-                chunks,
-                out,
-                chunks_out,
-                schema_hint,
-            } => {
-                cmd_ingest_merge(
-                    &proposals,
-                    &chunks,
-                    &out,
-                    chunks_out.as_ref(),
-                    schema_hint.as_deref(),
-                )?;
-            }
-            IngestCommands::WorldModel(args) => {
-                cmd_world_model_propose(&args)?;
-            }
-            IngestCommands::WorldModelPluginLlm(args) => {
-                cmd_world_model_plugin_llm(&args)?;
-            }
-        },
-        Commands::Check { command } => match command {
-            CheckCommands::Validate { input } => {
-                cmd_validate(&input)?;
-            }
-            CheckCommands::Fmt { input, out, write } => {
-                axi_fmt::cmd_fmt_axi(&input, out.as_deref(), write)?;
-            }
-            CheckCommands::Quality {
-                input,
-                out,
-                format,
-                profile,
-                plane,
-                no_fail,
-            } => {
-                quality::cmd_quality(&input, out.as_ref(), &format, &profile, &plane, no_fail)?;
-            }
-        },
-        Commands::Cert { command } => match command {
-            CertCommands::Query {
-                input,
-                lang,
-                query,
-                out,
-                anchor_out,
-            } => {
-                cmd_query_cert(&input, &lang, &query, out.as_ref(), anchor_out.as_ref())?;
-            }
-            CertCommands::Typecheck { input, out } => {
-                cmd_typecheck_cert(&input, out.as_ref())?;
-            }
-            CertCommands::Constraints { input, out } => {
-                cmd_constraints_cert(&input, out.as_ref())?;
-            }
-        },
-        Commands::Tools { command } => match command {
-            ToolsCommands::Viz(args) => {
-                cmd_viz_from_args(&args)?;
-            }
-            ToolsCommands::Analyze { command } => {
-                analyze::cmd_analyze(command)?;
-            }
-            ToolsCommands::Perf { command } => {
-                perf::cmd_perf(command)?;
-            }
-        },
-        Commands::Db { command } => match command {
-            DbCommands::Accept { command } => {
-                cmd_accept(command)?;
-            }
-            DbCommands::Pathdb { command } => {
-                cmd_pathdb(command)?;
-            }
-            DbCommands::Serve(args) => {
-                db_server::cmd_db_serve(args)?;
-            }
-        },
-        Commands::Sql { input, out } => {
-            cmd_sql(&input, &out, None)?;
-        }
-        Commands::Doc {
-            input,
-            out,
-            chunks,
-            facts,
-            machining,
-            domain,
-        } => {
-            cmd_doc(
-                &input,
-                &out,
-                chunks.as_ref(),
-                facts.as_ref(),
-                machining,
-                &domain,
-            )?;
-        }
-        Commands::Conversation {
-            input,
-            out,
-            chunks,
-            facts,
-            format,
-        } => {
-            cmd_conversation(&input, &out, chunks.as_ref(), facts.as_ref(), &format)?;
-        }
-        Commands::Confluence {
-            input,
-            out,
-            space,
-            chunks,
-            facts,
-        } => {
-            cmd_confluence(&input, &out, &space, chunks.as_ref(), facts.as_ref())?;
-        }
-        Commands::Json { input, out } => {
-            cmd_json(&input, &out, None)?;
-        }
-        Commands::Readings {
-            input,
-            out,
-            chunks,
-            format,
-        } => {
-            cmd_readings(&input, &out, chunks.as_ref(), &format)?;
-        }
-        Commands::Pathdb { command } => {
-            cmd_pathdb(command)?;
-        }
-        Commands::Validate { input } => {
-            cmd_validate(&input)?;
-        }
-        Commands::Repo { command } => match command {
-            RepoCommands::Index {
-                root,
-                out,
-                chunks,
-                edges,
-                max_file_bytes,
-                max_files,
-                lines_per_chunk,
-            } => {
-                cmd_repo_index(
-                    &root,
-                    &out,
-                    chunks.as_ref(),
-                    edges.as_ref(),
-                    max_file_bytes,
-                    max_files,
-                    lines_per_chunk,
-                )?;
-            }
-            RepoCommands::Watch {
-                root,
-                out,
-                chunks,
-                edges,
-                trace,
-                interval_secs,
-                max_suggestions,
-            } => {
-                cmd_repo_watch(
-                    &root,
-                    &out,
-                    chunks.as_ref(),
-                    edges.as_ref(),
-                    trace.as_ref(),
-                    interval_secs,
-                    max_suggestions,
-                )?;
-            }
-        },
-        Commands::Github { command } => {
-            github::cmd_github(command)?;
-        }
-        Commands::Web { command } => {
-            web::cmd_web(command)?;
-        }
-        Commands::Discover { command } => match command {
-            DiscoverCommands::SuggestLinks {
-                chunks,
-                edges,
-                out,
-                max_proposals,
-            } => {
-                cmd_discover_suggest_links(&chunks, &edges, &out, max_proposals)?;
-            }
-            DiscoverCommands::PromoteProposals {
-                proposals,
-                out_dir,
-                trace,
-                min_confidence,
-                domains,
-            } => {
-                cmd_discover_promote_proposals(
-                    &proposals,
-                    &out_dir,
-                    trace.as_ref(),
+            Commands::Discover { command } => match command {
+                DiscoverCommands::SuggestLinks {
+                    chunks,
+                    edges,
+                    out,
+                    max_proposals,
+                } => {
+                    cmd_discover_suggest_links(&chunks, &edges, &out, max_proposals)?;
+                }
+                DiscoverCommands::PromoteProposals {
+                    proposals,
+                    out_dir,
+                    trace,
                     min_confidence,
-                    &domains,
-                )?;
-            }
-            DiscoverCommands::AugmentProposals {
-                proposals,
-                out,
-                trace,
-                chunks,
-                llm_plugin,
-                llm_plugin_arg,
-                llm_ollama,
-                llm_ollama_host,
-                llm_openai,
-                llm_openai_base_url,
-                llm_anthropic,
-                llm_anthropic_base_url,
-                llm_model,
-                llm_timeout_secs,
-                llm_add_proposals,
-                max_new_proposals,
-                overwrite_schema_hints,
-                no_roles,
-                no_todo_symbol,
-                no_infer_hints,
-            } => {
-                cmd_discover_augment_proposals(
-                    &proposals,
-                    &out,
-                    trace.as_ref(),
-                    chunks.as_ref(),
-                    llm_plugin.as_ref(),
-                    &llm_plugin_arg,
+                    domains,
+                } => {
+                    cmd_discover_promote_proposals(
+                        &proposals,
+                        &out_dir,
+                        trace.as_deref(),
+                        min_confidence,
+                        &domains,
+                    )?;
+                }
+                DiscoverCommands::AugmentProposals {
+                    proposals,
+                    out,
+                    trace,
+                    chunks,
+                    llm_plugin,
+                    llm_plugin_arg,
                     llm_ollama,
-                    llm_ollama_host.as_deref(),
+                    llm_ollama_host,
                     llm_openai,
-                    llm_openai_base_url.as_deref(),
+                    llm_openai_base_url,
                     llm_anthropic,
-                    llm_anthropic_base_url.as_deref(),
-                    llm_model.as_deref(),
+                    llm_anthropic_base_url,
+                    llm_model,
                     llm_timeout_secs,
                     llm_add_proposals,
-                    axiograph_ingest_docs::AugmentOptionsV1 {
-                        infer_schema_hints: !no_infer_hints,
-                        add_mention_role_entities: !no_roles,
-                        add_todo_mentions_symbol: !no_todo_symbol,
-                        max_new_proposals,
-                        overwrite_schema_hints,
-                    },
-                )?;
-            }
-            DiscoverCommands::DraftModule {
-                proposals,
-                out,
-                module,
-                schema,
-                instance,
-                infer_constraints,
-                llm_ollama,
-                llm_ollama_host,
-                llm_openai,
-                llm_openai_base_url,
-                llm_anthropic,
-                llm_anthropic_base_url,
-                llm_model,
-                llm_timeout_secs,
-            } => {
-                let text = fs::read_to_string(&proposals)?;
-                let file: axiograph_ingest_docs::ProposalsFileV1 = serde_json::from_str(&text)?;
-
-                let options = crate::schema_discovery::DraftAxiModuleOptions {
-                    module_name: module,
-                    schema_name: schema,
-                    instance_name: instance,
+                    max_new_proposals,
+                    overwrite_schema_hints,
+                    no_roles,
+                    no_todo_symbol,
+                    no_infer_hints,
+                } => {
+                    cmd_discover_augment_proposals(
+                        &proposals,
+                        &out,
+                        trace.as_deref(),
+                        chunks.as_deref(),
+                        llm_plugin.as_deref(),
+                        &llm_plugin_arg,
+                        llm_ollama,
+                        llm_ollama_host.as_deref(),
+                        llm_openai,
+                        llm_openai_base_url.as_deref(),
+                        llm_anthropic,
+                        llm_anthropic_base_url.as_deref(),
+                        llm_model.as_deref(),
+                        llm_timeout_secs,
+                        llm_add_proposals,
+                        axiograph_ingest_docs::AugmentOptionsV1 {
+                            infer_schema_hints: !no_infer_hints,
+                            add_mention_role_entities: !no_roles,
+                            add_todo_mentions_symbol: !no_todo_symbol,
+                            max_new_proposals,
+                            overwrite_schema_hints,
+                        },
+                    )?;
+                }
+                DiscoverCommands::DraftModule {
+                    proposals,
+                    out,
+                    module,
+                    schema,
+                    instance,
                     infer_constraints,
-                };
+                    llm_ollama,
+                    llm_ollama_host,
+                    llm_openai,
+                    llm_openai_base_url,
+                    llm_anthropic,
+                    llm_anthropic_base_url,
+                    llm_model,
+                    llm_timeout_secs,
+                } => {
+                    let text = crate::security::read_utf8_file_bounded(
+                        &proposals,
+                        crate::security::MAX_TEXT_INPUT_BYTES,
+                        "CLI input",
+                    )?;
+                    let file: axiograph_ingest_docs::ProposalsFileV1 =
+                        crate::security::parse_json_bounded(
+                            text.as_bytes(),
+                            crate::security::MAX_JSON_INPUT_BYTES,
+                            "CLI JSON input",
+                        )?;
+                    axiograph_ingest_docs::validate_proposals_file_v1(&file)?;
 
-                let base_draft =
-                    crate::schema_discovery::draft_axi_module_from_proposals(&file, &options)?;
+                    let options = crate::schema_discovery::DraftAxiModuleOptions {
+                        module_name: module,
+                        schema_name: schema,
+                        instance_name: instance,
+                        infer_constraints,
+                    };
 
-                let llm_selected =
-                    (llm_ollama as usize) + (llm_openai as usize) + (llm_anthropic as usize);
-                if llm_selected > 1 {
-                    return Err(anyhow!(
+                    let base_draft =
+                        crate::schema_discovery::draft_axi_module_from_proposals(&file, &options)?;
+
+                    let llm_selected =
+                        (llm_ollama as usize) + (llm_openai as usize) + (llm_anthropic as usize);
+                    if llm_selected > 1 {
+                        return Err(anyhow!(
                         "choose at most one LLM integration: either `--llm-ollama`, `--llm-openai`, or `--llm-anthropic`"
                     ));
-                }
+                    }
 
-                let suggestions = {
-                    let timeout = crate::llm::llm_timeout(llm_timeout_secs)?;
-                    if llm_ollama {
-                        #[cfg(feature = "llm-ollama")]
-                        {
-                            let model = llm_model.as_deref().ok_or_else(|| {
+                    let suggestions = {
+                        let timeout = crate::llm::llm_timeout(llm_timeout_secs)?;
+                        if llm_ollama {
+                            #[cfg(feature = "llm-ollama")]
+                            {
+                                let model = llm_model.as_deref().ok_or_else(|| {
                                 anyhow!("missing `--llm-model` (example: --llm-model nemotron-3-nano)")
                             })?;
-                            let host = llm_ollama_host
-                                .as_deref()
-                                .map(|s| s.to_string())
-                                .unwrap_or_else(crate::llm::default_ollama_host);
-                            Some(ollama_suggest_schema_structure(
-                                &host,
-                                model,
-                                &base_draft,
-                                &options.schema_name,
-                                timeout,
-                            )?)
-                        }
-                        #[cfg(not(feature = "llm-ollama"))]
-                        {
-                            let _ = timeout;
-                            return Err(anyhow!(
+                                let host = llm_ollama_host
+                                    .as_deref()
+                                    .map(|s| s.to_string())
+                                    .unwrap_or_else(crate::llm::default_ollama_host);
+                                Some(ollama_suggest_schema_structure(
+                                    &host,
+                                    model,
+                                    &base_draft,
+                                    &options.schema_name,
+                                    timeout,
+                                )?)
+                            }
+                            #[cfg(not(feature = "llm-ollama"))]
+                            {
+                                let _ = timeout;
+                                return Err(anyhow!(
                                 "ollama support not compiled (enable `axiograph-cli` feature `llm-ollama`)"
                             ));
-                        }
-                    } else if llm_openai {
-                        #[cfg(feature = "llm-openai")]
-                        {
-                            let model = llm_model.as_deref().ok_or_else(|| {
-                                anyhow!("missing `--llm-model` (example: --llm-model gpt-4o-mini)")
-                            })?;
-                            let base_url = llm_openai_base_url
-                                .as_deref()
-                                .map(|s| s.to_string())
-                                .unwrap_or_else(crate::llm::default_openai_base_url);
-                            Some(openai_suggest_schema_structure(
-                                &base_url,
-                                model,
-                                &base_draft,
-                                &options.schema_name,
-                                timeout,
-                            )?)
-                        }
-                        #[cfg(not(feature = "llm-openai"))]
-                        {
-                            let _ = timeout;
-                            return Err(anyhow!(
+                            }
+                        } else if llm_openai {
+                            #[cfg(feature = "llm-openai")]
+                            {
+                                let model = llm_model.as_deref().ok_or_else(|| {
+                                    anyhow!(
+                                        "missing `--llm-model` (example: --llm-model gpt-4o-mini)"
+                                    )
+                                })?;
+                                let base_url = llm_openai_base_url
+                                    .as_deref()
+                                    .map(|s| s.to_string())
+                                    .unwrap_or_else(crate::llm::default_openai_base_url);
+                                Some(openai_suggest_schema_structure(
+                                    &base_url,
+                                    model,
+                                    &base_draft,
+                                    &options.schema_name,
+                                    timeout,
+                                )?)
+                            }
+                            #[cfg(not(feature = "llm-openai"))]
+                            {
+                                let _ = timeout;
+                                return Err(anyhow!(
                                 "openai support not compiled (enable `axiograph-cli` feature `llm-openai`)"
                             ));
-                        }
-                    } else if llm_anthropic {
-                        #[cfg(feature = "llm-anthropic")]
-                        {
-                            let model = llm_model.as_deref().ok_or_else(|| {
+                            }
+                        } else if llm_anthropic {
+                            #[cfg(feature = "llm-anthropic")]
+                            {
+                                let model = llm_model.as_deref().ok_or_else(|| {
                                 anyhow!("missing `--llm-model` (example: --llm-model claude-3-5-sonnet-20241022)")
                             })?;
-                            let base_url = llm_anthropic_base_url
-                                .as_deref()
-                                .map(|s| s.to_string())
-                                .unwrap_or_else(crate::llm::default_anthropic_base_url);
-                            Some(anthropic_suggest_schema_structure(
-                                &base_url,
-                                model,
-                                &base_draft,
-                                &options.schema_name,
-                                timeout,
-                            )?)
-                        }
-                        #[cfg(not(feature = "llm-anthropic"))]
-                        {
-                            let _ = timeout;
-                            return Err(anyhow!(
+                                let base_url = llm_anthropic_base_url
+                                    .as_deref()
+                                    .map(|s| s.to_string())
+                                    .unwrap_or_else(crate::llm::default_anthropic_base_url);
+                                Some(anthropic_suggest_schema_structure(
+                                    &base_url,
+                                    model,
+                                    &base_draft,
+                                    &options.schema_name,
+                                    timeout,
+                                )?)
+                            }
+                            #[cfg(not(feature = "llm-anthropic"))]
+                            {
+                                let _ = timeout;
+                                return Err(anyhow!(
                                 "anthropic support not compiled (enable `axiograph-cli` feature `llm-anthropic`)"
                             ));
+                            }
+                        } else {
+                            None
                         }
-                    } else {
-                        None
-                    }
-                };
+                    };
 
-                let draft =
-                    crate::schema_discovery::draft_axi_module_from_proposals_with_suggestions(
-                        &file,
-                        &options,
-                        suggestions.as_ref(),
-                    )?;
+                    let draft =
+                        crate::schema_discovery::draft_axi_module_from_proposals_with_suggestions(
+                            &file,
+                            &options,
+                            suggestions.as_ref(),
+                        )?;
 
-                fs::write(&out, draft)?;
-                println!("wrote {}", out.display());
-            }
-            DiscoverCommands::JepaExport {
-                input,
-                out,
-                instance,
-                max_items,
-                mask_fields,
-                seed,
-            } => {
-                cmd_discover_jepa_export(
-                    &input,
-                    &out,
-                    instance.as_deref(),
+                    crate::security::write_output_bounded(&out, draft, "CLI output")?;
+                    println!("wrote {}", out.display());
+                }
+                DiscoverCommands::MaskedTupleTrainingExport {
+                    input,
+                    out,
+                    instance,
                     max_items,
                     mask_fields,
                     seed,
-                )?;
-            }
-            DiscoverCommands::CompetencyQuestions(args) => {
-                cmd_discover_competency_questions(&args)?;
-            }
-            DiscoverCommands::WorldModelPropose(args) => {
-                cmd_world_model_propose(&args)?;
-            }
-        },
-        Commands::Accept { command } => {
-            cmd_accept(command)?;
-        }
-        Commands::IngestDir {
-            root,
-            out_dir,
-            confluence_space,
-            domain,
-            chunks,
-            facts,
-            proposals,
-            max_file_bytes,
-            max_files,
-        } => {
-            cmd_ingest_dir(
-                &root,
-                &out_dir,
-                &confluence_space,
-                &domain,
-                chunks.as_ref(),
-                facts.as_ref(),
-                proposals.as_ref(),
-                max_file_bytes,
-                max_files,
-            )?;
-        }
-        Commands::Perf { command } => {
-            perf::cmd_perf(command)?;
-        }
-        Commands::Viz(args) => {
-            cmd_viz_from_args(&args)?;
-        }
-        Commands::Analyze { command } => {
-            analyze::cmd_analyze(command)?;
-        }
-        Commands::Quality {
-            input,
-            out,
-            format,
-            profile,
-            plane,
-            no_fail,
-        } => {
-            quality::cmd_quality(&input, out.as_ref(), &format, &profile, &plane, no_fail)?;
-        }
-        Commands::Repl {
-            axpd,
-            script,
-            cmd,
-            continue_on_error,
-            quiet,
-        } => {
-            if script.is_some() || !cmd.is_empty() {
-                repl::cmd_repl_script(
-                    axpd.as_ref(),
-                    script.as_ref(),
-                    &cmd,
-                    continue_on_error,
-                    quiet,
-                )?;
-            } else {
-                repl::cmd_repl(axpd.as_ref())?;
-            }
-        }
-        Commands::QueryCert {
-            input,
-            lang,
-            query,
-            out,
-            anchor_out,
-        } => {
-            cmd_query_cert(&input, &lang, &query, out.as_ref(), anchor_out.as_ref())?;
-        }
-        Commands::TypecheckCert { input, out } => {
-            cmd_typecheck_cert(&input, out.as_ref())?;
-        }
-        Commands::ConstraintsCert { input, out } => {
-            cmd_constraints_cert(&input, out.as_ref())?;
-        }
-            Commands::Proto { command } => {
-                proto::cmd_proto(command)?;
+                } => {
+                    cmd_discover_training_export(
+                        &input,
+                        &out,
+                        instance.as_deref(),
+                        max_items,
+                        mask_fields,
+                        seed,
+                    )?;
+                }
+                DiscoverCommands::CompetencyQuestions(args) => {
+                    cmd_discover_competency_questions(&args)?;
+                }
+                DiscoverCommands::CheckOlog(args) => {
+                    cmd_discover_check_olog(&args)?;
+                }
+                DiscoverCommands::ContextReport(args) => {
+                    cmd_discover_context_report(&args)?;
+                }
+                DiscoverCommands::OverlayCheck(args) => {
+                    cmd_discover_overlay_check(&args)?;
+                }
+                DiscoverCommands::CoverageQuery(args) => {
+                    cmd_discover_coverage_query(&args)?;
+                }
+                DiscoverCommands::Define(args) => {
+                    cmd_discover_define(&args)?;
+                }
+                DiscoverCommands::EmbeddingRelationships(args) => {
+                    cmd_discover_embedding_relationships(&args)?;
+                }
+                DiscoverCommands::BehaviorCase(args) => {
+                    cmd_discover_behavior_case(&args)?;
+                }
+                DiscoverCommands::RoutePreview(args) => {
+                    cmd_discover_route_preview(&args)?;
+                }
+                DiscoverCommands::TransportPreview(args) => {
+                    cmd_discover_transport_preview(&args)?;
+                }
+                DiscoverCommands::TheoryGraph(args) => {
+                    cmd_discover_theory_graph(&args)?;
+                }
+                DiscoverCommands::KernelSurface(args) => {
+                    cmd_discover_kernel_surface(&args)?;
+                }
+                DiscoverCommands::TheoryCheck(args) => {
+                    cmd_discover_theory_check(&args)?;
+                }
+                DiscoverCommands::PredictiveProposalPropose(args) => {
+                    cmd_predictive_proposals(&args)?;
+                }
+            },
+            Commands::Repl {
+                script,
+                cmd,
+                continue_on_error,
+                quiet,
+            } => {
+                if script.is_some() || !cmd.is_empty() {
+                    repl::cmd_repl_script(script.as_ref(), &cmd, continue_on_error, quiet)?;
+                } else {
+                    repl::cmd_repl()?;
+                }
             }
         }
         Ok(())
@@ -2427,1243 +2226,27 @@ fn main() -> Result<()> {
     result
 }
 
-fn cmd_pathdb(command: PathdbCommands) -> Result<()> {
-    match command {
-        PathdbCommands::ExportAxi { input, out } => {
-            cmd_pathdb_export_axi(&input, &out)?;
-        }
-        PathdbCommands::ExportModule { input, out, module } => {
-            cmd_pathdb_export_module(&input, &out, module.as_deref())?;
-        }
-        PathdbCommands::ImportAxi { input, out } => {
-            cmd_pathdb_import_axi(&input, &out)?;
-        }
-        PathdbCommands::ImportChunks { input, chunks, out } => {
-            cmd_pathdb_import_chunks(&input, &chunks, &out)?;
-        }
-    }
-    Ok(())
-}
-
-fn cmd_accept(command: AcceptedCommands) -> Result<()> {
-    match command {
-        AcceptedCommands::Init { dir } => {
-            cmd_accept_init(&dir)?;
-        }
-        AcceptedCommands::Sync {
-            from,
-            dir,
-            layer,
-            include_checkpoints,
-            include_logs,
-            no_update_head,
-            dry_run,
-        } => {
-            let layer = crate::store_sync::SyncLayer::parse(&layer)?;
-            let stats = crate::store_sync::sync_snapshot_store_dirs(
-                &from,
-                &dir,
-                layer,
-                include_checkpoints,
-                include_logs,
-                !no_update_head,
-                dry_run,
-            )?;
-            eprintln!(
-                "{} synced snapshot store {} → {} (files={} bytes={})",
-                "ok".green().bold(),
-                from.display(),
-                dir.display(),
-                stats.files_copied,
-                stats.bytes_copied
-            );
-        }
-        AcceptedCommands::List {
-            dir,
-            layer,
-            limit,
-            full,
-        } => {
-            cmd_accept_list(&dir, &layer, limit, full)?;
-        }
-        AcceptedCommands::Show {
-            dir,
-            layer,
-            snapshot,
-            json,
-            full,
-        } => {
-            cmd_accept_show(&dir, &layer, &snapshot, json, full)?;
-        }
-        AcceptedCommands::Promote {
-            input,
-            dir,
-            message,
-            quality,
-        } => {
-            let snapshot_id =
-                accepted_plane::promote_reviewed_module(&input, &dir, message.as_deref(), &quality)?;
-            eprintln!(
-                "{} promoted module to accepted snapshot {}",
-                "ok".green().bold(),
-                snapshot_id
-            );
-            eprintln!(
-                "next: {}",
-                format!(
-                    "axiograph db accept build-pathdb --dir {} --snapshot {} --out build/accepted.axpd",
-                    dir.display(),
-                    snapshot_id
-                )
-                .bold()
-            );
-            println!("{snapshot_id}");
-        }
-        AcceptedCommands::BuildPathdb { dir, snapshot, out } => {
-            accepted_plane::build_pathdb_from_snapshot(&dir, &snapshot, &out)?;
-            eprintln!("{} {}", "wrote".green().bold(), out.display().to_string().bold());
-        }
-        AcceptedCommands::PathdbCommit {
-            dir,
-            accepted_snapshot,
-            chunks,
-            proposals,
-            message,
-            timings,
-            timings_json,
-            path_index_depth,
-        } => {
-            if chunks.is_empty() && proposals.is_empty() {
-                return Err(anyhow!(
-                    "pathdb-commit requires at least one --chunks <file.json> or --proposals <file.json>"
-                ));
-            }
-            let result = pathdb_wal::commit_pathdb_snapshot_with_overlays_with_options(
-                &dir,
-                &accepted_snapshot,
-                &chunks,
-                &proposals,
-                message.as_deref(),
-                pathdb_wal::PathdbCommitOptions {
-                    timings,
-                    timings_json,
-                    path_index_depth,
-                },
-            )?;
-            eprintln!(
-                "{} committed {} WAL op(s) on accepted snapshot {} → pathdb snapshot {}",
-                "ok".green().bold(),
-                result.ops_added,
-                result.accepted_snapshot_id,
-                result.snapshot_id
-            );
-            eprintln!(
-                "next: {}",
-                format!(
-                    "axiograph db accept pathdb-build --dir {} --snapshot {} --out build/accepted_wal.axpd",
-                    dir.display(),
-                    result.snapshot_id
-                )
-                .bold()
-            );
-            println!("{}", result.snapshot_id);
-        }
-        AcceptedCommands::PathdbBuild {
-            dir,
-            snapshot,
-            out,
-            timings,
-            timings_json,
-            rebuild,
-            path_index_depth,
-            update_checkpoint,
-        } => {
-            pathdb_wal::build_pathdb_from_pathdb_snapshot_with_options(
-                &dir,
-                &snapshot,
-                &out,
-                pathdb_wal::PathdbBuildOptions {
-                    timings,
-                    timings_json,
-                    rebuild,
-                    path_index_depth,
-                    update_checkpoint,
-                },
-            )?;
-            eprintln!("{} {}", "wrote".green().bold(), out.display().to_string().bold());
-        }
-        AcceptedCommands::PathdbEmbed {
-            dir,
-            snapshot,
-            target,
-            embed_backend,
-            ollama_host,
-            embed_model,
-            openai_base_url,
-            max_items,
-            batch_size,
-            timeout_secs,
-            message,
-        } => {
-            cmd_accept_pathdb_embed(
-                &dir,
-                &snapshot,
-                &target,
-                embed_backend.as_str(),
-                ollama_host.as_deref(),
-                embed_model.as_deref(),
-                openai_base_url.as_deref(),
-                max_items,
-                batch_size,
-                timeout_secs,
-                message.as_deref(),
-            )?;
-        }
-        AcceptedCommands::Status { dir } => {
-            cmd_accept_status(&dir)?;
-        }
-        AcceptedCommands::Log { dir, layer, limit } => {
-            cmd_accept_log(&dir, &layer, limit)?;
-        }
-    }
-
-    Ok(())
-}
-
 // =============================================================================
 // Accepted plane / snapshot store CLI helpers
 // =============================================================================
 
-fn now_unix_secs() -> u64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
-}
-
-fn format_age_ago(created_at_unix_secs: u64) -> String {
-    let now = now_unix_secs();
-    let delta = if created_at_unix_secs > now {
-        0
-    } else {
-        now.saturating_sub(created_at_unix_secs)
-    };
-    let days = delta / 86_400;
-    let hours = (delta % 86_400) / 3_600;
-    let mins = (delta % 3_600) / 60;
-    if days > 0 {
-        format!("{days}d{hours}h ago")
-    } else if hours > 0 {
-        format!("{hours}h{mins}m ago")
-    } else if mins > 0 {
-        format!("{mins}m ago")
-    } else {
-        format!("{delta}s ago")
-    }
-}
-
-fn format_age_compact(created_at_unix_secs: u64) -> String {
-    let now = now_unix_secs();
-    let delta = if created_at_unix_secs > now {
-        0
-    } else {
-        now.saturating_sub(created_at_unix_secs)
-    };
-    let days = delta / 86_400;
-    let hours = (delta % 86_400) / 3_600;
-    let mins = (delta % 3_600) / 60;
-    if days > 0 {
-        format!("{days}d{hours}h")
-    } else if hours > 0 {
-        format!("{hours}h{mins}m")
-    } else if mins > 0 {
-        format!("{mins}m")
-    } else {
-        format!("{delta}s")
-    }
-}
-
-fn short_snapshot_id(id: &str) -> String {
-    let (prefix, rest) = id.split_once(':').unwrap_or(("", id));
-    let rest = rest.chars().take(12).collect::<String>();
-    if prefix.is_empty() {
-        rest
-    } else {
-        format!("{prefix}:{rest}")
-    }
-}
-
-fn format_snapshot_id(id: &str, full: bool) -> String {
-    if full {
-        id.to_string()
-    } else {
-        short_snapshot_id(id)
-    }
-}
-
-fn snapshot_id_filename(id: &str) -> String {
-    id.replace(':', "_")
-}
-
-fn cmd_accept_init(dir: &PathBuf) -> Result<()> {
-    accepted_plane::init_accepted_plane_dir(dir)?;
-    pathdb_wal::init_pathdb_wal_dir(dir)?;
-    println!("ok: initialized snapshot store at {}", dir.display());
-    println!(
-        "  next: axiograph db accept promote <module.axi> --dir {}",
-        dir.display()
-    );
-    Ok(())
-}
-
-fn cmd_accept_list(dir: &PathBuf, layer: &str, limit: usize, full: bool) -> Result<()> {
-    use std::fs;
-
-    fn read_head(path: &std::path::Path) -> Option<String> {
-        let text = fs::read_to_string(path).ok()?;
-        let id = text.trim().to_string();
-        if id.is_empty() {
-            None
-        } else {
-            Some(id)
-        }
-    }
-
-    fn read_json_files(dir: &std::path::Path) -> Vec<String> {
-        let Ok(rd) = fs::read_dir(dir) else {
-            return Vec::new();
-        };
-        rd.filter_map(|e| e.ok())
-            .filter(|e| e.file_type().ok().map(|t| t.is_file()).unwrap_or(false))
-            .filter(|e| e.path().extension().and_then(|s| s.to_str()) == Some("json"))
-            .filter_map(|e| fs::read_to_string(e.path()).ok())
-            .collect()
-    }
-
-    let layer = layer.trim().to_ascii_lowercase();
-    let show_accepted = layer == "accepted" || layer == "both";
-    let show_pathdb = layer == "pathdb" || layer == "both";
-    if !show_accepted && !show_pathdb {
-        return Err(anyhow!(
-            "unknown --layer `{}` (expected accepted|pathdb|both)",
-            layer
-        ));
-    }
-
-    if show_accepted {
-        let head = read_head(&dir.join("HEAD"));
-        let mut snaps: Vec<accepted_plane::AcceptedPlaneSnapshotV1> =
-            read_json_files(&dir.join("snapshots"))
-                .into_iter()
-                .filter_map(|text| serde_json::from_str(&text).ok())
-                .collect();
-        snaps.sort_by_key(|s| std::cmp::Reverse(s.created_at_unix_secs));
-
-        println!("accepted snapshots (dir={}):", dir.display());
-        for s in snaps.into_iter().take(limit) {
-            let mark = head
-                .as_deref()
-                .map(|h| if h == s.snapshot_id { "*" } else { " " })
-                .unwrap_or(" ");
-            let prev = s
-                .previous_snapshot_id
-                .as_deref()
-                .map(|p| format_snapshot_id(p, full))
-                .unwrap_or_else(|| "(none)".to_string());
-            println!(
-                " {mark} {} age={} modules={} prev={}",
-                format_snapshot_id(&s.snapshot_id, full),
-                format_age_compact(s.created_at_unix_secs),
-                s.modules.len(),
-                prev
-            );
-        }
-        if head.is_none() {
-            println!("  (no HEAD yet; run `axiograph db accept promote ...`)");
-        }
-        println!();
-    }
-
-    if show_pathdb {
-        let pathdb_dir = dir.join("pathdb");
-        let head = read_head(&pathdb_dir.join("HEAD"));
-        let mut snaps: Vec<pathdb_wal::PathDbSnapshotV1> =
-            read_json_files(&pathdb_dir.join("snapshots"))
-                .into_iter()
-                .filter_map(|text| serde_json::from_str(&text).ok())
-                .collect();
-        snaps.sort_by_key(|s| std::cmp::Reverse(s.created_at_unix_secs));
-
-        println!("pathdb snapshots (dir={}):", pathdb_dir.display());
-        for s in snaps.into_iter().take(limit) {
-            let mark = head
-                .as_deref()
-                .map(|h| if h == s.snapshot_id { "*" } else { " " })
-                .unwrap_or(" ");
-            let prev = s
-                .previous_snapshot_id
-                .as_deref()
-                .map(|p| format_snapshot_id(p, full))
-                .unwrap_or_else(|| "(none)".to_string());
-            println!(
-                " {mark} {} age={} base={} ops={} prev={}",
-                format_snapshot_id(&s.snapshot_id, full),
-                format_age_compact(s.created_at_unix_secs),
-                format_snapshot_id(&s.accepted_snapshot_id, full),
-                s.ops.len(),
-                prev
-            );
-        }
-        if head.is_none() {
-            println!("  (no HEAD yet; run `axiograph db accept pathdb-commit ...`)");
-        }
-    }
-
-    Ok(())
-}
-
-fn cmd_accept_show(
-    dir: &PathBuf,
-    layer: &str,
-    snapshot: &str,
-    json: bool,
-    full: bool,
-) -> Result<()> {
-    let layer = layer.trim().to_ascii_lowercase();
-    match layer.as_str() {
-        "accepted" => {
-            let snap = accepted_plane::read_snapshot_for_cli(dir, snapshot)?;
-            if json {
-                println!("{}", serde_json::to_string_pretty(&snap)?);
-                return Ok(());
-            }
-            println!(
-                "accepted snapshot {}",
-                format_snapshot_id(&snap.snapshot_id, full)
-            );
-            println!(
-                "  prev: {}",
-                snap.previous_snapshot_id
-                    .as_deref()
-                    .map(|p| format_snapshot_id(p, full))
-                    .unwrap_or_else(|| "(none)".to_string())
-            );
-            println!("  created_at_unix_secs: {}", snap.created_at_unix_secs);
-            println!("  age: {}", format_age_ago(snap.created_at_unix_secs));
-            println!("  modules: {}", snap.modules.len());
-            for (name, m) in snap.modules {
-                println!(
-                    "    - {} digest={} path={}",
-                    name,
-                    format_snapshot_id(&m.module_digest, full),
-                    m.stored_path
-                );
-            }
-            Ok(())
-        }
-        "pathdb" => {
-            let snap = pathdb_wal::read_pathdb_snapshot_for_cli(dir, snapshot)?;
-            if json {
-                println!("{}", serde_json::to_string_pretty(&snap)?);
-                return Ok(());
-            }
-            println!(
-                "pathdb snapshot {}",
-                format_snapshot_id(&snap.snapshot_id, full)
-            );
-            println!(
-                "  prev: {}",
-                snap.previous_snapshot_id
-                    .as_deref()
-                    .map(|p| format_snapshot_id(p, full))
-                    .unwrap_or_else(|| "(none)".to_string())
-            );
-            println!(
-                "  base_accepted_snapshot: {}",
-                format_snapshot_id(&snap.accepted_snapshot_id, full)
-            );
-            println!("  created_at_unix_secs: {}", snap.created_at_unix_secs);
-            println!("  age: {}", format_age_ago(snap.created_at_unix_secs));
-
-            let checkpoint = dir
-                .join("pathdb")
-                .join("checkpoints")
-                .join(format!("{}.axpd", snapshot_id_filename(&snap.snapshot_id)));
-            println!(
-                "  checkpoint: {}",
-                if checkpoint.exists() {
-                    checkpoint.display().to_string()
-                } else {
-                    "(missing)".to_string()
-                }
-            );
-
-            println!("  ops: {}", snap.ops.len());
-            for (idx, op) in snap.ops.iter().enumerate() {
-                match op {
-                    pathdb_wal::PathDbWalOpV1::ImportChunksV1 {
-                        chunks_digest,
-                        stored_path,
-                    } => {
-                        println!(
-                            "    {}. import_chunks_v1 digest={} path={}",
-                            idx + 1,
-                            format_snapshot_id(chunks_digest, full),
-                            stored_path
-                        );
-                    }
-                    pathdb_wal::PathDbWalOpV1::ImportEmbeddingsV1 {
-                        embeddings_digest,
-                        stored_path,
-                    } => {
-                        println!(
-                            "    {}. import_embeddings_v1 digest={} path={}",
-                            idx + 1,
-                            format_snapshot_id(embeddings_digest, full),
-                            stored_path
-                        );
-                    }
-                    pathdb_wal::PathDbWalOpV1::ImportProposalsV1 {
-                        proposals_digest,
-                        stored_path,
-                    } => {
-                        println!(
-                            "    {}. import_proposals_v1 digest={} path={}",
-                            idx + 1,
-                            format_snapshot_id(proposals_digest, full),
-                            stored_path
-                        );
-                    }
-                }
-            }
-            Ok(())
-        }
-        other => Err(anyhow!(
-            "unknown --layer `{other}` (expected accepted|pathdb)"
-        )),
-    }
-}
-
-fn cmd_accept_status(dir: &PathBuf) -> Result<()> {
-    use std::fs;
-
-    fn read_head(path: &std::path::Path) -> Option<String> {
-        let text = fs::read_to_string(path).ok()?;
-        let id = text.trim().to_string();
-        if id.is_empty() {
-            None
-        } else {
-            Some(id)
-        }
-    }
-
-    fn count_json_files(dir: &std::path::Path) -> usize {
-        let Ok(rd) = fs::read_dir(dir) else {
-            return 0;
-        };
-        rd.filter_map(|e| e.ok())
-            .filter(|e| e.file_type().ok().map(|t| t.is_file()).unwrap_or(false))
-            .filter(|e| e.path().extension().and_then(|s| s.to_str()) == Some("json"))
-            .count()
-    }
-
-    let accepted_head = read_head(&dir.join("HEAD"));
-    let accepted_snapshots = count_json_files(&dir.join("snapshots"));
-    let accepted_head_snapshot = accepted_plane::read_snapshot_for_cli(dir, "head").ok();
-    let accepted_modules_in_head = accepted_head_snapshot.as_ref().map(|s| s.modules.len());
-
-    let pathdb_dir = dir.join("pathdb");
-    let pathdb_head = read_head(&pathdb_dir.join("HEAD"));
-    let pathdb_snapshots = count_json_files(&pathdb_dir.join("snapshots"));
-    let pathdb_head_snapshot = pathdb_wal::read_pathdb_snapshot_for_cli(dir, "head").ok();
-    let pathdb_head_info = pathdb_head_snapshot.as_ref().map(|s| {
-        (
-            s.accepted_snapshot_id.clone(),
-            s.ops.len(),
-            s.created_at_unix_secs,
-        )
-    });
-
-    println!("accepted_plane:");
-    println!("  dir: {}", dir.display());
-    println!(
-        "  head: {}",
-        accepted_head
-            .as_deref()
-            .map(|id| format!("{} ({})", short_snapshot_id(id), id))
-            .unwrap_or_else(|| "(none)".to_string())
-    );
-    println!("  snapshots: {accepted_snapshots}");
-    if let Some(n) = accepted_modules_in_head {
-        let age = accepted_head_snapshot
-            .as_ref()
-            .map(|s| format_age_ago(s.created_at_unix_secs))
-            .unwrap_or_default();
-        if age.is_empty() {
-            println!("  modules_in_head: {n}");
-        } else {
-            println!("  modules_in_head: {n} ({age})");
-        }
-    }
-
-    println!("pathdb_wal:");
-    println!(
-        "  head: {}",
-        pathdb_head
-            .as_deref()
-            .map(|id| format!("{} ({})", short_snapshot_id(id), id))
-            .unwrap_or_else(|| "(none)".to_string())
-    );
-    println!("  snapshots: {pathdb_snapshots}");
-    if let Some((base, ops, created_at)) = pathdb_head_info {
-        println!(
-            "  base_accepted_snapshot: {} ({})",
-            short_snapshot_id(&base),
-            base
-        );
-        println!("  ops_total: {ops}");
-        println!("  age: {}", format_age_ago(created_at));
-    }
-
-    if let (Some(accepted_id), Some(pathdb_snap)) = (accepted_head.as_deref(), pathdb_head_snapshot)
-    {
-        if pathdb_snap.accepted_snapshot_id != accepted_id {
-            println!(
-                "note: pathdb WAL HEAD is based on an older accepted snapshot (base={} head={}).",
-                short_snapshot_id(&pathdb_snap.accepted_snapshot_id),
-                short_snapshot_id(accepted_id)
-            );
-            println!(
-                "      run: axiograph db accept pathdb-commit --dir {} --accepted-snapshot head --chunks <file.json>",
-                dir.display()
-            );
-        }
-    }
-
-    Ok(())
-}
-
-fn cmd_accept_log(dir: &PathBuf, layer: &str, limit: usize) -> Result<()> {
-    use std::fs;
-
-    fn read_jsonl_lines(path: &std::path::Path) -> Result<Vec<String>> {
-        if !path.exists() {
-            return Ok(Vec::new());
-        }
-        let text = fs::read_to_string(path)?;
-        Ok(text
-            .lines()
-            .map(str::trim)
-            .filter(|l| !l.is_empty())
-            .map(|l| l.to_string())
-            .collect())
-    }
-
-    let layer = layer.trim().to_ascii_lowercase();
-    let show_accepted = layer == "accepted" || layer == "both";
-    let show_pathdb = layer == "pathdb" || layer == "both";
-    if !show_accepted && !show_pathdb {
-        return Err(anyhow!(
-            "unknown --layer `{}` (expected accepted|pathdb|both)",
-            layer
-        ));
-    }
-
-    if show_accepted {
-        let path = dir.join("accepted_plane.log.jsonl");
-        let mut lines = read_jsonl_lines(&path)?;
-        if lines.is_empty() {
-            println!("accepted_plane log: (empty)");
-        } else {
-            println!("accepted_plane log:");
-            let start = lines.len().saturating_sub(limit);
-            for line in lines.drain(start..) {
-                match serde_json::from_str::<accepted_plane::AcceptedPlaneEventV1>(&line) {
-                    Ok(e) => {
-                        let msg = e.message.unwrap_or_default();
-                        let age = format_age_compact(e.created_at_unix_secs);
-                        if msg.is_empty() {
-                            println!(
-                                "  {} {} {} module={} snapshot={} prev={}",
-                                e.created_at_unix_secs,
-                                age,
-                                e.action,
-                                e.module_name,
-                                short_snapshot_id(&e.snapshot_id),
-                                e.previous_snapshot_id
-                                    .as_deref()
-                                    .map(short_snapshot_id)
-                                    .unwrap_or_else(|| "(none)".to_string())
-                            );
-                        } else {
-                            println!(
-                                "  {} {} {} module={} snapshot={} prev={} msg={}",
-                                e.created_at_unix_secs,
-                                age,
-                                e.action,
-                                e.module_name,
-                                short_snapshot_id(&e.snapshot_id),
-                                e.previous_snapshot_id
-                                    .as_deref()
-                                    .map(short_snapshot_id)
-                                    .unwrap_or_else(|| "(none)".to_string()),
-                                msg
-                            );
-                        }
-                    }
-                    Err(_) => {
-                        // Preserve raw JSON on parse failures so users can still inspect it.
-                        println!("  {line}");
-                    }
-                }
-            }
-        }
-    }
-
-    if show_pathdb {
-        let path = dir.join("pathdb").join("pathdb_wal.log.jsonl");
-        let mut lines = read_jsonl_lines(&path)?;
-        if lines.is_empty() {
-            println!("pathdb_wal log: (empty)");
-        } else {
-            println!("pathdb_wal log:");
-            let start = lines.len().saturating_sub(limit);
-            for line in lines.drain(start..) {
-                match serde_json::from_str::<pathdb_wal::PathDbWalEventV1>(&line) {
-                    Ok(e) => {
-                        let msg = e.message.unwrap_or_default();
-                        let age = format_age_compact(e.created_at_unix_secs);
-                        let ops = e.ops_appended.len();
-                        if msg.is_empty() {
-                            println!(
-                                "  {} {} {} snapshot={} base={} ops+={} prev={}",
-                                e.created_at_unix_secs,
-                                age,
-                                e.action,
-                                short_snapshot_id(&e.snapshot_id),
-                                short_snapshot_id(&e.accepted_snapshot_id),
-                                ops,
-                                e.previous_snapshot_id
-                                    .as_deref()
-                                    .map(short_snapshot_id)
-                                    .unwrap_or_else(|| "(none)".to_string())
-                            );
-                        } else {
-                            println!(
-                                "  {} {} {} snapshot={} base={} ops+={} prev={} msg={}",
-                                e.created_at_unix_secs,
-                                age,
-                                e.action,
-                                short_snapshot_id(&e.snapshot_id),
-                                short_snapshot_id(&e.accepted_snapshot_id),
-                                ops,
-                                e.previous_snapshot_id
-                                    .as_deref()
-                                    .map(short_snapshot_id)
-                                    .unwrap_or_else(|| "(none)".to_string()),
-                                msg
-                            );
-                        }
-                    }
-                    Err(_) => {
-                        println!("  {line}");
-                    }
-                }
-            }
-        }
-    }
-
-    Ok(())
-}
-
-fn cmd_accept_pathdb_embed(
-    dir: &PathBuf,
-    base_snapshot: &str,
-    target: &str,
-    embed_backend: &str,
-    ollama_host: Option<&str>,
-    embed_model: Option<&str>,
-    openai_base_url: Option<&str>,
-    max_items: usize,
-    batch_size: usize,
-    timeout_secs: Option<u64>,
-    message: Option<&str>,
-) -> Result<()> {
-    let target = target.trim().to_ascii_lowercase();
-    let want_docchunks = target == "docchunks" || target == "doc_chunks" || target == "both";
-    let want_entities = target == "entities" || target == "both";
-    if !want_docchunks && !want_entities {
-        return Err(anyhow!(
-            "invalid --target `{}` (expected docchunks|entities|both)",
-            target
-        ));
-    }
-
-    let embed_backend = embed_backend.trim().to_ascii_lowercase();
-    let embed_model = embed_model.map(|s| s.trim()).filter(|s| !s.is_empty());
-    let embed_model = match (embed_backend.as_str(), embed_model) {
-        ("ollama", Some(m)) => m.to_string(),
-        ("ollama", None) => "nomic-embed-text".to_string(),
-        ("openai", Some(m)) => m.to_string(),
-        ("openai", None) => "text-embedding-3-small".to_string(),
-        ("anthropic", _) => {
-            return Err(anyhow!(
-                "anthropic does not provide embeddings; use `--embed-backend openai` or rely on deterministic retrieval"
-            ));
-        }
-        _ => {
-            return Err(anyhow!(
-                "invalid --embed-backend `{}` (expected ollama|openai)",
-                embed_backend
-            ))
-        }
-    };
-
-    use crate::embeddings::{
-        EmbeddingItemV1, EmbeddingKeyV1, EmbeddingTargetKindV1, EmbeddingsFileV1,
-        EMBEDDINGS_FILE_VERSION_V1,
-    };
-
-    let base = pathdb_wal::read_pathdb_snapshot_for_cli(dir, base_snapshot)?;
-
-    let checkpoint = dir
-        .join("pathdb")
-        .join("checkpoints")
-        .join(format!("{}.axpd", snapshot_id_filename(&base.snapshot_id)));
-    let bytes = if checkpoint.exists() {
-        fs::read(&checkpoint)?
-    } else {
-        // Rare path: no checkpoint present; rebuild into a temp `.axpd` file.
-        fs::create_dir_all(dir.join("pathdb").join("tmp"))?;
-        let tmp = dir.join("pathdb").join("tmp").join("embed_tmp.axpd");
-        pathdb_wal::build_pathdb_from_pathdb_snapshot(dir, &base.snapshot_id, &tmp)?;
-        let bytes = fs::read(&tmp)?;
-        let _ = fs::remove_file(&tmp);
-        bytes
-    };
-
-    let db = axiograph_pathdb::PathDB::from_bytes(&bytes)?;
-
-    let timeout = crate::llm::llm_timeout(timeout_secs)?;
-
-    #[allow(unused_variables)]
-    let resolved_ollama_host: Option<String> = if embed_backend == "ollama" {
-        #[cfg(feature = "llm-ollama")]
-        {
-            Some(
-                ollama_host
-                    .map(|s| s.to_string())
-                    .unwrap_or_else(crate::llm::default_ollama_host),
-            )
-        }
-        #[cfg(not(feature = "llm-ollama"))]
-        {
-            None
-        }
-    } else {
-        None
-    };
-
-    #[allow(unused_variables)]
-    let resolved_openai_base_url: Option<String> = if embed_backend == "openai" {
-        #[cfg(feature = "llm-openai")]
-        {
-            Some(
-                openai_base_url
-                    .map(|s| s.to_string())
-                    .unwrap_or_else(crate::llm::default_openai_base_url),
-            )
-        }
-        #[cfg(not(feature = "llm-openai"))]
-        {
-            None
-        }
-    } else {
-        None
-    };
-
-    fn db_attr(db: &axiograph_pathdb::PathDB, id: u32, key: &str) -> Option<String> {
-        let view = db.get_entity(id)?;
-        view.attrs.get(key).cloned()
-    }
-
-    fn truncate_chars(s: &str, max_chars: usize) -> String {
-        if max_chars == 0 {
-            return String::new();
-        }
-        if s.chars().count() <= max_chars {
-            return s.to_string();
-        }
-        let mut out = String::new();
-        out.extend(s.chars().take(max_chars));
-        out.push('…');
-        out
-    }
-
-    #[allow(clippy::needless_return)]
-    fn embed_batches(
-        embed_backend: &str,
-        embed_model: &str,
-        ollama_host: Option<&str>,
-        openai_base_url: Option<&str>,
-        texts: &[String],
-        batch_size: usize,
-        timeout: Option<Duration>,
-    ) -> Result<Vec<Vec<f32>>> {
-        if texts.is_empty() {
-            return Ok(Vec::new());
-        }
-        let bs = batch_size.clamp(1, 256);
-        let mut out: Vec<Vec<f32>> = Vec::with_capacity(texts.len());
-        for chunk in texts.chunks(bs) {
-            match embed_backend {
-                "ollama" => {
-                    #[cfg(feature = "llm-ollama")]
-                    {
-                        let host = ollama_host.unwrap_or("http://127.0.0.1:11434");
-                        let e = crate::llm::ollama_embed_texts_with_timeout(
-                            host,
-                            embed_model,
-                            chunk,
-                            timeout,
-                        )?;
-                        out.extend(e);
-                    }
-                    #[cfg(not(feature = "llm-ollama"))]
-                    {
-                        let _ = (ollama_host, embed_model, chunk, timeout);
-                        return Err(anyhow!(
-                            "ollama embeddings not available (compiled without `llm-ollama`)"
-                        ));
-                    }
-                }
-                "openai" => {
-                    #[cfg(feature = "llm-openai")]
-                    {
-                        let base_url = openai_base_url.unwrap_or("https://api.openai.com");
-                        let e = crate::llm::openai_embed_texts_with_timeout(
-                            base_url,
-                            embed_model,
-                            chunk,
-                            timeout,
-                        )?;
-                        out.extend(e);
-                    }
-                    #[cfg(not(feature = "llm-openai"))]
-                    {
-                        let _ = (openai_base_url, embed_model, chunk, timeout);
-                        return Err(anyhow!(
-                            "openai embeddings not available (compiled without `llm-openai`)"
-                        ));
-                    }
-                }
-                _ => {
-                    return Err(anyhow!(
-                        "invalid embed backend `{}` (expected ollama|openai)",
-                        embed_backend
-                    ))
-                }
-            }
-        }
-        Ok(out)
-    }
-
-    let mut blobs: Vec<Vec<u8>> = Vec::new();
-
-    if want_docchunks {
-        let Some(chunks) = db.find_by_type("DocChunk") else {
-            return Err(anyhow!(
-                "no DocChunk loaded in this snapshot; import chunks first, then embed (try: `axiograph db accept pathdb-commit --chunks <chunks.json> ...`)"
-            ));
-        };
-
-        let mut keys: Vec<EmbeddingKeyV1> = Vec::new();
-        let mut texts: Vec<String> = Vec::new();
-        let mut digests: Vec<String> = Vec::new();
-
-        for id in chunks.iter().take(max_items) {
-            let chunk_id = db_attr(&db, id, "chunk_id").unwrap_or_else(|| id.to_string());
-            let text = db_attr(&db, id, "text").unwrap_or_default();
-            let search_text = db_attr(&db, id, "search_text").unwrap_or_default();
-            let mut combined = String::new();
-            combined.push_str(&text);
-            if !search_text.trim().is_empty() {
-                combined.push('\n');
-                combined.push_str(&search_text);
-            }
-            let combined = truncate_chars(&combined, 2500);
-            if combined.trim().is_empty() {
-                continue;
-            }
-            let digest = axiograph_dsl::digest::fnv1a64_digest_bytes(combined.as_bytes());
-            digests.push(digest);
-            keys.push(EmbeddingKeyV1::DocChunk { chunk_id });
-            texts.push(combined);
-        }
-
-        if keys.is_empty() {
-            return Err(anyhow!("no docchunk text found to embed"));
-        }
-
-        eprintln!(
-            "{} embedding docchunks (n={}) via {} model={}",
-            "info:".yellow().bold(),
-            keys.len(),
-            embed_backend,
-            embed_model
-        );
-    let vectors = embed_batches(
-            &embed_backend,
-            &embed_model,
-            resolved_ollama_host.as_deref(),
-            resolved_openai_base_url.as_deref(),
-            &texts,
-            batch_size,
-            timeout,
-        )?;
-        if vectors.len() != keys.len() {
-            return Err(anyhow!(
-                "embed returned {} vectors for {} inputs",
-                vectors.len(),
-                keys.len()
-            ));
-        }
-        let dim = vectors.first().map(|v| v.len()).unwrap_or(0);
-        if dim == 0 {
-            return Err(anyhow!("embed returned empty vectors"));
-        }
-
-        let items = keys
-            .into_iter()
-            .zip(vectors)
-            .zip(digests)
-            .map(|((key, vector), text_digest)| EmbeddingItemV1 {
-                key,
-                vector,
-                text_digest: Some(text_digest),
-            })
-            .collect::<Vec<_>>();
-
-        let file = EmbeddingsFileV1 {
-            version: EMBEDDINGS_FILE_VERSION_V1.to_string(),
-            created_at_unix_secs: now_unix_secs(),
-            backend: embed_backend.to_string(),
-            model: embed_model.to_string(),
-            dim,
-            target: EmbeddingTargetKindV1::DocChunks,
-            items,
-            metadata: std::collections::HashMap::from([
-                ("base_pathdb_snapshot".to_string(), base.snapshot_id.clone()),
-                (
-                    "base_accepted_snapshot".to_string(),
-                    base.accepted_snapshot_id.clone(),
-                ),
-            ]),
-        };
-        blobs.push(crate::embeddings::encode_embeddings_file_v1(&file)?);
-    }
-
-    if want_entities {
-        let mut keys: Vec<EmbeddingKeyV1> = Vec::new();
-        let mut texts: Vec<String> = Vec::new();
-        let mut digests: Vec<String> = Vec::new();
-
-        for id in 0..(db.entities.len() as u32) {
-            let Some(view) = db.get_entity(id) else { continue };
-            if view.entity_type == "DocChunk"
-                || view.entity_type == "Document"
-                || view.entity_type.starts_with("AxiMeta")
-            {
-                continue;
-            }
-            let Some(name) = view.attrs.get("name").cloned() else {
-                continue;
-            };
-
-            let mut text = String::new();
-            text.push_str(&view.entity_type);
-            text.push(' ');
-            text.push_str(&name);
-            for k in ["search_text", "description", "comment", "iri"] {
-                if let Some(v) = view.attrs.get(k) {
-                    if !v.trim().is_empty() {
-                        text.push(' ');
-                        text.push_str(v);
-                    }
-                }
-            }
-
-            let text = truncate_chars(&text, 1500);
-            if text.trim().is_empty() {
-                continue;
-            }
-
-            let digest = axiograph_dsl::digest::fnv1a64_digest_bytes(text.as_bytes());
-            digests.push(digest);
-            keys.push(EmbeddingKeyV1::Entity {
-                entity_type: view.entity_type.to_string(),
-                name,
-            });
-            texts.push(text);
-
-            if keys.len() >= max_items {
-                break;
-            }
-        }
-
-        if keys.is_empty() {
-            return Err(anyhow!("no entities found to embed (no `name` attrs?)"));
-        }
-
-        eprintln!(
-            "{} embedding entities (n={}) via {} model={}",
-            "info:".yellow().bold(),
-            keys.len(),
-            embed_backend,
-            embed_model
-        );
-    let vectors = embed_batches(
-            &embed_backend,
-            &embed_model,
-            resolved_ollama_host.as_deref(),
-            resolved_openai_base_url.as_deref(),
-            &texts,
-            batch_size,
-            timeout,
-        )?;
-        if vectors.len() != keys.len() {
-            return Err(anyhow!(
-                "embed returned {} vectors for {} inputs",
-                vectors.len(),
-                keys.len()
-            ));
-        }
-        let dim = vectors.first().map(|v| v.len()).unwrap_or(0);
-        if dim == 0 {
-            return Err(anyhow!("embed returned empty vectors"));
-        }
-
-        let items = keys
-            .into_iter()
-            .zip(vectors)
-            .zip(digests)
-            .map(|((key, vector), text_digest)| EmbeddingItemV1 {
-                key,
-                vector,
-                text_digest: Some(text_digest),
-            })
-            .collect::<Vec<_>>();
-
-        let file = EmbeddingsFileV1 {
-            version: EMBEDDINGS_FILE_VERSION_V1.to_string(),
-            created_at_unix_secs: now_unix_secs(),
-            backend: embed_backend.to_string(),
-            model: embed_model.to_string(),
-            dim,
-            target: EmbeddingTargetKindV1::Entities,
-            items,
-            metadata: std::collections::HashMap::from([
-                ("base_pathdb_snapshot".to_string(), base.snapshot_id.clone()),
-                (
-                    "base_accepted_snapshot".to_string(),
-                    base.accepted_snapshot_id.clone(),
-                ),
-            ]),
-        };
-        blobs.push(crate::embeddings::encode_embeddings_file_v1(&file)?);
-    }
-
-    let result = pathdb_wal::commit_pathdb_snapshot_with_embedding_bytes(
-        dir,
-        &base.snapshot_id,
-        &blobs,
-        message,
+fn cmd_typecheck_cert(input: &Path, out: Option<&Path>) -> Result<()> {
+    let axi_text = crate::security::read_utf8_file_bounded(
+        input,
+        crate::security::MAX_TEXT_INPUT_BYTES,
+        "CLI input",
     )?;
-    eprintln!(
-        "{} committed embeddings ops={} base_pathdb_snapshot={} → pathdb_snapshot={}",
-        "ok".green().bold(),
-        result.ops_added,
-        short_snapshot_id(&base.snapshot_id),
-        short_snapshot_id(&result.snapshot_id)
-    );
-    println!("{}", result.snapshot_id);
-    Ok(())
-}
+    let typed = crate::axi_input::require_canonical_axi_text(&axi_text)?;
+    let digest = typed.digest().clone();
+    let (_m, proof) = typed.module().clone().into_parts();
 
-fn cmd_query_cert(
-    input: &PathBuf,
-    lang: &str,
-    query_text: &str,
-    out: Option<&PathBuf>,
-    anchor_out: Option<&PathBuf>,
-) -> Result<()> {
-    let axi_text = fs::read_to_string(input)?;
-    let digest = axiograph_dsl::digest::axi_digest_v1(&axi_text);
-
-    let m = axiograph_dsl::axi_v1::parse_axi_v1(&axi_text)?;
-
-    let is_snapshot = m
-        .schemas
-        .iter()
-        .any(|s| s.name == axiograph_pathdb::axi_export::PATHDB_EXPORT_SCHEMA_NAME_V1)
-        && m.instances.iter().any(|i| {
-            i.schema == axiograph_pathdb::axi_export::PATHDB_EXPORT_SCHEMA_NAME_V1
-                && i.name == axiograph_pathdb::axi_export::PATHDB_EXPORT_INSTANCE_NAME_V1
-        });
-
-    let (db, anchor_digest, is_pathdb_export_anchor) = if is_snapshot {
-        (
-            axiograph_pathdb::axi_export::import_pathdb_from_axi_v1_module(&m)?,
-            digest,
-            true,
-        )
-    } else {
-        let mut db = axiograph_pathdb::PathDB::new();
-        let _summary =
-            axiograph_pathdb::axi_module_import::import_axi_schema_v1_module_into_pathdb(
-                &mut db, &m,
-            )?;
-        db.build_indexes();
-        if let Some(anchor_path) = anchor_out {
-            // Optional convenience export for debugging / legacy workflows.
-            // Certificates are still anchored to the canonical `.axi` digest.
-            let anchor_text = axiograph_pathdb::axi_export::export_pathdb_to_axi_v1(&db)?;
-            let anchor_digest = axiograph_dsl::digest::axi_digest_v1(&anchor_text);
-            fs::write(anchor_path, anchor_text)?;
-            eprintln!(
-                "wrote derived PathDBExportV1 export {} (digest={})",
-                anchor_path.display(),
-                anchor_digest
-            );
-        }
-
-        (db, digest, false)
-    };
-    let query = match lang {
-        "axql" => crate::axql::parse_axql_query(query_text)?,
-        "sql" => crate::sqlish::parse_sqlish_query(query_text)?,
-        other => {
-            return Err(anyhow::anyhow!(
-                "unknown --lang `{other}` (expected `axql` or `sql`)"
-            ))
-        }
-    };
-
-    let cert = if is_pathdb_export_anchor {
-        crate::axql::certify_axql_query(&db, &query)?
-    } else {
-        let meta = axiograph_pathdb::axi_semantics::MetaPlaneIndex::from_db(&db)?;
-        crate::axql::certify_axql_query_v3_with_meta(&db, &query, Some(&meta), &anchor_digest)?
-    }
-    .with_anchor(axiograph_pathdb::certificate::AxiAnchorV1 {
-        axi_digest_v1: anchor_digest,
-    });
+    let cert = axiograph_pathdb::certificate::CertificateV2::axi_well_typed_v1(proof)
+        .with_anchor(axiograph_pathdb::certificate::AxiAnchorV1::new(digest));
 
     let json = serde_json::to_string_pretty(&cert)?;
     match out {
         Some(path) => {
-            fs::write(path, json)?;
+            crate::security::write_output_bounded(path, json, "CLI output")?;
             println!("wrote {}", path.display());
         }
         None => {
@@ -3674,52 +2257,24 @@ fn cmd_query_cert(
     Ok(())
 }
 
-fn cmd_typecheck_cert(input: &PathBuf, out: Option<&PathBuf>) -> Result<()> {
-    let axi_text = fs::read_to_string(input)?;
-    let digest = axiograph_dsl::digest::axi_digest_v1(&axi_text);
-
-    let m = axiograph_dsl::axi_v1::parse_axi_v1(&axi_text)?;
-    let (_m, proof) =
-        axiograph_pathdb::axi_module_typecheck::TypedAxiV1Module::new(m)?.into_parts();
-
-    let cert = axiograph_pathdb::certificate::CertificateV2::axi_well_typed_v1(proof).with_anchor(
-        axiograph_pathdb::certificate::AxiAnchorV1 {
-            axi_digest_v1: digest,
-        },
-    );
-
-    let json = serde_json::to_string_pretty(&cert)?;
-    match out {
-        Some(path) => {
-            fs::write(path, json)?;
-            println!("wrote {}", path.display());
-        }
-        None => {
-            println!("{json}");
-        }
-    }
-
-    Ok(())
-}
-
-fn cmd_constraints_cert(input: &PathBuf, out: Option<&PathBuf>) -> Result<()> {
-    let axi_text = fs::read_to_string(input)?;
-    let digest = axiograph_dsl::digest::axi_digest_v1(&axi_text);
-
-    let m = axiograph_dsl::axi_v1::parse_axi_v1(&axi_text)?;
-    let typed = axiograph_pathdb::axi_module_typecheck::TypedAxiV1Module::new(m)?;
+fn cmd_constraints_cert(input: &Path, out: Option<&Path>) -> Result<()> {
+    let axi_text = crate::security::read_utf8_file_bounded(
+        input,
+        crate::security::MAX_TEXT_INPUT_BYTES,
+        "CLI input",
+    )?;
+    let typed = crate::axi_input::require_canonical_axi_text(&axi_text)?;
+    let digest = typed.digest().clone();
     let proof =
         axiograph_pathdb::axi_module_constraints::check_axi_constraints_ok_v1(typed.module())?;
 
     let cert = axiograph_pathdb::certificate::CertificateV2::axi_constraints_ok_v1(proof)
-        .with_anchor(axiograph_pathdb::certificate::AxiAnchorV1 {
-            axi_digest_v1: digest,
-        });
+        .with_anchor(axiograph_pathdb::certificate::AxiAnchorV1::new(digest));
 
     let json = serde_json::to_string_pretty(&cert)?;
     match out {
         Some(path) => {
-            fs::write(path, json)?;
+            crate::security::write_output_bounded(path, json, "CLI output")?;
             println!("wrote {}", path.display());
         }
         None => {
@@ -3730,38 +2285,58 @@ fn cmd_constraints_cert(input: &PathBuf, out: Option<&PathBuf>) -> Result<()> {
     Ok(())
 }
 
-fn is_pathdb_export_v1_module(m: &axiograph_dsl::schema_v1::SchemaV1Module) -> bool {
-    m.schemas
-        .iter()
-        .any(|s| s.name == axiograph_pathdb::axi_export::PATHDB_EXPORT_SCHEMA_NAME_V1)
-        && m.instances.iter().any(|i| {
-            i.schema == axiograph_pathdb::axi_export::PATHDB_EXPORT_SCHEMA_NAME_V1
-                && i.name == axiograph_pathdb::axi_export::PATHDB_EXPORT_INSTANCE_NAME_V1
-        })
+fn cmd_publish_materialization(dir: &Path, spec_path: &Path) -> Result<()> {
+    let bytes = crate::security::read_file_bounded(
+        spec_path,
+        crate::security::MAX_BINARY_INPUT_BYTES,
+        "materialization build spec",
+    )?;
+    let spec: axiograph_store::AxpdBuildSpec = crate::security::parse_json_bounded(
+        &bytes,
+        crate::security::MAX_JSON_INPUT_BYTES,
+        "CLI JSON input",
+    )
+    .with_context(|| format!("parse AxpdBuildSpec `{}`", spec_path.display()))?;
+    let store = axiograph_store::AxiStore::open(dir).context("open AxiStore")?;
+    let receipt = store
+        .publish_axpd(spec, &axiograph_store::AxpdLimits::default())
+        .context("publish authenticated SQLite materialization")?;
+    println!("{}", serde_json::to_string_pretty(&receipt)?);
+    Ok(())
 }
 
-pub(crate) fn load_pathdb_for_cli(input: &PathBuf) -> Result<axiograph_pathdb::PathDB> {
+fn cmd_show_materialization(dir: &PathBuf, materialization: &str) -> Result<()> {
+    let materialization_id: axiograph_kernel::MaterializationIdV2 = materialization
+        .parse()
+        .map_err(|error| anyhow!("invalid materialization id `{materialization}`: {error}"))?;
+    let store = axiograph_store::AxiStore::open(dir).context("open AxiStore")?;
+    let verified = store
+        .open_axpd(&materialization_id, &axiograph_store::AxpdLimits::default())
+        .context("verify authenticated SQLite materialization")?;
+    println!("{}", serde_json::to_string_pretty(verified.receipt())?);
+    Ok(())
+}
+
+pub(crate) fn load_pathdb_for_cli(input: &Path) -> Result<axiograph_pathdb::PathDB> {
     let ext = input.extension().and_then(|s| s.to_str()).unwrap_or("");
-    if ext.eq_ignore_ascii_case("axpd") {
-        let bytes = fs::read(input)?;
-        return Ok(axiograph_pathdb::PathDB::from_bytes(&bytes)?);
-    }
     if ext.eq_ignore_ascii_case("axi") {
-        let text = fs::read_to_string(input)?;
-        let m = axiograph_dsl::axi_v1::parse_axi_v1(&text)?;
-        if is_pathdb_export_v1_module(&m) {
-            return Ok(axiograph_pathdb::axi_export::import_pathdb_from_axi_v1_module(&m)?);
-        }
+        let text = crate::security::read_utf8_file_bounded(
+            input,
+            crate::security::MAX_TEXT_INPUT_BYTES,
+            "CLI input",
+        )?;
+        let module = crate::axi_input::require_canonical_axi_text(&text).map_err(|err| {
+            anyhow!(
+                "{err}; semantic inspection and certified-query commands accept exact reviewable `.axi` modules"
+            )
+        })?;
         let mut db = axiograph_pathdb::PathDB::new();
-        let _summary =
-            axiograph_pathdb::axi_module_import::import_axi_schema_v1_module_into_pathdb(
-                &mut db, &m,
-            )?;
+        let _summary = module.import_into_pathdb(&mut db)?;
         db.build_indexes();
         return Ok(db);
     }
     Err(anyhow!(
-        "unsupported input `{}` (expected .axpd or .axi)",
+        "unsupported input `{}` (expected exact canonical .axi)",
         input.display()
     ))
 }
@@ -3786,9 +2361,10 @@ fn cmd_viz_from_args(args: &VizArgs) -> Result<()> {
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn cmd_viz(
-    input: &PathBuf,
-    out: &PathBuf,
+    input: &Path,
+    out: &Path,
     format: &str,
     plane: &str,
     focus_id: &[u32],
@@ -3820,12 +2396,12 @@ fn cmd_viz(
     if !all {
         if focus.is_empty() {
             if let Some(name) = focus_name {
-                if let Some(id) = crate::viz::resolve_focus_by_name_and_type(&db, name, focus_type)? {
+                if let Some(id) = crate::viz::resolve_focus_by_name_and_type(&db, name, focus_type)?
+                {
                     focus.push(id);
                 } else {
                     return Err(anyhow!(
-                        "no entity found with name `{}` (tip: try `axiograph repl` + `find_by_type`/`q` to locate ids)",
-                        name
+                        "no entity found with name `{name}` (tip: try `axiograph repl` + `find_by_type`/`q` to locate ids)"
                     ));
                 }
             }
@@ -3859,7 +2435,7 @@ fn cmd_viz(
     if matches!(format, crate::viz::VizFormat::Html) {
         let json = crate::viz::render_json(&g)?;
         let out_dir = crate::viz::write_html_bundle(out, &rendered, Some(&json))?;
-        fs::write(out_dir.join("graph.json"), json)?;
+        crate::security::write_output_bounded(out_dir.join("graph.json"), json, "CLI output")?;
         println!(
             "wrote {} (nodes={} edges={} truncated={})",
             out_dir.display(),
@@ -3868,7 +2444,7 @@ fn cmd_viz(
             g.truncated
         );
     } else {
-        fs::write(out, rendered)?;
+        crate::security::write_output_bounded(out, rendered, "CLI output")?;
         println!(
             "wrote {} (nodes={} edges={} truncated={})",
             out.display(),
@@ -3876,6 +2452,17 @@ fn cmd_viz(
             g.edges.len(),
             g.truncated
         );
+    }
+    Ok(())
+}
+
+fn write_json_output<T: Serialize>(value: &T, out: Option<&PathBuf>) -> Result<()> {
+    let json = serde_json::to_string_pretty(value)?;
+    if let Some(path) = out {
+        crate::security::write_output_bounded(path, json, "CLI output")?;
+        println!("wrote {}", path.display());
+    } else {
+        println!("{json}");
     }
     Ok(())
 }
@@ -4239,7 +2826,7 @@ fn proposals_from_json_schema(
                 },
                 entity_id: field_id.clone(),
                 entity_type: "JsonField".to_string(),
-                name: format!("{}.{}", ty_name, field_name),
+                name: format!("{ty_name}.{field_name}"),
                 attributes: field_attrs,
                 description: None,
             });
@@ -4283,7 +2870,11 @@ fn proposals_from_json_schema(
                     meta: ProposalMetaV1 {
                         proposal_id: rel_id.clone(),
                         confidence: 0.75,
-                        evidence: evidence_for_field(chunks, evidence_locator.as_ref(), &field_name),
+                        evidence: evidence_for_field(
+                            chunks,
+                            evidence_locator.as_ref(),
+                            &field_name,
+                        ),
                         public_rationale: "Heuristic: field type matches another inferred object."
                             .to_string(),
                         metadata: HashMap::new(),
@@ -4302,14 +2893,18 @@ fn proposals_from_json_schema(
     out
 }
 
-fn cmd_sql(input: &PathBuf, out: &PathBuf, chunks_path: Option<&PathBuf>) -> Result<()> {
+fn cmd_sql(input: &Path, out: &Path, chunks_path: Option<&Path>) -> Result<()> {
     println!(
         "{} SQL schema {}",
         "Ingesting".green().bold(),
         input.display()
     );
 
-    let text = fs::read_to_string(input)?;
+    let text = crate::security::read_utf8_file_bounded(
+        input,
+        crate::security::MAX_TEXT_INPUT_BYTES,
+        "CLI input",
+    )?;
     let sql_schema = axiograph_ingest_sql::parse_sql_ddl(&text)?;
     let generated_at = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -4318,13 +2913,15 @@ fn cmd_sql(input: &PathBuf, out: &PathBuf, chunks_path: Option<&PathBuf>) -> Res
         .to_string();
 
     // Also emit DocChunks for RAG grounding (default: alongside the proposals output).
-    let chunks_out = chunks_path
-        .cloned()
-        .unwrap_or_else(|| out.parent().unwrap_or(std::path::Path::new(".")).join("chunks.json"));
+    let chunks_out = chunks_path.map(Path::to_path_buf).unwrap_or_else(|| {
+        out.parent()
+            .unwrap_or(std::path::Path::new("."))
+            .join("chunks.json")
+    });
     fs::create_dir_all(chunks_out.parent().unwrap_or(std::path::Path::new(".")))?;
 
     let locator = input.to_string_lossy().to_string();
-    let doc_digest = axiograph_dsl::digest::fnv1a64_digest_bytes(locator.as_bytes());
+    let doc_digest = axiograph_kernel::object_blob_digest_v2(locator.as_bytes());
     let mut chunks: Vec<axiograph_ingest_docs::Chunk> = Vec::new();
     for (i, stmt) in text.split(';').enumerate() {
         let stmt = stmt.trim();
@@ -4344,7 +2941,15 @@ fn cmd_sql(input: &PathBuf, out: &PathBuf, chunks_path: Option<&PathBuf>) -> Res
             metadata,
         });
     }
-    fs::write(&chunks_out, serde_json::to_string_pretty(&chunks)?)?;
+    crate::security::write_output_bounded(
+        &chunks_out,
+        axiograph_ingest_docs::chunks_to_json_for_chunks(
+            "sql_ingest",
+            locator.clone(),
+            chunks.clone(),
+        )?,
+        "CLI output",
+    )?;
     println!(
         "  {} {} (chunks={})",
         "→".cyan(),
@@ -4366,7 +2971,7 @@ fn cmd_sql(input: &PathBuf, out: &PathBuf, chunks_path: Option<&PathBuf>) -> Res
 
     let json = serde_json::to_string_pretty(&file)?;
     fs::create_dir_all(out.parent().unwrap_or(std::path::Path::new(".")))?;
-    fs::write(out, &json)?;
+    crate::security::write_output_bounded(out, &json, "CLI output")?;
     println!("  {} {}", "→".cyan(), out.display());
     println!(
         "  {} {} tables, {} foreign keys",
@@ -4379,10 +2984,10 @@ fn cmd_sql(input: &PathBuf, out: &PathBuf, chunks_path: Option<&PathBuf>) -> Res
 }
 
 fn cmd_doc(
-    input: &PathBuf,
-    out: &PathBuf,
-    chunks_path: Option<&PathBuf>,
-    facts_path: Option<&PathBuf>,
+    input: &Path,
+    out: &Path,
+    chunks_path: Option<&Path>,
+    facts_path: Option<&Path>,
     machining: bool,
     domain: &str,
 ) -> Result<()> {
@@ -4392,13 +2997,17 @@ fn cmd_doc(
         input.display()
     );
 
-    let text = fs::read_to_string(input)?;
+    let text = crate::security::read_utf8_file_bounded(
+        input,
+        crate::security::MAX_TEXT_INPUT_BYTES,
+        "CLI input",
+    )?;
     let stem = input.file_stem().unwrap_or_default().to_string_lossy();
 
     let domain = if machining { "machining" } else { domain };
 
     // Full knowledge extraction with probabilistic facts
-    let result = axiograph_ingest_docs::extract_knowledge_full(&text, &stem, domain);
+    let result = axiograph_ingest_docs::extract_knowledge_full(&text, &stem, domain)?;
     let generated_at = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -4420,21 +3029,23 @@ fn cmd_doc(
         proposals,
     };
     let json = serde_json::to_string_pretty(&file)?;
-    fs::write(out, &json)?;
+    crate::security::write_output_bounded(out, &json, "CLI output")?;
     println!("  {} {}", "→".cyan(), out.display());
     println!("  {} {} facts extracted", "→".yellow(), result.facts.len());
 
-    let chunks_out = chunks_path
-        .cloned()
-        .unwrap_or_else(|| out.parent().unwrap_or(std::path::Path::new(".")).join("chunks.json"));
+    let chunks_out = chunks_path.map(Path::to_path_buf).unwrap_or_else(|| {
+        out.parent()
+            .unwrap_or(std::path::Path::new("."))
+            .join("chunks.json")
+    });
     fs::create_dir_all(chunks_out.parent().unwrap_or(std::path::Path::new(".")))?;
     let chunks_json = axiograph_ingest_docs::chunks_to_json(&result.extraction)?;
-    fs::write(&chunks_out, &chunks_json)?;
+    crate::security::write_output_bounded(&chunks_out, &chunks_json, "CLI output")?;
     println!("  {} {}", "→".cyan(), chunks_out.display());
 
     if let Some(facts_out) = facts_path {
         let facts_json = serde_json::to_string_pretty(&result.facts)?;
-        fs::write(facts_out, &facts_json)?;
+        crate::security::write_output_bounded(facts_out, &facts_json, "CLI output")?;
         println!("  {} {}", "→".cyan(), facts_out.display());
     }
 
@@ -4442,10 +3053,10 @@ fn cmd_doc(
 }
 
 fn cmd_conversation(
-    input: &PathBuf,
-    out: &PathBuf,
-    chunks_path: Option<&PathBuf>,
-    facts_path: Option<&PathBuf>,
+    input: &Path,
+    out: &Path,
+    chunks_path: Option<&Path>,
+    facts_path: Option<&Path>,
     format: &str,
 ) -> Result<()> {
     println!(
@@ -4454,10 +3065,14 @@ fn cmd_conversation(
         input.display()
     );
 
-    let text = fs::read_to_string(input)?;
+    let text = crate::security::read_utf8_file_bounded(
+        input,
+        crate::security::MAX_TEXT_INPUT_BYTES,
+        "CLI input",
+    )?;
     let stem = input.file_stem().unwrap_or_default().to_string_lossy();
 
-    let result = axiograph_ingest_docs::extract_knowledge_from_conversation(&text, &stem, format);
+    let result = axiograph_ingest_docs::extract_knowledge_from_conversation(&text, &stem, format)?;
     let generated_at = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -4479,7 +3094,7 @@ fn cmd_conversation(
         proposals,
     };
     let json = serde_json::to_string_pretty(&file)?;
-    fs::write(out, &json)?;
+    crate::security::write_output_bounded(out, &json, "CLI output")?;
     println!("  {} {}", "→".cyan(), out.display());
     println!(
         "  {} {} turns, {} facts",
@@ -4488,17 +3103,19 @@ fn cmd_conversation(
         result.facts.len()
     );
 
-    let chunks_out = chunks_path
-        .cloned()
-        .unwrap_or_else(|| out.parent().unwrap_or(std::path::Path::new(".")).join("chunks.json"));
+    let chunks_out = chunks_path.map(Path::to_path_buf).unwrap_or_else(|| {
+        out.parent()
+            .unwrap_or(std::path::Path::new("."))
+            .join("chunks.json")
+    });
     fs::create_dir_all(chunks_out.parent().unwrap_or(std::path::Path::new(".")))?;
     let chunks_json = axiograph_ingest_docs::chunks_to_json(&result.extraction)?;
-    fs::write(&chunks_out, &chunks_json)?;
+    crate::security::write_output_bounded(&chunks_out, &chunks_json, "CLI output")?;
     println!("  {} {}", "→".cyan(), chunks_out.display());
 
     if let Some(facts_out) = facts_path {
         let facts_json = serde_json::to_string_pretty(&result.facts)?;
-        fs::write(facts_out, &facts_json)?;
+        crate::security::write_output_bounded(facts_out, &facts_json, "CLI output")?;
         println!("  {} {}", "→".cyan(), facts_out.display());
     }
 
@@ -4506,11 +3123,11 @@ fn cmd_conversation(
 }
 
 fn cmd_confluence(
-    input: &PathBuf,
-    out: &PathBuf,
+    input: &Path,
+    out: &Path,
     space: &str,
-    chunks_path: Option<&PathBuf>,
-    facts_path: Option<&PathBuf>,
+    chunks_path: Option<&Path>,
+    facts_path: Option<&Path>,
 ) -> Result<()> {
     println!(
         "{} Confluence page {}",
@@ -4518,7 +3135,11 @@ fn cmd_confluence(
         input.display()
     );
 
-    let html = fs::read_to_string(input)?;
+    let html = crate::security::read_utf8_file_bounded(
+        input,
+        crate::security::MAX_TEXT_INPUT_BYTES,
+        "CLI input",
+    )?;
     let page_id = input.file_stem().unwrap_or_default().to_string_lossy();
 
     let result = axiograph_ingest_docs::extract_knowledge_from_confluence(&html, &page_id, space)?;
@@ -4543,7 +3164,7 @@ fn cmd_confluence(
         proposals,
     };
     let json = serde_json::to_string_pretty(&file)?;
-    fs::write(out, &json)?;
+    crate::security::write_output_bounded(out, &json, "CLI output")?;
     println!("  {} {}", "→".cyan(), out.display());
     println!(
         "  {} {} sections, {} facts",
@@ -4552,28 +3173,38 @@ fn cmd_confluence(
         result.facts.len()
     );
 
-    let chunks_out = chunks_path
-        .cloned()
-        .unwrap_or_else(|| out.parent().unwrap_or(std::path::Path::new(".")).join("chunks.json"));
+    let chunks_out = chunks_path.map(Path::to_path_buf).unwrap_or_else(|| {
+        out.parent()
+            .unwrap_or(std::path::Path::new("."))
+            .join("chunks.json")
+    });
     fs::create_dir_all(chunks_out.parent().unwrap_or(std::path::Path::new(".")))?;
     let chunks_json = axiograph_ingest_docs::chunks_to_json(&result.extraction)?;
-    fs::write(&chunks_out, &chunks_json)?;
+    crate::security::write_output_bounded(&chunks_out, &chunks_json, "CLI output")?;
     println!("  {} {}", "→".cyan(), chunks_out.display());
 
     if let Some(facts_out) = facts_path {
         let facts_json = serde_json::to_string_pretty(&result.facts)?;
-        fs::write(facts_out, &facts_json)?;
+        crate::security::write_output_bounded(facts_out, &facts_json, "CLI output")?;
         println!("  {} {}", "→".cyan(), facts_out.display());
     }
 
     Ok(())
 }
 
-fn cmd_json(input: &PathBuf, out: &PathBuf, chunks_path: Option<&PathBuf>) -> Result<()> {
+fn cmd_json(input: &Path, out: &Path, chunks_path: Option<&Path>) -> Result<()> {
     println!("{} JSON {}", "Ingesting".green().bold(), input.display());
 
-    let text = fs::read_to_string(input)?;
-    let value: serde_json::Value = serde_json::from_str(&text)?;
+    let text = crate::security::read_utf8_file_bounded(
+        input,
+        crate::security::MAX_TEXT_INPUT_BYTES,
+        "CLI input",
+    )?;
+    let value: serde_json::Value = crate::security::parse_json_bounded(
+        text.as_bytes(),
+        crate::security::MAX_JSON_INPUT_BYTES,
+        "CLI JSON input",
+    )?;
     let schema = axiograph_ingest_json::infer_schema(&value, "Root");
     let generated_at = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -4582,9 +3213,11 @@ fn cmd_json(input: &PathBuf, out: &PathBuf, chunks_path: Option<&PathBuf>) -> Re
         .to_string();
 
     // Also emit DocChunks for RAG grounding (default: alongside the proposals output).
-    let chunks_out = chunks_path
-        .cloned()
-        .unwrap_or_else(|| out.parent().unwrap_or(std::path::Path::new(".")).join("chunks.json"));
+    let chunks_out = chunks_path.map(Path::to_path_buf).unwrap_or_else(|| {
+        out.parent()
+            .unwrap_or(std::path::Path::new("."))
+            .join("chunks.json")
+    });
     fs::create_dir_all(chunks_out.parent().unwrap_or(std::path::Path::new(".")))?;
 
     fn chunk_by_lines(text: &str, max_chars: usize) -> Vec<String> {
@@ -4608,7 +3241,7 @@ fn cmd_json(input: &PathBuf, out: &PathBuf, chunks_path: Option<&PathBuf>) -> Re
     }
 
     let locator = input.to_string_lossy().to_string();
-    let doc_digest = axiograph_dsl::digest::fnv1a64_digest_bytes(locator.as_bytes());
+    let doc_digest = axiograph_kernel::object_blob_digest_v2(locator.as_bytes());
     let pretty = serde_json::to_string_pretty(&value).unwrap_or_else(|_| text.clone());
     let parts = chunk_by_lines(&pretty, 2_500);
     let mut chunks: Vec<axiograph_ingest_docs::Chunk> = Vec::new();
@@ -4626,7 +3259,15 @@ fn cmd_json(input: &PathBuf, out: &PathBuf, chunks_path: Option<&PathBuf>) -> Re
             metadata,
         });
     }
-    fs::write(&chunks_out, serde_json::to_string_pretty(&chunks)?)?;
+    crate::security::write_output_bounded(
+        &chunks_out,
+        axiograph_ingest_docs::chunks_to_json_for_chunks(
+            "json_ingest",
+            locator.clone(),
+            chunks.clone(),
+        )?,
+        "CLI output",
+    )?;
     println!(
         "  {} {} (chunks={})",
         "→".cyan(),
@@ -4647,33 +3288,37 @@ fn cmd_json(input: &PathBuf, out: &PathBuf, chunks_path: Option<&PathBuf>) -> Re
     };
     let json = serde_json::to_string_pretty(&file)?;
     fs::create_dir_all(out.parent().unwrap_or(std::path::Path::new(".")))?;
-    fs::write(out, &json)?;
+    crate::security::write_output_bounded(out, &json, "CLI output")?;
     println!("  {} {}", "→".cyan(), out.display());
 
     Ok(())
 }
 
-fn cmd_readings(
-    input: &PathBuf,
-    out: &PathBuf,
-    chunks_path: Option<&PathBuf>,
-    format: &str,
-) -> Result<()> {
+fn cmd_readings(input: &Path, out: &Path, chunks_path: Option<&Path>, format: &str) -> Result<()> {
     println!(
         "{} readings {}",
         "Ingesting".green().bold(),
         input.display()
     );
 
-    let text = fs::read_to_string(input)?;
+    let text = crate::security::read_utf8_file_bounded(
+        input,
+        crate::security::MAX_TEXT_INPUT_BYTES,
+        "CLI input",
+    )?;
     let stem = input.file_stem().unwrap_or_default().to_string_lossy();
 
     let readings = match format {
-        "bibtex" => axiograph_ingest_docs::parse_bibtex(&text),
-        "markdown" | _ => axiograph_ingest_docs::parse_reading_list(&text)
+        "bibtex" => axiograph_ingest_docs::parse_bibtex(&text)?,
+        "markdown" => axiograph_ingest_docs::parse_reading_list(&text)?
             .into_iter()
             .map(|r| r.bib)
             .collect(),
+        other => {
+            return Err(anyhow!(
+                "unsupported reading format `{other}` (expected bibtex|markdown)"
+            ))
+        }
     };
 
     println!("  {} {} references found", "→".yellow(), readings.len());
@@ -4692,12 +3337,14 @@ fn cmd_readings(
         &stem,
     );
 
-    let chunks_out = chunks_path
-        .cloned()
-        .unwrap_or_else(|| out.parent().unwrap_or(std::path::Path::new(".")).join("chunks.json"));
+    let chunks_out = chunks_path.map(Path::to_path_buf).unwrap_or_else(|| {
+        out.parent()
+            .unwrap_or(std::path::Path::new("."))
+            .join("chunks.json")
+    });
     fs::create_dir_all(chunks_out.parent().unwrap_or(std::path::Path::new(".")))?;
     let chunks_json = axiograph_ingest_docs::chunks_to_json(&extraction)?;
-    fs::write(&chunks_out, &chunks_json)?;
+    crate::security::write_output_bounded(&chunks_out, &chunks_json, "CLI output")?;
     println!("  {} {}", "→".cyan(), chunks_out.display());
 
     let generated_at = SystemTime::now()
@@ -4708,7 +3355,7 @@ fn cmd_readings(
     // Readings ingestion currently produces chunks; treat each reading as a claim-like entity.
     let mut proposals = Vec::new();
     for (idx, r) in readings.iter().enumerate() {
-        let id = format!("reading::{}", idx);
+        let id = format!("reading::{idx}");
         let title = if r.title.trim().is_empty() {
             "Untitled".to_string()
         } else {
@@ -4754,193 +3401,30 @@ fn cmd_readings(
         proposals,
     };
     let json = serde_json::to_string_pretty(&file)?;
-    fs::write(out, &json)?;
+    crate::security::write_output_bounded(out, &json, "CLI output")?;
     println!("  {} {}", "→".cyan(), out.display());
 
     Ok(())
 }
 
-fn cmd_pathdb_export_axi(input: &PathBuf, out: &PathBuf) -> Result<()> {
-    println!(
-        "{} {}",
-        "Exporting PathDB (.axpd → .axi)".green().bold(),
-        input.display()
-    );
-
-    let bytes = fs::read(input)?;
-    let db = axiograph_pathdb::PathDB::from_bytes(&bytes)?;
-    let axi = axiograph_pathdb::axi_export::export_pathdb_to_axi_v1(&db)?;
-    fs::write(out, &axi)?;
-
-    println!("  {} {}", "→".cyan(), out.display());
-    Ok(())
-}
-
-fn cmd_pathdb_export_module(input: &PathBuf, out: &PathBuf, module: Option<&str>) -> Result<()> {
-    println!(
-        "{} {}",
-        "Exporting canonical module from".green().bold(),
-        input.display()
-    );
-
-    let bytes = fs::read(input)?;
-    let db = axiograph_pathdb::PathDB::from_bytes(&bytes)?;
-
-    let module_name = match module {
-        Some(m) => m.to_string(),
-        None => infer_single_meta_module_name(&db)?,
-    };
-
-    let axi = axiograph_pathdb::axi_module_export::export_axi_schema_v1_module_from_pathdb(
-        &db,
-        &module_name,
-    )?;
-    fs::write(out, axi)?;
-
-    println!(
-        "  {} module={} {} {}",
-        "→".cyan(),
-        module_name.cyan(),
-        "→".cyan(),
-        out.display()
-    );
-    Ok(())
-}
-
-fn cmd_pathdb_import_axi(input: &PathBuf, out: &PathBuf) -> Result<()> {
-    println!(
-        "{} {}",
-        "Importing PathDB (.axi → .axpd)".green().bold(),
-        input.display()
-    );
-
-    let text = fs::read_to_string(input)?;
-    let m = axiograph_dsl::axi_v1::parse_axi_v1(&text)?;
-
-    let is_snapshot = m
-        .schemas
-        .iter()
-        .any(|s| s.name == axiograph_pathdb::axi_export::PATHDB_EXPORT_SCHEMA_NAME_V1)
-        && m.instances.iter().any(|i| {
-            i.schema == axiograph_pathdb::axi_export::PATHDB_EXPORT_SCHEMA_NAME_V1
-                && i.name == axiograph_pathdb::axi_export::PATHDB_EXPORT_INSTANCE_NAME_V1
-        });
-
-    let mut db = if is_snapshot {
-        axiograph_pathdb::axi_export::import_pathdb_from_axi_v1_module(&m)?
-    } else {
-        let mut db = axiograph_pathdb::PathDB::new();
-        let summary = axiograph_pathdb::axi_module_import::import_axi_schema_v1_module_into_pathdb(
-            &mut db, &m,
-        )?;
-        println!(
-            "  {} imported module={} (meta_entities={} meta_relations={} instances={} entities={} upgraded_types={} tuple_entities={} relations={} derived_edges={})",
-            "→".cyan(),
-            m.module_name,
-            summary.meta_entities_added,
-            summary.meta_relations_added,
-            summary.instances_imported,
-            summary.entities_added,
-            summary.entity_type_upgrades,
-            summary.tuple_entities_added,
-            summary.relations_added,
-            summary.derived_edges_added
-        );
-        db
-    };
-
-    // Grounding always has evidence: embed the `.axi` module text as an untrusted
-    // DocChunk so LLM/UIs can cite and open it even when no external docs exist.
-    let digest = axiograph_dsl::digest::axi_digest_v1(&text);
-    let module_chunk = crate::doc_chunks::chunk_from_axi_module_text(&m.module_name, &digest, &text);
-    let _ = crate::doc_chunks::import_chunks_into_pathdb(&mut db, &[module_chunk]);
-
-    db.build_indexes();
-    let bytes = db.to_bytes()?;
-    fs::write(out, bytes)?;
-
-    println!("  {} {}", "→".cyan(), out.display());
-    Ok(())
-}
-
-fn cmd_pathdb_import_chunks(input: &PathBuf, chunks: &PathBuf, out: &PathBuf) -> Result<()> {
-    println!(
-        "{} {}",
-        "Importing chunks into PathDB (.axpd + chunks.json)"
-            .green()
-            .bold(),
-        input.display()
-    );
-
-    let bytes = fs::read(input)?;
-    let mut db = axiograph_pathdb::PathDB::from_bytes(&bytes)?;
-
-    let chunks_text = fs::read_to_string(chunks)?;
-    let chunks: Vec<axiograph_ingest_docs::Chunk> = serde_json::from_str(&chunks_text)?;
-
-    let summary = crate::doc_chunks::import_chunks_into_pathdb(&mut db, &chunks)?;
-    db.build_indexes();
-
-    let bytes = db.to_bytes()?;
-    fs::write(out, bytes)?;
-
-    println!(
-        "  {} chunks_total={} chunks_added={} documents_added={} links_added={} missing_targets={}",
-        "→".cyan(),
-        summary.chunks_total,
-        summary.chunks_added,
-        summary.documents_added,
-        summary.links_added,
-        summary.links_missing_target
-    );
-    println!("  {} {}", "→".cyan(), out.display());
-    Ok(())
-}
-
-fn infer_single_meta_module_name(db: &axiograph_pathdb::PathDB) -> Result<String> {
-    let Some(mods) = db.find_by_type(axiograph_pathdb::axi_meta::META_TYPE_MODULE) else {
-        return Err(anyhow::anyhow!(
-            "no `.axi` meta-plane module found (import a canonical `.axi` module first, or pass `--module <name>`)"
-        ));
-    };
-
-    let mut names: Vec<String> = Vec::new();
-    for id in mods.iter() {
-        let Some(view) = db.get_entity(id) else {
-            continue;
-        };
-        if let Some(name) = view.attrs.get("name") {
-            names.push(name.clone());
-        }
-    }
-    names.sort();
-    names.dedup();
-
-    if names.is_empty() {
-        return Err(anyhow::anyhow!(
-            "no `.axi` meta-plane modules have a `name` attribute"
-        ));
-    }
-    if names.len() != 1 {
-        return Err(anyhow::anyhow!(
-            "multiple `.axi` modules imported: {:?} (pass `--module <name>`)",
-            names
-        ));
-    }
-    Ok(names[0].clone())
-}
-
-fn cmd_validate(input: &PathBuf) -> Result<()> {
+fn cmd_validate(input: &Path) -> Result<()> {
     println!("{} {}", "Validating".green().bold(), input.display());
 
-    let text = fs::read_to_string(input)?;
-    let m = axiograph_dsl::axi_v1::parse_axi_v1(&text)?;
+    let repository_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..");
+    let package = crate::axi_input::compile_canonical_axi_path(input, &[repository_root])?;
+    let root_source = package.root_source();
+    let m = root_source.parsed();
+    let snapshot = package.snapshot();
 
     println!("  Dialect: {}", "axi_v1 (schema/theory/instance)".cyan());
     println!("  Module: {}", m.module_name.cyan());
-    println!("  Schemas: {}", m.schemas.len());
-    println!("  Theories: {}", m.theories.len());
-    println!("  Instances: {}", m.instances.len());
+    println!(
+        "  Import closure: {} module(s)",
+        snapshot.ir().ordered_module_closure().len()
+    );
+    println!("  Schemas: {}", snapshot.ir().schemas().len());
+    println!("  Theories: {}", snapshot.ir().theories().len());
+    println!("  Instances: {}", snapshot.ir().instances().len());
 
     for schema in &m.schemas {
         println!(
@@ -4951,15 +3435,762 @@ fn cmd_validate(input: &PathBuf) -> Result<()> {
         );
     }
 
+    if !snapshot.ir().theories().is_empty() {
+        let theory_report = crate::runtime_theory_check::runtime_theory_check_reports_from_package(
+            &package,
+            None,
+            axiograph_pathdb::RuntimeTheoryClosureTierV1::FiniteFragment,
+            axiograph_pathdb::default_world_assumption_v1(),
+            axiograph_pathdb::default_evidence_policy_v1(),
+        )?;
+        if theory_report.blocking_errors > 0 {
+            return Err(anyhow!(
+                "runtime theory check found {} blocking error(s)",
+                theory_report.blocking_errors
+            ));
+        }
+        println!(
+            "  Runtime theory: {} report(s), {} blocking error(s)",
+            theory_report.reports.len(),
+            theory_report.blocking_errors
+        );
+    }
+
     println!("{}", "Valid.".green());
     Ok(())
 }
 
+fn cmd_check_theory(args: &CheckTheoryArgs) -> Result<()> {
+    let repository_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..");
+    let package = crate::axi_input::compile_canonical_axi_path(&args.input, &[repository_root])?;
+    let closure_tier =
+        crate::runtime_theory_check::parse_runtime_theory_closure_tier(&args.closure_tier)?;
+    let (world, evidence_policy) = runtime_theory_cli_assumptions(
+        args.world_id.as_deref(),
+        args.finite_world,
+        &args.included_refs,
+        &args.included_worlds,
+        &args.included_slices,
+        &args.included_imports,
+        &args.undeclared_imports,
+        args.evidence_threshold_ppm,
+        &args.evidence_semantics,
+        args.weighted_evidence,
+        &args.evidence_weights,
+    )?;
+    let report = crate::runtime_theory_check::runtime_theory_check_reports_from_package(
+        &package,
+        args.theory.as_deref(),
+        closure_tier,
+        world,
+        evidence_policy,
+    )?;
+
+    if args.json || args.out.is_some() {
+        write_json_output(&report, args.out.as_ref())?;
+    } else {
+        println!(
+            "{}",
+            crate::runtime_theory_check::runtime_theory_check_human_summary(&report)
+        );
+    }
+
+    if report.blocking_errors > 0 {
+        return Err(anyhow!(
+            "runtime theory check found {} blocking error(s)",
+            report.blocking_errors
+        ));
+    }
+
+    Ok(())
+}
+
+#[derive(Debug, Serialize)]
+struct FiniteQueryVerificationScopeV1 {
+    revision_digest_v2: axiograph_kernel::RevisionDigestV2,
+    accepted_snapshot_id: axiograph_kernel::SnapshotIdV2,
+    kernel_ir_digest: axiograph_kernel::ObjectBlobIdV2,
+    prepared_query_digest_v1: axiograph_kernel::QueryIdV2,
+    answer_digest_v1: axiograph_kernel::AnswerIdV2,
+    certificate_digest_v2: axiograph_kernel::CertificateIdV2,
+    claim_kind: String,
+}
+
+#[derive(Debug, Serialize)]
+struct FiniteQueryVerificationCoverageV1 {
+    selected_row_count: usize,
+    row_witness_count: usize,
+    runtime_truncated: bool,
+    query_shape_certifiable: bool,
+    certificate_emitted: bool,
+    accepted_receipt_bound_to_exact_answer: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct FiniteQueryVerificationReportV1 {
+    version: String,
+    decision: String,
+    scope: FiniteQueryVerificationScopeV1,
+    coverage: FiniteQueryVerificationCoverageV1,
+    finite_theory_gate: axiograph_kernel::FiniteTheoryGateReceiptIr,
+    prepared_query: crate::query_ir::PreparedQueryMetadataV2,
+    certificate: axiograph_pathdb::CertificateV3,
+    certificate_text: String,
+    verifier_receipt_v2: crate::verifier_bridge::VerifierReceiptV2,
+    verified_rows: Vec<axiograph_pathdb::certificate::StableSelectedRowV1>,
+    residual_obligations: Vec<String>,
+    non_claims: Vec<String>,
+}
+
+fn cmd_check_finite_query(args: &CheckFiniteQueryArgs) -> Result<()> {
+    let repository_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..");
+    let package = crate::axi_input::compile_canonical_axi_path(
+        &args.input,
+        std::slice::from_ref(&repository_root),
+    )?;
+    let exact_axi = package.root_source().exact_text().to_string();
+    let revision_digest_v2 = axiograph_kernel::RevisionDigestV2::from_accepted_text(&exact_axi);
+    let sources = package.ordered_sources();
+    let kernel = axiograph_pathdb::derive_runtime_package_index(package.snapshot(), &sources)
+        .map_err(|error| anyhow!("derive runtime package index: {error}"))?;
+    let finite_theory_gate = package
+        .snapshot()
+        .require_finite_theory_gate(axiograph_kernel::FiniteTheoryGateConsumerIr::Query)?;
+
+    let mut db = axiograph_pathdb::PathDB::new();
+    for source in &sources {
+        let module = crate::axi_input::require_canonical_axi_text(source.exact_text())?;
+        module.import_into_pathdb(&mut db)?;
+    }
+    db.build_indexes();
+    let meta = axiograph_pathdb::axi_semantics::MetaPlaneIndex::from_db(&db).ok();
+    let query_bytes = crate::security::read_file_bounded(
+        &args.query,
+        crate::security::MAX_JSON_INPUT_BYTES,
+        "finite query JSON",
+    )?;
+    let query_ir: crate::query_ir::QueryIrV1 = crate::security::parse_json_bounded(
+        &query_bytes,
+        crate::security::MAX_JSON_INPUT_BYTES,
+        "finite query JSON",
+    )?;
+    let mut prepared = query_ir.compile_with_meta(&db, meta.as_ref())?;
+    if !prepared.certifiability().is_certifiable() {
+        return Err(anyhow!(
+            "finite-query verification requires a fully certifiable query shape"
+        ));
+    }
+    let prepared_query = prepared.metadata_v2_with_meta_and_kernel(meta.as_ref(), &kernel)?;
+    let validated = prepared.execute_answer(&db, meta.as_ref())?;
+    let emitted = prepared.certify_answer_with_anchors(
+        validated,
+        &db,
+        meta.as_ref(),
+        revision_digest_v2.clone(),
+    )?;
+    let prepared_digest = emitted
+        .prepared_query_digest_v1()
+        .cloned()
+        .ok_or_else(|| anyhow!("certifiable query omitted its prepared-query digest"))?;
+    let answer_digest = emitted.answer_digest_v1().clone();
+    let certificate_digest = emitted.certificate_digest_v2().clone();
+    let certificate = emitted.certificate().clone();
+    let certificate_text = emitted.certificate_text().to_string();
+    let row_witness_count = certificate
+        .proof
+        .rows
+        .iter()
+        .map(|row| row.witnesses.len())
+        .sum();
+    let verifier_receipt_v2 = crate::verifier_bridge::verify_certificate_with_lean(
+        &crate::verifier_bridge::CertVerifyConfig {
+            verifier_bin: Some(args.verify_bin.clone()),
+            timeout: Some(Duration::from_secs(args.verify_timeout_secs)),
+            approved_checker_sha256: Some(args.verify_sha256.clone()),
+            approved_checker_build_id: Some(args.verify_build_id.clone()),
+        },
+        &exact_axi,
+        emitted.certificate_text(),
+        &prepared_digest,
+        &answer_digest,
+    )?;
+    if !verifier_receipt_v2.accepted() {
+        return Err(anyhow!(
+            "trusted finite-query checker rejected the exact answer"
+        ));
+    }
+    let verified = emitted.into_lean_verified(verifier_receipt_v2.clone())?;
+    let verified_rows = verified.selected_rows_v1().to_vec();
+    let report = FiniteQueryVerificationReportV1 {
+        version: "finite_query_verification_report_v1".to_string(),
+        decision: "accepted".to_string(),
+        scope: FiniteQueryVerificationScopeV1 {
+            revision_digest_v2,
+            accepted_snapshot_id: package.snapshot().ir().accepted_snapshot_id().clone(),
+            kernel_ir_digest: package.snapshot().ir().ir_digest().clone(),
+            prepared_query_digest_v1: prepared_digest,
+            answer_digest_v1: answer_digest,
+            certificate_digest_v2: certificate_digest,
+            claim_kind: "finite_exact_complete".to_string(),
+        },
+        coverage: FiniteQueryVerificationCoverageV1 {
+            selected_row_count: verified_rows.len(),
+            row_witness_count,
+            runtime_truncated: verified.runtime_truncated(),
+            query_shape_certifiable: true,
+            certificate_emitted: true,
+            accepted_receipt_bound_to_exact_answer: true,
+        },
+        finite_theory_gate,
+        prepared_query,
+        certificate,
+        certificate_text,
+        verifier_receipt_v2,
+        verified_rows,
+        residual_obligations: Vec::new(),
+        non_claims: vec![
+            "exact completeness is limited to the declared bounded finite query denotation"
+                .to_string(),
+            "the query receipt does not establish ontology closure, evidence exhaustiveness, or backend completeness"
+                .to_string(),
+            "the attached finite-theory gate is Rust replay evidence; only the query_result_v4 receipt is accepted by VerifyMain"
+                .to_string(),
+            "non-identity dependent transport is outside this query certificate".to_string(),
+        ],
+    };
+    write_json_output(&report, args.out.as_ref())
+}
+
+fn cmd_check_software_coverage(args: &CheckSoftwareCoverageArgs) -> Result<()> {
+    let db = load_pathdb_for_cli(&args.input)?;
+    let overlay = load_tooling_overlay(&args.overlay)?;
+    let mut request = load_behavior_case_request(&args.behavior_case)?;
+    attach_behavior_case_cq_files(&mut request, &args.cq_files)?;
+    request.overlay = Some(overlay.clone());
+    request.codegen = behavior_codegen_request_from_overlay(&overlay)?;
+    let behavior_report =
+        crate::behavior_case::build_behavior_case_report_from_request(&db, None, None, request)?;
+    let behavior_report_json = serde_json::to_value(&behavior_report)?;
+    let behavior_report_view =
+        axiograph_tooling_overlays::behavior_case_coverage_view_from_value(&behavior_report_json)?;
+    let report = axiograph_tooling_overlays::continuous_coverage_report_from_behavior_report(
+        &behavior_report_view,
+        &overlay,
+        &args.repo_root,
+    );
+    write_json_output(&report, args.out.as_ref())?;
+    if !report.pass {
+        return Err(anyhow!("software coverage check failed"));
+    }
+    Ok(())
+}
+
+fn cmd_authoring(command: AuthoringCommands) -> Result<()> {
+    match command {
+        AuthoringCommands::Run {
+            suite,
+            example,
+            profile,
+            repo_root,
+            out_dir,
+            out,
+            fail_on_blocking,
+        } => {
+            let report =
+                cmd_authoring_run_suite(&suite, &example, &profile, &repo_root, out_dir.as_ref())?;
+            let pass = report
+                .get("pass")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false);
+            write_json_output(&report, out.as_ref())?;
+            if fail_on_blocking && !pass {
+                return Err(anyhow!(
+                    "authoring flow `{example}` failed under profile `{profile}`"
+                ));
+            }
+            Ok(())
+        }
+        AuthoringCommands::CodegenPlan { overlay, out } => {
+            let overlay = load_tooling_overlay(&overlay)?;
+            let report = axiograph_tooling_overlays::codegen_plan_report(&overlay);
+            write_json_output(&report, out.as_ref())
+        }
+        AuthoringCommands::Workspace {
+            workspace,
+            request,
+            out,
+        } => {
+            let service = crate::authoring_workspace::AuthoringWorkspaceService::new(&workspace)?;
+            let request = crate::authoring_workspace::read_authoring_request(&request)?;
+            let report = service.execute(request)?;
+            write_json_output(&report, out.as_ref())
+        }
+        AuthoringCommands::MaterializeSkeletons {
+            behavior_report,
+            out_dir,
+            language,
+            overwrite,
+            out,
+        } => {
+            let report_json = read_json_file(&behavior_report)?;
+            let report = axiograph_software_authoring::materialize_skeletons_from_report(
+                &report_json,
+                &behavior_report,
+                &axiograph_software_authoring::MaterializeSkeletonsOptions {
+                    out_dir,
+                    language,
+                    overwrite,
+                },
+            )?;
+            write_json_output(&report, out.as_ref())
+        }
+        AuthoringCommands::ContinuousCheck {
+            behavior_report,
+            repo_root,
+            require_codegen,
+            strict_coverage,
+            require_code_refs,
+            require_runtime_theory,
+            out,
+        } => {
+            let report_json = read_json_file(&behavior_report)?;
+            let report = axiograph_software_authoring::build_continuous_software_coverage_report(
+                &report_json,
+                &axiograph_software_authoring::ContinuousCheckOptions {
+                    repo_root,
+                    require_codegen,
+                    strict_coverage,
+                    require_code_refs,
+                    require_runtime_theory,
+                },
+            )?;
+            write_json_output(&report, out.as_ref())?;
+            if !report.pass {
+                return Err(anyhow!("continuous software coverage check failed"));
+            }
+            Ok(())
+        }
+        AuthoringCommands::ToolSpecs { out } => {
+            let specs = axiograph_software_authoring::software_authoring_tool_specs_v1();
+            write_json_output(&specs, out.as_ref())
+        }
+        AuthoringCommands::LspCapabilities { out } => {
+            let capabilities = crate::authoring_workspace::authoring_workspace_capabilities_v1();
+            write_json_output(&capabilities, out.as_ref())
+        }
+        AuthoringCommands::IntegrationManifest { workspace, out } => {
+            let manifest =
+                crate::authoring_workspace::authoring_workspace_integration_manifest_v1(&workspace);
+            write_json_output(&manifest, out.as_ref())
+        }
+        AuthoringCommands::Lsp { workspace, axi } => {
+            let service = crate::authoring_workspace::AuthoringWorkspaceService::new(&workspace)?;
+            crate::authoring_workspace::run_lsp_stdio(service, axi)
+        }
+        AuthoringCommands::Mcp { workspace } => {
+            let service = crate::authoring_workspace::AuthoringWorkspaceService::new(&workspace)?;
+            crate::authoring_workspace::run_mcp_stdio(service)
+        }
+        AuthoringCommands::Serve { workspace, listen } => {
+            let service = crate::authoring_workspace::AuthoringWorkspaceService::new(&workspace)?;
+            crate::authoring_workspace::run_http(service, listen)
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct SoftwareAuthoringExampleSuiteV1 {
+    #[serde(default)]
+    version: Option<String>,
+    examples: Vec<SoftwareAuthoringExampleCatalogEntryV1>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SoftwareAuthoringExampleCatalogEntryV1 {
+    id: String,
+    title: Option<String>,
+    axi: PathBuf,
+    overlay: PathBuf,
+    behavior_case: PathBuf,
+    cq_file: Option<PathBuf>,
+    #[serde(default)]
+    coverage_terms: Vec<String>,
+    #[serde(default)]
+    coverage_relations: Vec<String>,
+    #[serde(default)]
+    coverage_cqs: Vec<String>,
+    #[serde(default)]
+    coverage_code_refs: Vec<String>,
+    #[serde(default)]
+    coverage_surface_hints: Vec<String>,
+    #[serde(default)]
+    coverage_max_matches: Option<usize>,
+    #[serde(default)]
+    definition_query_prompts: Vec<SoftwareAuthoringDefinitionQueryPromptV1>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SoftwareAuthoringDefinitionQueryPromptV1 {
+    id: Option<String>,
+    prompt: String,
+    kind_hint: Option<String>,
+    context_hint: Option<String>,
+    #[serde(default)]
+    include_queries: bool,
+    max_matches: Option<usize>,
+}
+
+fn cmd_authoring_run_suite(
+    suite_path: &Path,
+    example_id: &str,
+    profile: &str,
+    repo_root: &Path,
+    out_dir: Option<&PathBuf>,
+) -> Result<Value> {
+    let suite_text = crate::security::read_utf8_file_bounded(
+        suite_path,
+        crate::security::MAX_TEXT_INPUT_BYTES,
+        "CLI input",
+    )?;
+    let suite: SoftwareAuthoringExampleSuiteV1 = crate::security::parse_json_bounded(
+        suite_text.as_bytes(),
+        crate::security::MAX_JSON_INPUT_BYTES,
+        "CLI JSON input",
+    )
+    .map_err(|err| anyhow!("failed to parse software authoring suite JSON: {err}"))?;
+    let entry = suite
+        .examples
+        .iter()
+        .find(|entry| entry.id == example_id)
+        .ok_or_else(|| anyhow!("software authoring suite has no example `{example_id}`"))?;
+
+    let profile = parse_authoring_run_profile(profile)?;
+    let axi_path = resolve_suite_relative_path(suite_path, &entry.axi)?;
+    let overlay_path = resolve_suite_relative_path(suite_path, &entry.overlay)?;
+    let behavior_case_path = resolve_suite_relative_path(suite_path, &entry.behavior_case)?;
+    let cq_file_path = entry
+        .cq_file
+        .as_ref()
+        .map(|path| resolve_suite_relative_path(suite_path, path))
+        .transpose()?;
+    if let Some(out_dir) = out_dir {
+        fs::create_dir_all(out_dir)?;
+    }
+
+    let kernel = compile_kernel_for_tooling_overlay(&axi_path)?;
+    let overlay = load_tooling_overlay(&overlay_path)?;
+    let overlay_report = axiograph_tooling_overlays::validate_overlay_bundle(&kernel, &overlay);
+    write_optional_step_report(out_dir, "overlay_validation.json", &overlay_report)?;
+
+    let db = load_pathdb_for_cli(&axi_path)?;
+    let mut request = load_behavior_case_request(&behavior_case_path)?;
+    if let Some(cq_file_path) = cq_file_path.as_ref() {
+        attach_behavior_case_cq_files(&mut request, std::slice::from_ref(cq_file_path))?;
+    }
+    request.codegen = behavior_codegen_request_from_overlay(&overlay)?;
+    request.overlay = Some(overlay.clone());
+    let behavior_report =
+        crate::behavior_case::build_behavior_case_report_from_request(&db, None, None, request)?;
+    let behavior_report_json = serde_json::to_value(&behavior_report)?;
+    write_optional_step_report(out_dir, "behavior_case_report.json", &behavior_report_json)?;
+    let behavior_report_view =
+        axiograph_tooling_overlays::behavior_case_coverage_view_from_value(&behavior_report_json)?;
+
+    let overlay_coverage =
+        axiograph_tooling_overlays::continuous_coverage_report_from_behavior_report_with_validation(
+            &behavior_report_view,
+            &overlay,
+            repo_root,
+            &overlay_report,
+        );
+    write_optional_step_report(out_dir, "overlay_coverage.json", &overlay_coverage)?;
+
+    let continuous_options = axiograph_software_authoring::ContinuousCheckOptions {
+        repo_root: repo_root.to_path_buf(),
+        require_codegen: vec![
+            "rust".to_string(),
+            "typescript".to_string(),
+            "python".to_string(),
+            "go".to_string(),
+        ],
+        strict_coverage: profile.strict_coverage(),
+        require_code_refs: profile.require_code_refs(),
+        require_runtime_theory: profile.require_runtime_theory(),
+    };
+    let continuous_report =
+        axiograph_software_authoring::build_continuous_software_coverage_report(
+            &behavior_report_json,
+            &continuous_options,
+        )?;
+    write_optional_step_report(out_dir, "continuous_coverage.json", &continuous_report)?;
+
+    let coverage_query_report = if let Some(query) = coverage_query_from_catalog_entry(entry) {
+        let report =
+            axiograph_tooling_overlays::coverage_query_report(&kernel, Some(&overlay), &query)?;
+        write_optional_step_report(out_dir, "coverage_query.json", &report)?;
+        Some(serde_json::to_value(report)?)
+    } else {
+        None
+    };
+
+    let definition_query_reports =
+        definition_query_reports_from_catalog_entry(entry, &kernel, Some(&overlay))?;
+    if !definition_query_reports.is_empty() {
+        write_optional_step_report(
+            out_dir,
+            "definition_queries.json",
+            &definition_query_reports,
+        )?;
+    }
+    let definition_query_report_count = definition_query_reports.len();
+
+    let pass = overlay_report.valid && overlay_coverage.pass && continuous_report.pass;
+    Ok(serde_json::json!({
+        "version": "authoring_suite_run_report_v1",
+        "suite_version": suite.version,
+        "example": {
+            "id": entry.id,
+            "title": entry.title.as_deref(),
+            "axi": axi_path.display().to_string(),
+            "overlay": overlay_path.display().to_string(),
+            "behavior_case": behavior_case_path.display().to_string(),
+            "definition_query_prompts": entry.definition_query_prompts.iter().map(|query| {
+                serde_json::json!({
+                    "id": query.id,
+                    "prompt": query.prompt,
+                    "kind_hint": query.kind_hint,
+                    "context_hint": query.context_hint,
+                    "include_queries": query.include_queries,
+                    "max_matches": query.max_matches,
+                })
+            }).collect::<Vec<_>>(),
+        },
+        "profile": profile.as_str(),
+        "pass": pass,
+        "overlay_validation": overlay_report,
+        "behavior_case_report": behavior_report,
+        "overlay_coverage": overlay_coverage,
+        "continuous_coverage": continuous_report,
+        "coverage_query_report": coverage_query_report,
+        "definition_query_reports": definition_query_reports,
+        "definition_query_count": definition_query_report_count,
+        "next_commands": [
+            format!("axiograph check validate {}", axi_path.display()),
+            format!("axiograph check theory {} --closure-tier finite_fragment", axi_path.display()),
+            format!("axiograph discover overlay-check {} --overlay {}", axi_path.display(), overlay_path.display()),
+            format!("axiograph discover behavior-case {} --request {} --overlay {}", axi_path.display(), behavior_case_path.display(), overlay_path.display()),
+            format!("axiograph authoring continuous-check --behavior-report <behavior_case_report.json> --repo-root {}", repo_root.display())
+        ],
+    }))
+}
+
+fn definition_query_reports_from_catalog_entry(
+    entry: &SoftwareAuthoringExampleCatalogEntryV1,
+    kernel: &axiograph_pathdb::kernel_ir::RuntimeModuleIndex,
+    overlay: Option<&axiograph_tooling_overlays::ToolingOverlayBundleV1>,
+) -> Result<Vec<Value>> {
+    let mut reports = Vec::new();
+    for prompt in &entry.definition_query_prompts {
+        let query = axiograph_tooling_overlays::DefinitionQueryV1 {
+            version: Some(axiograph_tooling_overlays::DEFINITION_QUERY_VERSION_V1.to_string()),
+            prompt: prompt.prompt.clone(),
+            kind_hint: parse_definition_kind_hint(prompt.kind_hint.as_deref())?,
+            context_hint: prompt.context_hint.clone(),
+            candidate_refs: Vec::new(),
+            max_matches: prompt.max_matches,
+            include_queries: prompt.include_queries,
+        };
+        let report = axiograph_tooling_overlays::definition_query_report(kernel, overlay, &query)?;
+        reports.push(serde_json::json!({
+            "id": prompt.id,
+            "report": report,
+        }));
+    }
+    Ok(reports)
+}
+
+fn coverage_query_from_catalog_entry(
+    entry: &SoftwareAuthoringExampleCatalogEntryV1,
+) -> Option<axiograph_tooling_overlays::CoverageQueryV1> {
+    if entry.coverage_terms.is_empty()
+        && entry.coverage_relations.is_empty()
+        && entry.coverage_cqs.is_empty()
+        && entry.coverage_code_refs.is_empty()
+        && entry.coverage_surface_hints.is_empty()
+    {
+        return None;
+    }
+    Some(axiograph_tooling_overlays::CoverageQueryV1 {
+        version: Some(axiograph_tooling_overlays::COVERAGE_QUERY_VERSION_V1.to_string()),
+        coverage_mode: axiograph_tooling_overlays::CoverageModeV1::Exploratory,
+        terms: entry.coverage_terms.clone(),
+        relation_names: entry.coverage_relations.clone(),
+        cq_names: entry.coverage_cqs.clone(),
+        code_refs: entry.coverage_code_refs.clone(),
+        surface_hints: entry.coverage_surface_hints.clone(),
+        axql: None,
+        max_matches: entry.coverage_max_matches,
+    })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AuthoringRunProfile {
+    Advisory,
+    Strict,
+    Ci,
+}
+
+impl AuthoringRunProfile {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Advisory => "advisory",
+            Self::Strict => "strict",
+            Self::Ci => "ci",
+        }
+    }
+
+    fn strict_coverage(self) -> bool {
+        matches!(self, Self::Strict | Self::Ci)
+    }
+
+    fn require_code_refs(self) -> bool {
+        matches!(self, Self::Ci)
+    }
+
+    fn require_runtime_theory(self) -> bool {
+        matches!(self, Self::Ci)
+    }
+}
+
+fn parse_authoring_run_profile(raw: &str) -> Result<AuthoringRunProfile> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "advisory" => Ok(AuthoringRunProfile::Advisory),
+        "strict" => Ok(AuthoringRunProfile::Strict),
+        "ci" => Ok(AuthoringRunProfile::Ci),
+        other => Err(anyhow!(
+            "unknown authoring profile `{other}` (expected advisory|strict|ci)"
+        )),
+    }
+}
+
+fn resolve_suite_relative_path(suite_path: &Path, raw: &Path) -> Result<PathBuf> {
+    if raw.is_absolute() {
+        return Ok(raw.to_path_buf());
+    }
+    if raw.exists() {
+        return Ok(raw.to_path_buf());
+    }
+    let Some(mut base) = suite_path.parent() else {
+        return Ok(raw.to_path_buf());
+    };
+    loop {
+        let candidate = base.join(raw);
+        if candidate.exists() {
+            return Ok(candidate);
+        }
+        match base.parent() {
+            Some(parent) => base = parent,
+            None => break,
+        }
+    }
+    Ok(raw.to_path_buf())
+}
+
+fn write_optional_step_report<T: Serialize>(
+    out_dir: Option<&PathBuf>,
+    filename: &str,
+    report: &T,
+) -> Result<()> {
+    if let Some(out_dir) = out_dir {
+        let path = out_dir.join(filename);
+        write_json_output(report, Some(&path))?;
+    }
+    Ok(())
+}
+
+fn read_json_file(path: &Path) -> Result<Value> {
+    let text = crate::security::read_utf8_file_bounded(
+        path,
+        crate::security::MAX_TEXT_INPUT_BYTES,
+        "CLI input",
+    )?;
+    crate::security::parse_json_bounded(
+        text.as_bytes(),
+        crate::security::MAX_JSON_INPUT_BYTES,
+        "CLI JSON input",
+    )
+    .map_err(|err| anyhow!("failed to parse `{}` as JSON: {err}", path.display()))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn runtime_theory_cli_assumptions(
+    world_id: Option<&str>,
+    finite_world: bool,
+    included_refs: &[String],
+    included_worlds: &[String],
+    included_slices: &[String],
+    included_imports: &[String],
+    undeclared_imports: &[String],
+    evidence_threshold_ppm: Option<u32>,
+    evidence_semantics: &str,
+    weighted_evidence: bool,
+    evidence_weights: &[String],
+) -> Result<(
+    axiograph_pathdb::WorldAssumptionV1,
+    axiograph_pathdb::EvidencePolicyV1,
+)> {
+    let mut world = axiograph_pathdb::default_world_assumption_v1();
+    if let Some(world_id) = world_id {
+        world.world_id = world_id.to_string();
+    }
+    world.finite = finite_world;
+    if !included_refs.is_empty() {
+        world.included_refs = included_refs.to_vec();
+    }
+    if !included_worlds.is_empty() {
+        world.included_worlds = included_worlds.to_vec();
+    }
+    if !included_slices.is_empty() {
+        world.included_slices = included_slices.to_vec();
+    }
+    if !included_imports.is_empty() {
+        world.included_imports = included_imports.to_vec();
+    }
+    if !undeclared_imports.is_empty() {
+        world.undeclared_imports = undeclared_imports.to_vec();
+    }
+
+    let mut evidence_policy = axiograph_pathdb::default_evidence_policy_v1();
+    if let Some(threshold) = evidence_threshold_ppm {
+        if threshold > 1_000_000 {
+            return Err(anyhow!(
+                "invalid --evidence-threshold-ppm {threshold}: must be <= 1000000"
+            ));
+        }
+        evidence_policy.threshold_ppm = threshold;
+    }
+    evidence_policy.semantics = if weighted_evidence {
+        axiograph_pathdb::EvidenceWeightSemanticsV1::WeightedLattice
+    } else {
+        crate::runtime_theory_check::parse_evidence_weight_semantics(evidence_semantics)?
+    };
+    evidence_policy.weighted_propagation_enabled = weighted_evidence;
+    for raw in evidence_weights {
+        let (obligation_id, ppm) =
+            crate::runtime_theory_check::parse_evidence_weight_assignment(raw)?;
+        evidence_policy
+            .obligation_weights_ppm
+            .insert(obligation_id, ppm);
+    }
+
+    Ok((world, evidence_policy))
+}
+
 fn cmd_repo_index(
-    root: &PathBuf,
-    out: &PathBuf,
-    chunks_path: Option<&PathBuf>,
-    edges_path: Option<&PathBuf>,
+    root: &Path,
+    out: &Path,
+    chunks_path: Option<&Path>,
+    edges_path: Option<&Path>,
     max_file_bytes: u64,
     max_files: usize,
     lines_per_chunk: usize,
@@ -4975,17 +4206,19 @@ fn cmd_repo_index(
 
     let result = axiograph_ingest_docs::index_repo(root, &options)?;
 
-    let chunks_out = chunks_path
-        .cloned()
-        .unwrap_or_else(|| out.parent().unwrap_or(std::path::Path::new(".")).join("chunks.json"));
+    let chunks_out = chunks_path.map(Path::to_path_buf).unwrap_or_else(|| {
+        out.parent()
+            .unwrap_or(std::path::Path::new("."))
+            .join("chunks.json")
+    });
     fs::create_dir_all(chunks_out.parent().unwrap_or(std::path::Path::new(".")))?;
-    let chunks_json = serde_json::to_string_pretty(&result.extraction.chunks)?;
-    fs::write(&chunks_out, &chunks_json)?;
+    let chunks_json = axiograph_ingest_docs::chunks_to_json(&result.extraction)?;
+    crate::security::write_output_bounded(&chunks_out, &chunks_json, "CLI output")?;
     println!("  {} {}", "→".cyan(), chunks_out.display());
 
     if let Some(edges_out) = edges_path {
         let edges_json = serde_json::to_string_pretty(&result.edges)?;
-        fs::write(edges_out, &edges_json)?;
+        crate::security::write_output_bounded(edges_out, &edges_json, "CLI output")?;
         println!("  {} {}", "→".cyan(), edges_out.display());
     }
 
@@ -5009,7 +4242,7 @@ fn cmd_repo_index(
         proposals,
     };
     let json = serde_json::to_string_pretty(&file)?;
-    fs::write(out, &json)?;
+    crate::security::write_output_bounded(out, &json, "CLI output")?;
     println!("  {} {}", "→".cyan(), out.display());
     println!(
         "  {} {} chunks, {} edges",
@@ -5022,11 +4255,11 @@ fn cmd_repo_index(
 }
 
 fn cmd_repo_watch(
-    root: &PathBuf,
-    out: &PathBuf,
-    chunks_path: Option<&PathBuf>,
-    edges_path: Option<&PathBuf>,
-    trace_path: Option<&PathBuf>,
+    root: &Path,
+    out: &Path,
+    chunks_path: Option<&Path>,
+    edges_path: Option<&Path>,
+    trace_path: Option<&Path>,
     interval_secs: u64,
     max_suggestions: usize,
 ) -> Result<()> {
@@ -5050,9 +4283,9 @@ fn cmd_repo_watch(
 }
 
 fn cmd_discover_suggest_links(
-    chunks_path: &PathBuf,
-    edges_path: &PathBuf,
-    out: &PathBuf,
+    chunks_path: &Path,
+    edges_path: &Path,
+    out: &Path,
     max_proposals: usize,
 ) -> Result<()> {
     println!(
@@ -5062,11 +4295,23 @@ fn cmd_discover_suggest_links(
         edges_path.display()
     );
 
-    let chunks_text = fs::read_to_string(chunks_path)?;
-    let edges_text = fs::read_to_string(edges_path)?;
+    let chunks_text = crate::security::read_utf8_file_bounded(
+        chunks_path,
+        crate::security::MAX_TEXT_INPUT_BYTES,
+        "CLI input",
+    )?;
+    let edges_text = crate::security::read_utf8_file_bounded(
+        edges_path,
+        crate::security::MAX_TEXT_INPUT_BYTES,
+        "CLI input",
+    )?;
 
-    let chunks: Vec<axiograph_ingest_docs::Chunk> = serde_json::from_str(&chunks_text)?;
-    let edges: Vec<axiograph_ingest_docs::RepoEdgeV1> = serde_json::from_str(&edges_text)?;
+    let chunks = axiograph_ingest_docs::chunks_from_json_str(&chunks_text)?;
+    let edges: Vec<axiograph_ingest_docs::RepoEdgeV1> = crate::security::parse_json_bounded(
+        edges_text.as_bytes(),
+        crate::security::MAX_JSON_INPUT_BYTES,
+        "CLI JSON input",
+    )?;
 
     let trace_id = format!(
         "trace_{}",
@@ -5093,7 +4338,7 @@ fn cmd_discover_suggest_links(
     )?;
 
     let trace_json = serde_json::to_string_pretty(&trace)?;
-    fs::write(out, &trace_json)?;
+    crate::security::write_output_bounded(out, &trace_json, "CLI output")?;
     println!("  {} {}", "→".cyan(), out.display());
     println!("  {} {} proposals", "→".yellow(), trace.proposals.len());
 
@@ -5139,9 +4384,9 @@ fn parse_promotion_domains(
 }
 
 fn cmd_discover_promote_proposals(
-    proposals_path: &PathBuf,
-    out_dir: &PathBuf,
-    trace_path: Option<&PathBuf>,
+    proposals_path: &Path,
+    out_dir: &Path,
+    trace_path: Option<&Path>,
     min_confidence: f64,
     domains: &str,
 ) -> Result<()> {
@@ -5151,8 +4396,17 @@ fn cmd_discover_promote_proposals(
         proposals_path.display()
     );
 
-    let text = fs::read_to_string(proposals_path)?;
-    let proposals: axiograph_ingest_docs::ProposalsFileV1 = serde_json::from_str(&text)?;
+    let text = crate::security::read_utf8_file_bounded(
+        proposals_path,
+        crate::security::MAX_TEXT_INPUT_BYTES,
+        "CLI input",
+    )?;
+    let proposals: axiograph_ingest_docs::ProposalsFileV1 = crate::security::parse_json_bounded(
+        text.as_bytes(),
+        crate::security::MAX_JSON_INPUT_BYTES,
+        "CLI JSON input",
+    )?;
+    axiograph_ingest_docs::validate_proposals_file_v1(&proposals)?;
 
     let domains = parse_promotion_domains(domains)?;
     let options = axiograph_ingest_docs::PromoteOptionsV1 {
@@ -5165,15 +4419,15 @@ fn cmd_discover_promote_proposals(
 
     for (domain, axi) in &result.candidates {
         let out_path = out_dir.join(domain.default_output_file());
-        fs::write(&out_path, axi)?;
+        crate::security::write_output_bounded(&out_path, axi, "CLI output")?;
         println!("  {} {}", "→".cyan(), out_path.display());
     }
 
     let trace_out = trace_path
-        .cloned()
+        .map(Path::to_path_buf)
         .unwrap_or_else(|| out_dir.join("promotion_trace.json"));
     let json = serde_json::to_string_pretty(&result.trace)?;
-    fs::write(&trace_out, json)?;
+    crate::security::write_output_bounded(&trace_out, json, "CLI output")?;
     println!("  {} {}", "→".cyan(), trace_out.display());
 
     Ok(())
@@ -5220,32 +4474,18 @@ struct SchemaHintUpdateV1 {
 }
 
 fn run_llm_plugin(
-    program: &PathBuf,
+    program: &Path,
     args: &[String],
     request: &AugmentPluginRequestV1,
     timeout: Option<Duration>,
 ) -> Result<AugmentPluginResponseV1> {
-    let mut child = Command::new(program)
-        .args(args)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| anyhow!("failed to start llm plugin `{}`: {e}", program.display()))?;
-
-    {
-        let stdin = child
-            .stdin
-            .as_mut()
-            .ok_or_else(|| anyhow!("failed to open stdin for llm plugin"))?;
-        serde_json::to_writer(stdin, request)?;
-    }
-
-    let output = crate::llm::wait_with_output_timeout(
-        child,
-        timeout,
-        &format!("llm plugin `{}`", program.display()),
-    )?;
+    let payload = serde_json::to_vec(request)?;
+    let timeout = timeout.ok_or_else(|| anyhow!("LLM plugin timeout is required"))?;
+    let limits = crate::security::ProcessLimits::plugin(timeout)?;
+    let context = format!("llm plugin `{}`", program.display());
+    let mut command = Command::new(program);
+    command.args(args);
+    let output = crate::security::run_command_bounded(command, &payload, limits, &context)?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(anyhow!(
@@ -5256,10 +4496,14 @@ fn run_llm_plugin(
         ));
     }
 
-    serde_json::from_slice(&output.stdout)
-        .map_err(|e| anyhow!("llm plugin returned invalid JSON: {e}"))
+    crate::security::parse_json_bounded(
+        &output.stdout,
+        axiograph_security::DEFAULT_PLUGIN_STDOUT_BYTES,
+        "LLM augmentation plugin response",
+    )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn llm_augment_proposals(
     llm_backend: &str,
     endpoint: &str,
@@ -5294,14 +4538,14 @@ fn llm_augment_proposals(
     fn llm_entity_id(entity_type: &str, name: &str) -> String {
         let et = sanitize_symbol(entity_type, 64);
         let key = format!("llm_entity:{et}:{name}");
-        let digest = axiograph_dsl::digest::fnv1a64_digest_bytes(key.as_bytes());
+        let digest = axiograph_kernel::object_blob_digest_v2(key.as_bytes());
         format!("llm_entity::{et}::{digest}")
     }
 
     fn llm_relation_id(rel_type: &str, source: &str, target: &str) -> String {
         let rt = sanitize_symbol(rel_type, 64);
         let key = format!("llm_relation:{rt}:{source}:{target}");
-        let digest = axiograph_dsl::digest::fnv1a64_digest_bytes(key.as_bytes());
+        let digest = axiograph_kernel::object_blob_digest_v2(key.as_bytes());
         format!("llm_rel::{rt}::{digest}")
     }
 
@@ -5390,7 +4634,7 @@ fn llm_augment_proposals(
             let mut t = text.clone();
             if t.len() > 400 {
                 t.truncate(400);
-                t.push_str("…");
+                t.push('…');
             }
             Some(t)
         });
@@ -5490,7 +4734,7 @@ Do NOT add proposals in this mode.
 Max new proposals budget (ignored here): {max_new_proposals}"#
         );
 
-        let content = match llm_backend {
+        let content: String = match llm_backend {
             "ollama" => {
                 #[cfg(feature = "llm-ollama")]
                 {
@@ -5548,7 +4792,9 @@ Max new proposals budget (ignored here): {max_new_proposals}"#
                 }
             }
             other => {
-                return Err(anyhow!("unsupported llm backend `{}` for augment-proposals", other));
+                return Err(anyhow!(
+                    "unsupported llm backend `{other}` for augment-proposals"
+                ));
             }
         };
 
@@ -5588,7 +4834,7 @@ Max new proposals budget (ignored here): {max_new_proposals}"#
         if let Some(t) = evidence_snippet.as_mut() {
             if t.len() > 400 {
                 t.truncate(400);
-                t.push_str("…");
+                t.push('…');
             }
         }
 
@@ -5612,6 +4858,7 @@ Max new proposals budget (ignored here): {max_new_proposals}"#
         serde_json::to_string_pretty(&entity_summaries).unwrap_or_else(|_| "[]".to_string());
 
     #[derive(Debug, Clone, Deserialize)]
+    #[serde(deny_unknown_fields)]
     struct LlmNewEntityV1 {
         entity_type: String,
         name: String,
@@ -5621,7 +4868,7 @@ Max new proposals budget (ignored here): {max_new_proposals}"#
         description: Option<String>,
         #[serde(default)]
         confidence: Option<f64>,
-        #[serde(default, alias = "chunk_id")]
+        #[serde(default)]
         evidence_chunk_id: Option<String>,
         #[serde(default)]
         public_rationale: Option<String>,
@@ -5630,17 +4877,16 @@ Max new proposals budget (ignored here): {max_new_proposals}"#
     }
 
     #[derive(Debug, Clone, Deserialize)]
+    #[serde(deny_unknown_fields)]
     struct LlmNewRelationV1 {
         rel_type: String,
-        #[serde(alias = "source_entity_id", alias = "source_id", alias = "from")]
         source: String,
-        #[serde(alias = "target_entity_id", alias = "target_id", alias = "to")]
         target: String,
         #[serde(default)]
         attributes: std::collections::HashMap<String, String>,
         #[serde(default)]
         confidence: Option<f64>,
-        #[serde(default, alias = "chunk_id")]
+        #[serde(default)]
         evidence_chunk_id: Option<String>,
         #[serde(default)]
         public_rationale: Option<String>,
@@ -5649,6 +4895,7 @@ Max new proposals budget (ignored here): {max_new_proposals}"#
     }
 
     #[derive(Debug, Clone, Deserialize)]
+    #[serde(deny_unknown_fields)]
     struct LlmAugmentResponseV1 {
         #[serde(default)]
         schema_hint_updates: Vec<SchemaHintUpdateV1>,
@@ -5697,7 +4944,7 @@ Return ONE JSON object with keys:
 If you have no good suggestions, return empty arrays."#
     );
 
-    let content = match llm_backend {
+    let content: String = match llm_backend {
         "ollama" => {
             #[cfg(feature = "llm-ollama")]
             {
@@ -5755,7 +5002,9 @@ If you have no good suggestions, return empty arrays."#
             }
         }
         other => {
-            return Err(anyhow!("unsupported llm backend `{}` for augment-proposals", other));
+            return Err(anyhow!(
+                "unsupported llm backend `{other}` for augment-proposals"
+            ));
         }
     };
     let parsed: LlmAugmentResponseV1 =
@@ -5816,7 +5065,10 @@ If you have no good suggestions, return empty arrays."#
         let entity_id = llm_entity_id(entity_type, name);
         let confidence = clamp01(ent.confidence.unwrap_or(0.55));
         let mut metadata = std::collections::HashMap::new();
-        metadata.insert("derived_from".to_string(), format!("{llm_backend}_augment_proposals_v1"));
+        metadata.insert(
+            "derived_from".to_string(),
+            format!("{llm_backend}_augment_proposals_v1"),
+        );
         metadata.insert("llm_model".to_string(), model.to_string());
 
         let schema_hint = ent
@@ -5879,7 +5131,10 @@ If you have no good suggestions, return empty arrays."#
         let relation_id = llm_relation_id(rel_type, &source, &target);
         let confidence = clamp01(rel.confidence.unwrap_or(0.55));
         let mut metadata = std::collections::HashMap::new();
-        metadata.insert("derived_from".to_string(), format!("{llm_backend}_augment_proposals_v1"));
+        metadata.insert(
+            "derived_from".to_string(),
+            format!("{llm_backend}_augment_proposals_v1"),
+        );
         metadata.insert("llm_model".to_string(), model.to_string());
 
         let schema_hint = rel
@@ -6021,9 +5276,9 @@ fn llm_suggest_schema_structure(
         let mut to_type = "Entity".to_string();
         for f in &r.fields {
             if f.field == "from" {
-                from_type = f.ty.clone();
+                from_type = f.ty.referenced_name().to_string();
             } else if f.field == "to" {
-                to_type = f.ty.clone();
+                to_type = f.ty.referenced_name().to_string();
             }
         }
         relations.push(RelationSummaryV1 {
@@ -6079,7 +5334,7 @@ Return a single JSON object with keys:
 If you have no good suggestions, return empty arrays."#
     );
 
-    let content = match llm_backend {
+    let content: String = match llm_backend {
         "ollama" => {
             #[cfg(feature = "llm-ollama")]
             {
@@ -6121,7 +5376,13 @@ If you have no good suggestions, return empty arrays."#
         "anthropic" => {
             #[cfg(feature = "llm-anthropic")]
             {
-                crate::llm::anthropic_chat_with_timeout(endpoint, model, &user, Some(system), timeout)?
+                crate::llm::anthropic_chat_with_timeout(
+                    endpoint,
+                    model,
+                    &user,
+                    Some(system),
+                    timeout,
+                )?
             }
             #[cfg(not(feature = "llm-anthropic"))]
             {
@@ -6132,8 +5393,7 @@ If you have no good suggestions, return empty arrays."#
         }
         other => {
             return Err(anyhow!(
-                "unsupported llm backend `{}` for draft-module structure suggestions",
-                other
+                "unsupported llm backend `{other}` for draft-module structure suggestions"
             ));
         }
     };
@@ -6156,25 +5416,26 @@ If you have no good suggestions, return empty arrays."#
         }
     }
 
-    let mut out = crate::schema_discovery::DraftAxiModuleSuggestions::default();
-    out.subtypes = parsed
-        .subtypes
-        .into_iter()
-        .map(|s| crate::schema_discovery::SuggestedSubtype {
-            sub: s.sub,
-            sup: s.sup,
-            public_rationale: s.public_rationale,
-        })
-        .collect();
-    out.constraints = parsed
-        .constraints
-        .into_iter()
-        .map(|c| crate::schema_discovery::SuggestedConstraint {
-            kind: c.kind,
-            relation: c.relation,
-            public_rationale: c.public_rationale,
-        })
-        .collect();
+    let out = crate::schema_discovery::DraftAxiModuleSuggestions {
+        subtypes: parsed
+            .subtypes
+            .into_iter()
+            .map(|s| crate::schema_discovery::SuggestedSubtype {
+                sub: s.sub,
+                sup: s.sup,
+                public_rationale: s.public_rationale,
+            })
+            .collect(),
+        constraints: parsed
+            .constraints
+            .into_iter()
+            .map(|c| crate::schema_discovery::SuggestedConstraint {
+                kind: c.kind,
+                relation: c.relation,
+                public_rationale: c.public_rationale,
+            })
+            .collect(),
+    };
     Ok(out)
 }
 
@@ -6197,7 +5458,14 @@ fn openai_suggest_schema_structure(
     schema_name: &str,
     timeout: Option<Duration>,
 ) -> Result<crate::schema_discovery::DraftAxiModuleSuggestions> {
-    llm_suggest_schema_structure("openai", base_url, model, base_draft_axi, schema_name, timeout)
+    llm_suggest_schema_structure(
+        "openai",
+        base_url,
+        model,
+        base_draft_axi,
+        schema_name,
+        timeout,
+    )
 }
 
 #[cfg(feature = "llm-anthropic")]
@@ -6234,12 +5502,13 @@ fn proposal_meta_mut(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn cmd_discover_augment_proposals(
-    proposals_path: &PathBuf,
-    out: &PathBuf,
-    trace_path: Option<&PathBuf>,
-    chunks_path: Option<&PathBuf>,
-    llm_plugin: Option<&PathBuf>,
+    proposals_path: &Path,
+    out: &Path,
+    trace_path: Option<&Path>,
+    chunks_path: Option<&Path>,
+    llm_plugin: Option<&Path>,
     llm_plugin_args: &[String],
     llm_ollama: bool,
     llm_ollama_host: Option<&str>,
@@ -6258,8 +5527,17 @@ fn cmd_discover_augment_proposals(
         proposals_path.display()
     );
 
-    let text = fs::read_to_string(proposals_path)?;
-    let proposals: axiograph_ingest_docs::ProposalsFileV1 = serde_json::from_str(&text)?;
+    let text = crate::security::read_utf8_file_bounded(
+        proposals_path,
+        crate::security::MAX_TEXT_INPUT_BYTES,
+        "CLI input",
+    )?;
+    let proposals: axiograph_ingest_docs::ProposalsFileV1 = crate::security::parse_json_bounded(
+        text.as_bytes(),
+        crate::security::MAX_JSON_INPUT_BYTES,
+        "CLI JSON input",
+    )?;
+    axiograph_ingest_docs::validate_proposals_file_v1(&proposals)?;
 
     let trace_id = format!(
         "augment_{}",
@@ -6292,8 +5570,12 @@ fn cmd_discover_augment_proposals(
     let llm_enabled = llm_selected > 0;
     let evidence_chunks = if llm_enabled {
         if let Some(chunks_path) = chunks_path {
-            let chunks_text = fs::read_to_string(chunks_path)?;
-            let chunks: Vec<axiograph_ingest_docs::Chunk> = serde_json::from_str(&chunks_text)?;
+            let chunks_text = crate::security::read_utf8_file_bounded(
+                chunks_path,
+                crate::security::MAX_TEXT_INPUT_BYTES,
+                "CLI input",
+            )?;
+            let chunks = axiograph_ingest_docs::chunks_from_json_str(&chunks_text)?;
 
             let mut needed: BTreeSet<String> = BTreeSet::new();
             for p in &augmented.proposals {
@@ -6321,7 +5603,7 @@ fn cmd_discover_augment_proposals(
                 let mut t = c.text;
                 if t.len() > 1200 {
                     t.truncate(1200);
-                    t.push_str("…");
+                    t.push('…');
                 }
                 out_map.insert(c.chunk_id, t);
                 if out_map.len() >= 2000 {
@@ -6416,7 +5698,9 @@ fn cmd_discover_augment_proposals(
             #[cfg(feature = "llm-anthropic")]
             {
                 let model = llm_model.ok_or_else(|| {
-                    anyhow!("missing `--llm-model` (example: --llm-model claude-3-5-sonnet-20241022)")
+                    anyhow!(
+                        "missing `--llm-model` (example: --llm-model claude-3-5-sonnet-20241022)"
+                    )
                 })?;
                 let base_url = llm_anthropic_base_url
                     .map(|s| s.to_string())
@@ -6513,14 +5797,14 @@ fn cmd_discover_augment_proposals(
     }
 
     let json = serde_json::to_string_pretty(&augmented)?;
-    fs::write(out, &json)?;
+    crate::security::write_output_bounded(out, &json, "CLI output")?;
     println!("  {} {}", "→".cyan(), out.display());
 
     let trace_out = trace_path
-        .cloned()
+        .map(Path::to_path_buf)
         .unwrap_or_else(|| PathBuf::from(format!("{}.trace.json", out.display())));
     let trace_json = serde_json::to_string_pretty(&trace)?;
-    fs::write(&trace_out, &trace_json)?;
+    crate::security::write_output_bounded(&trace_out, &trace_json, "CLI output")?;
     println!("  {} {}", "→".cyan(), trace_out.display());
     println!(
         "  {} {} → {} proposals (+{}, schema_hints_set={})",
@@ -6534,24 +5818,698 @@ fn cmd_discover_augment_proposals(
     Ok(())
 }
 
-fn cmd_discover_jepa_export(
-    input: &PathBuf,
-    out: &PathBuf,
+fn cmd_discover_training_export(
+    input: &Path,
+    out: &Path,
     instance_filter: Option<&str>,
     max_items: usize,
     mask_fields: usize,
     seed: u64,
 ) -> Result<()> {
-    let opts = crate::world_model::JepaExportOptions {
+    let opts = crate::predictive_proposals::MaskedTupleTrainingExportOptionsV1 {
         instance_filter: instance_filter.map(|s| s.to_string()),
         max_items,
         mask_fields,
         seed,
         exclude_relations: Vec::new(),
     };
-    crate::world_model::write_jepa_export(input, out, &opts)?;
+    crate::predictive_proposals::write_training_export(input, out, &opts)?;
     println!("wrote {}", out.display());
     Ok(())
+}
+
+fn discover_check_olog_report_from_inputs(
+    axi_text: &str,
+    schema_name: Option<&str>,
+    fragment_json: &str,
+    apply_refinement_handle_id: Option<&str>,
+) -> Result<crate::typed_authoring::DiscoverCheckOlogReportV1> {
+    let fragment: crate::typed_authoring::OlogFragmentV1 = crate::security::parse_json_bounded(
+        fragment_json.as_bytes(),
+        crate::security::MAX_JSON_INPUT_BYTES,
+        "CLI JSON input",
+    )
+    .map_err(|e| anyhow!("failed to parse olog fragment JSON: {e}"))?;
+    crate::typed_authoring::discover_check_olog_report_against_axi_text(
+        axi_text,
+        schema_name,
+        fragment,
+        apply_refinement_handle_id,
+    )
+}
+
+#[derive(Debug, Serialize)]
+struct DiscoverTheoryGraphReportV1 {
+    version: String,
+    module_digest: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    graphs: Vec<axiograph_pathdb::kernel_ir::TheoryObligationGraphV1>,
+    trust_boundary: String,
+    completeness_claim: String,
+    ontology_closure_claim: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    notes: Vec<String>,
+}
+
+fn discover_theory_graph_report_from_axi_text(
+    axi_text: &str,
+    theory_filter: Option<&str>,
+) -> Result<DiscoverTheoryGraphReportV1> {
+    let canonical = crate::axi_input::require_canonical_axi_text(axi_text)?;
+    let kernel =
+        axiograph_pathdb::derive_runtime_module_index(canonical.module().module(), axi_text)
+            .map_err(|err| anyhow!("failed to derive runtime module index: {err}"))?;
+    let mut graphs = kernel
+        .theories
+        .iter()
+        .filter(|theory| {
+            let Some(filter) = theory_filter else {
+                return true;
+            };
+            theory.theory_id.as_str() == filter
+                || theory
+                    .theory_id
+                    .as_str()
+                    .rsplit_once(':')
+                    .is_some_and(|(_, local)| local == filter)
+        })
+        .map(axiograph_pathdb::kernel_ir::TheoryIr::obligation_graph)
+        .collect::<Vec<_>>();
+    graphs.sort_by_key(|a| a.theory_ref.stable_id());
+    if graphs.is_empty() {
+        return Err(anyhow!(
+            "no compiled theories matched{}",
+            theory_filter
+                .map(|filter| format!(" `{filter}`"))
+                .unwrap_or_default()
+        ));
+    }
+    Ok(DiscoverTheoryGraphReportV1 {
+        version: "discover_theory_graph_report_v1".to_string(),
+        module_digest: canonical.digest().to_string(),
+        graphs,
+        trust_boundary: "Runtime checked in Rust; not Lean verified.".to_string(),
+        completeness_claim: "not_claimed".to_string(),
+        ontology_closure_claim: "not_claimed".to_string(),
+        notes: vec![
+            "theory obligation graphs are runtime-addressable indexes for exploration, CQ repair, migration, and reconciliation".to_string(),
+            "runtime graph emission does not certify completeness, ontology closure, or Lean proof obligations".to_string(),
+        ],
+    })
+}
+
+fn migration_preview_schema_from_axi_schema(
+    schema: &axiograph_dsl::schema_v1::SchemaV1Schema,
+) -> Result<axiograph_pathdb::migration::SchemaV1> {
+    let arrows = schema
+        .relations
+        .iter()
+        .map(|relation| {
+            if relation.fields.len() < 2 {
+                return Err(anyhow!(
+                    "relation `{}` in schema `{}` cannot be lowered into SchemaV1: expected at least two fields",
+                    relation.name,
+                    schema.name
+                ));
+            }
+            Ok(axiograph_pathdb::migration::ArrowDeclV1 {
+                name: relation.name.clone(),
+                src: relation.fields[0].ty.referenced_name().to_string(),
+                dst: relation.fields[1].ty.referenced_name().to_string(),
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    Ok(axiograph_pathdb::migration::SchemaV1 {
+        name: schema.name.clone(),
+        objects: schema.objects.clone(),
+        arrows,
+        subtypes: schema
+            .subtypes
+            .iter()
+            .map(|subtype| axiograph_pathdb::migration::SubtypeDeclV1 {
+                sub: subtype.sub.clone(),
+                sup: subtype.sup.clone(),
+                incl: subtype
+                    .inclusion
+                    .clone()
+                    .unwrap_or_else(|| format!("{}_incl", subtype.sub)),
+            })
+            .collect(),
+    })
+}
+
+fn select_transport_preview_schema<'a>(
+    module: &'a axiograph_dsl::schema_v1::SchemaV1Module,
+    requested_schema_name: Option<&str>,
+    morphism_source_schema: &str,
+) -> Result<&'a axiograph_dsl::schema_v1::SchemaV1Schema> {
+    if let Some(schema_name) = requested_schema_name {
+        return module
+            .schemas
+            .iter()
+            .find(|schema| schema.name == schema_name)
+            .ok_or_else(|| anyhow!("module contains no schema `{schema_name}`"));
+    }
+
+    if let Some(schema) = module
+        .schemas
+        .iter()
+        .find(|schema| schema.name == morphism_source_schema)
+    {
+        return Ok(schema);
+    }
+
+    if module.schemas.len() == 1 {
+        return Ok(&module.schemas[0]);
+    }
+
+    let mut schema_names = module
+        .schemas
+        .iter()
+        .map(|schema| schema.name.clone())
+        .collect::<Vec<_>>();
+    schema_names.sort();
+    Err(anyhow!(
+        "module contains multiple schemas; pass --schema (available: {})",
+        schema_names.join(", ")
+    ))
+}
+
+pub(crate) fn discover_transport_preview_from_inputs(
+    axi_text: &str,
+    schema_name: Option<&str>,
+    morphism_json: &str,
+    apply_refinement_handle_id: Option<&str>,
+) -> Result<crate::evolution_preview::EvolutionPreviewV1> {
+    let canonical = crate::axi_input::require_canonical_axi_text(axi_text)?;
+    let validated = canonical.module();
+    let module = validated.module();
+    let morphism: axiograph_pathdb::migration::SchemaMorphismV1 =
+        crate::security::parse_json_bounded(
+            morphism_json.as_bytes(),
+            crate::security::MAX_JSON_INPUT_BYTES,
+            "CLI JSON input",
+        )
+        .map_err(|e| anyhow!("failed to parse schema morphism JSON: {e}"))?;
+    let schema = select_transport_preview_schema(module, schema_name, &morphism.source_schema)?;
+    if schema.name != morphism.source_schema {
+        return Err(anyhow!(
+            "selected schema `{}` does not match morphism source schema `{}`",
+            schema.name,
+            morphism.source_schema
+        ));
+    }
+    let source_schema = migration_preview_schema_from_axi_schema(schema)?;
+    let compiled_schema = validated
+        .compiled_schema_ir(&schema.name)?
+        .ok_or_else(|| anyhow!("failed to compile schema IR for `{}`", schema.name))?;
+    let theories = validated.compiled_theories_for_schema(&schema.name)?;
+    let candidate_label = format!("{}->{}", morphism.source_schema, morphism.target_schema);
+
+    if let Some(handle_id) = apply_refinement_handle_id {
+        return Ok(
+            crate::evolution_preview::apply_runtime_refinement_by_id_to_migration_preview_from_compiled_theory_v1(
+                None,
+                candidate_label,
+                &compiled_schema,
+                &theories,
+                &morphism,
+                &source_schema,
+                handle_id,
+            )?
+            .evolution_preview,
+        );
+    }
+
+    Ok(
+        crate::evolution_preview::build_migration_evolution_preview_from_compiled_theory_v1(
+            None,
+            canonical.digest().as_str(),
+            candidate_label,
+            &morphism,
+            &source_schema,
+            &compiled_schema,
+            &theories,
+        ),
+    )
+}
+
+fn cmd_discover_check_olog(args: &DiscoverCheckOlogArgs) -> Result<()> {
+    let axi_text = crate::security::read_utf8_file_bounded(
+        &args.input,
+        crate::security::MAX_TEXT_INPUT_BYTES,
+        "CLI input",
+    )?;
+    let fragment_json = crate::security::read_utf8_file_bounded(
+        &args.fragment,
+        crate::security::MAX_TEXT_INPUT_BYTES,
+        "CLI input",
+    )?;
+    let report = discover_check_olog_report_from_inputs(
+        &axi_text,
+        args.schema.as_deref(),
+        &fragment_json,
+        args.apply_refinement_handle_id.as_deref(),
+    )?;
+    let json = serde_json::to_string_pretty(&report)?;
+    if let Some(path) = args.out.as_ref() {
+        crate::security::write_output_bounded(path, json, "CLI output")?;
+        println!("wrote {}", path.display());
+    } else {
+        println!("{json}");
+    }
+    Ok(())
+}
+
+fn cmd_discover_theory_graph(args: &DiscoverTheoryGraphArgs) -> Result<()> {
+    let axi_text = crate::security::read_utf8_file_bounded(
+        &args.input,
+        crate::security::MAX_TEXT_INPUT_BYTES,
+        "CLI input",
+    )?;
+    let report = discover_theory_graph_report_from_axi_text(&axi_text, args.theory.as_deref())?;
+    write_json_output(&report, args.out.as_ref())
+}
+
+fn cmd_discover_kernel_surface(args: &DiscoverKernelSurfaceArgs) -> Result<()> {
+    let axi_text = crate::security::read_utf8_file_bounded(
+        &args.input,
+        crate::security::MAX_TEXT_INPUT_BYTES,
+        "CLI input",
+    )?;
+    let canonical = crate::axi_input::require_canonical_axi_text(&axi_text)?;
+    let kernel =
+        axiograph_pathdb::derive_runtime_module_index(canonical.module().module(), &axi_text)
+            .map_err(|err| anyhow!("failed to derive runtime module index: {err}"))?;
+    write_json_output(&kernel.runtime_semantic_index(), args.out.as_ref())
+}
+
+fn cmd_discover_theory_check(args: &DiscoverTheoryCheckArgs) -> Result<()> {
+    let axi_text = crate::security::read_utf8_file_bounded(
+        &args.input,
+        crate::security::MAX_TEXT_INPUT_BYTES,
+        "CLI input",
+    )?;
+    let closure_tier =
+        crate::runtime_theory_check::parse_runtime_theory_closure_tier(&args.closure_tier)?;
+    let (world, evidence_policy) = runtime_theory_cli_assumptions(
+        args.world_id.as_deref(),
+        args.finite_world,
+        &args.included_refs,
+        &args.included_worlds,
+        &args.included_slices,
+        &args.included_imports,
+        &args.undeclared_imports,
+        args.evidence_threshold_ppm,
+        &args.evidence_semantics,
+        args.weighted_evidence,
+        &args.evidence_weights,
+    )?;
+    let report =
+        crate::runtime_theory_check::runtime_theory_check_reports_from_axi_text_with_assumptions(
+            &axi_text,
+            args.theory.as_deref(),
+            closure_tier,
+            world,
+            evidence_policy,
+        )?;
+    write_json_output(&report, args.out.as_ref())
+}
+
+fn cmd_discover_context_report(args: &DiscoverContextReportArgs) -> Result<()> {
+    let db = load_pathdb_for_cli(&args.input)?;
+    let request_json = crate::security::read_utf8_file_bounded(
+        &args.request,
+        crate::security::MAX_TEXT_INPUT_BYTES,
+        "CLI input",
+    )?;
+    let report = crate::context_report::discover_context_report_from_request_json(
+        &db,
+        None,
+        None,
+        &request_json,
+    )?;
+    write_json_output(&report, args.out.as_ref())
+}
+
+fn cmd_discover_overlay_check(args: &DiscoverOverlayCheckArgs) -> Result<()> {
+    let kernel = compile_kernel_for_tooling_overlay(&args.input)?;
+    let overlay = load_tooling_overlay(&args.overlay)?;
+    let report = axiograph_tooling_overlays::validate_overlay_bundle(&kernel, &overlay);
+    write_json_output(&report, args.out.as_ref())
+}
+
+fn cmd_discover_coverage_query(args: &DiscoverCoverageQueryArgs) -> Result<()> {
+    let kernel = compile_kernel_for_tooling_overlay(&args.input)?;
+    let query = coverage_query_from_discover_args(args)?;
+    let overlay = args
+        .overlay
+        .as_deref()
+        .map(load_tooling_overlay)
+        .transpose()?;
+    let report =
+        axiograph_tooling_overlays::coverage_query_report(&kernel, overlay.as_ref(), &query)?;
+    write_json_output(&report, args.out.as_ref())
+}
+
+fn coverage_query_from_discover_args(
+    args: &DiscoverCoverageQueryArgs,
+) -> Result<axiograph_tooling_overlays::CoverageQueryV1> {
+    let mut query = if let Some(path) = args.query.as_ref() {
+        let query_json = crate::security::read_file_bounded(
+            path,
+            crate::security::MAX_JSON_INPUT_BYTES,
+            "CoverageQueryV1",
+        )?;
+        crate::security::parse_json_bounded::<axiograph_tooling_overlays::CoverageQueryV1>(
+            &query_json,
+            crate::security::MAX_JSON_INPUT_BYTES,
+            "CoverageQueryV1",
+        )?
+    } else {
+        axiograph_tooling_overlays::CoverageQueryV1 {
+            version: Some(axiograph_tooling_overlays::COVERAGE_QUERY_VERSION_V1.to_string()),
+            coverage_mode: axiograph_tooling_overlays::CoverageModeV1::Exploratory,
+            terms: Vec::new(),
+            relation_names: Vec::new(),
+            cq_names: Vec::new(),
+            code_refs: Vec::new(),
+            surface_hints: Vec::new(),
+            axql: None,
+            max_matches: None,
+        }
+    };
+    query.terms.extend(args.terms.iter().cloned());
+    query
+        .relation_names
+        .extend(args.relation_names.iter().cloned());
+    query.cq_names.extend(args.cq_names.iter().cloned());
+    query.code_refs.extend(args.code_refs.iter().cloned());
+    query
+        .surface_hints
+        .extend(args.surface_hints.iter().cloned());
+    if let Some(axql) = args.axql.as_ref() {
+        query.axql = Some(axql.clone());
+    }
+    if args.max_matches.is_some() {
+        query.max_matches = args.max_matches;
+    }
+    if query.terms.is_empty()
+        && query.relation_names.is_empty()
+        && query.cq_names.is_empty()
+        && query.code_refs.is_empty()
+        && query.surface_hints.is_empty()
+        && query.axql.as_deref().unwrap_or("").trim().is_empty()
+    {
+        return Err(anyhow!(
+            "coverage-query requires --query or at least one --term, --relation, --cq-name, --code-ref, --surface-hint, or --axql"
+        ));
+    }
+    Ok(query)
+}
+
+fn cmd_discover_define(args: &DiscoverDefineArgs) -> Result<()> {
+    let kernel = compile_kernel_for_tooling_overlay(&args.input)?;
+    let overlay = args
+        .overlay
+        .as_deref()
+        .map(load_tooling_overlay)
+        .transpose()?;
+    let query = axiograph_tooling_overlays::DefinitionQueryV1 {
+        version: Some(axiograph_tooling_overlays::DEFINITION_QUERY_VERSION_V1.to_string()),
+        prompt: args.prompt.clone(),
+        kind_hint: parse_definition_kind_hint(args.kind_hint.as_deref())?,
+        context_hint: args.context_hint.clone(),
+        candidate_refs: Vec::new(),
+        max_matches: args.max_matches,
+        include_queries: args.include_queries,
+    };
+    let report =
+        axiograph_tooling_overlays::definition_query_report(&kernel, overlay.as_ref(), &query)?;
+    write_json_output(&report, args.out.as_ref())
+}
+
+fn cmd_discover_embedding_relationships(args: &DiscoverEmbeddingRelationshipsArgs) -> Result<()> {
+    let text = crate::security::read_utf8_file_bounded(
+        &args.embeddings,
+        crate::security::MAX_TEXT_INPUT_BYTES,
+        "CLI input",
+    )?;
+    let file: crate::embeddings::EmbeddingsFileV1 = crate::security::parse_json_bounded(
+        text.as_bytes(),
+        crate::security::MAX_TEXT_INPUT_BYTES,
+        "EmbeddingsFileV1",
+    )?;
+    crate::embeddings::validate_embeddings_file_v1(&file)?;
+    let accepted = crate::embeddings::EmbeddingAcceptedRefV1 {
+        accepted_ref: args.accepted_ref.clone(),
+        accepted_axi_anchor: axiograph_pathdb::AcceptedAxiAnchor::new(
+            axiograph_pathdb::AcceptedSnapshotId::new(args.accepted_snapshot_id.clone()),
+            axiograph_pathdb::AxiDigest::new(args.axi_digest.clone()),
+        ),
+        module_name: args.module_name.clone(),
+        compiled_ir_digest: args.compiled_ir_digest.clone(),
+    };
+    let mut manifest_input = crate::embeddings::EmbeddingSidecarManifestBuildInputV1::new(accepted);
+    manifest_input.model_version = args.model_version.clone();
+    manifest_input.model_digest = args.model_digest.clone();
+    manifest_input.deployment_id = args
+        .deployment_id
+        .clone()
+        .or_else(|| Some("embedding_relationships_cli_v1".to_string()));
+    let manifest = crate::embeddings::build_embedding_sidecar_manifest_v1(&file, manifest_input)?;
+    let config = crate::embeddings::EmbeddingRelationshipDiscoveryConfigV1 {
+        min_cosine_similarity: args.min_cosine_similarity,
+        max_relationships: args.max_relationships,
+        relationship: parse_embedding_relationship_kind(&args.relationship)?,
+        ..Default::default()
+    };
+    let overlay =
+        crate::embeddings::discover_embedding_evidence_overlay_v1(&file, &manifest, config)?;
+    write_json_output(
+        &serde_json::json!({
+            "version": "embedding_relationship_discovery_report_v1",
+            "manifest": manifest,
+            "overlay": overlay,
+            "trust": {
+                "authority": "evidence_plane_only",
+                "mutation_authority": "axiograph_review_promotion_only",
+                "non_claim": "embedding similarity is not semantic equivalence, subtype proof, or accepted .axi truth"
+            }
+        }),
+        args.out.as_ref(),
+    )
+}
+
+fn parse_embedding_relationship_kind(
+    raw: &str,
+) -> Result<crate::embeddings::EmbeddingRelationshipKindV1> {
+    use crate::embeddings::EmbeddingRelationshipKindV1;
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "similar_to" | "similar" => Ok(EmbeddingRelationshipKindV1::SimilarTo),
+        "supports" | "support" => Ok(EmbeddingRelationshipKindV1::Supports),
+        "mentions" | "mention" => Ok(EmbeddingRelationshipKindV1::Mentions),
+        "implements" | "implement" => Ok(EmbeddingRelationshipKindV1::Implements),
+        "violates" | "violate" => Ok(EmbeddingRelationshipKindV1::Violates),
+        "subtype_candidate" | "subtype" => Ok(EmbeddingRelationshipKindV1::SubtypeCandidate),
+        "same_as_candidate" | "same_as" => Ok(EmbeddingRelationshipKindV1::SameAsCandidate),
+        "relation_candidate" | "relation" => Ok(EmbeddingRelationshipKindV1::RelationCandidate),
+        "axiom_candidate" | "axiom" => Ok(EmbeddingRelationshipKindV1::AxiomCandidate),
+        "contradicts" | "contradict" => Ok(EmbeddingRelationshipKindV1::Contradicts),
+        "unknown" => Ok(EmbeddingRelationshipKindV1::Unknown),
+        other => Err(anyhow!(
+            "unknown embedding relationship `{other}` (expected similar_to|supports|mentions|implements|violates|subtype_candidate|same_as_candidate|relation_candidate|axiom_candidate|contradicts|unknown)"
+        )),
+    }
+}
+
+fn cmd_discover_behavior_case(args: &DiscoverBehaviorCaseArgs) -> Result<()> {
+    let repository_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..");
+    let package = crate::axi_input::compile_canonical_axi_path(&args.input, &[repository_root])?;
+    let db = load_pathdb_for_cli(&args.input)?;
+    let mut request = load_behavior_case_request(&args.request)?;
+    if request.runtime_theory_check.is_some() || request.runtime_theory_check_input.is_some() {
+        return Err(anyhow!(
+            "discover behavior-case computes runtime theory from the canonical input; request-side theory summaries are not accepted"
+        ));
+    }
+    if !package.snapshot().ir().theories().is_empty() {
+        request.runtime_theory_check = Some(
+            crate::runtime_theory_check::runtime_theory_check_reports_from_package(
+                &package,
+                None,
+                axiograph_pathdb::RuntimeTheoryClosureTierV1::FiniteFragment,
+                axiograph_pathdb::default_world_assumption_v1(),
+                axiograph_pathdb::default_evidence_policy_v1(),
+            )?
+            .summary,
+        );
+    }
+    attach_behavior_case_cq_files(&mut request, &args.cq_files)?;
+    if let Some(overlay_path) = args.overlay.as_deref() {
+        let overlay = load_tooling_overlay(overlay_path)?;
+        request.codegen = behavior_codegen_request_from_overlay(&overlay)?;
+        request.overlay = Some(overlay);
+    } else if let Some(overlay) = request.overlay.as_ref() {
+        request.codegen = behavior_codegen_request_from_overlay(overlay)?;
+    }
+    let report =
+        crate::behavior_case::build_behavior_case_report_from_request(&db, None, None, request)?;
+    write_json_output(&report, args.out.as_ref())
+}
+
+fn attach_behavior_case_cq_files(
+    request: &mut crate::behavior_case::BehaviorCaseCheckRequestV1,
+    cq_files: &[PathBuf],
+) -> Result<()> {
+    if cq_files.is_empty() {
+        return Ok(());
+    }
+    let mut loaded = Vec::new();
+    for path in cq_files {
+        loaded.extend(crate::predictive_proposals::load_competency_questions(
+            path,
+        )?);
+    }
+    let then =
+        request
+            .behavior_case
+            .then
+            .get_or_insert_with(|| crate::behavior_case::BehaviorThenV1 {
+                expected_outcomes: Vec::new(),
+                competency_questions: Vec::new(),
+                rule_scopes: Vec::new(),
+                trust_target: None,
+                notes: Vec::new(),
+            });
+    then.competency_questions.extend(loaded);
+    Ok(())
+}
+
+fn compile_kernel_for_tooling_overlay(
+    input: &Path,
+) -> Result<axiograph_pathdb::kernel_ir::RuntimeModuleIndex> {
+    let axi_text = crate::security::read_utf8_file_bounded(
+        input,
+        crate::security::MAX_TEXT_INPUT_BYTES,
+        "CLI input",
+    )?;
+    axiograph_tooling_overlays::derive_runtime_index_from_axi_text(&axi_text)
+}
+
+fn load_tooling_overlay(path: &Path) -> Result<axiograph_tooling_overlays::ToolingOverlayBundleV1> {
+    let json_text = crate::security::read_utf8_file_bounded(
+        path,
+        crate::security::MAX_TEXT_INPUT_BYTES,
+        "CLI input",
+    )?;
+    axiograph_tooling_overlays::parse_overlay_bundle(&json_text)
+}
+
+fn load_behavior_case_request(
+    path: &Path,
+) -> Result<crate::behavior_case::BehaviorCaseCheckRequestV1> {
+    let request_json = crate::security::read_utf8_file_bounded(
+        path,
+        crate::security::MAX_TEXT_INPUT_BYTES,
+        "CLI input",
+    )?;
+    crate::security::parse_json_bounded(
+        request_json.as_bytes(),
+        crate::security::MAX_JSON_INPUT_BYTES,
+        "CLI JSON input",
+    )
+    .map_err(|err| anyhow!("failed to parse BehaviorCaseCheckRequestV1 JSON: {err}"))
+}
+
+fn behavior_codegen_request_from_overlay(
+    overlay: &axiograph_tooling_overlays::ToolingOverlayBundleV1,
+) -> Result<crate::behavior_case::BehaviorCaseCodegenRequestV1> {
+    let languages = overlay
+        .codegen_plan
+        .languages
+        .iter()
+        .map(|language| parse_behavior_codegen_language(language))
+        .collect::<Result<Vec<_>>>()?;
+    Ok(crate::behavior_case::BehaviorCaseCodegenRequestV1 { languages })
+}
+
+fn parse_behavior_codegen_language(
+    language: &str,
+) -> Result<crate::behavior_case::BehaviorCaseCodegenLanguageV1> {
+    match language.trim().to_ascii_lowercase().as_str() {
+        "go" => Ok(crate::behavior_case::BehaviorCaseCodegenLanguageV1::Go),
+        "python" | "py" => Ok(crate::behavior_case::BehaviorCaseCodegenLanguageV1::Python),
+        "rust" | "rs" => Ok(crate::behavior_case::BehaviorCaseCodegenLanguageV1::Rust),
+        "typescript" | "ts" => Ok(crate::behavior_case::BehaviorCaseCodegenLanguageV1::Typescript),
+        other => Err(anyhow!(
+            "unsupported behavior-case codegen language `{other}` (expected go|python|rust|typescript)"
+        )),
+    }
+}
+
+fn parse_definition_kind_hint(
+    kind: Option<&str>,
+) -> Result<Option<axiograph_tooling_overlays::DefinitionQueryKindV1>> {
+    let Some(kind) = kind else {
+        return Ok(None);
+    };
+    let parsed = match kind.trim().to_ascii_lowercase().as_str() {
+        "process" => axiograph_tooling_overlays::DefinitionQueryKindV1::Process,
+        "function" => axiograph_tooling_overlays::DefinitionQueryKindV1::Function,
+        "business_rule" | "business-rule" | "rule" => {
+            axiograph_tooling_overlays::DefinitionQueryKindV1::BusinessRule
+        }
+        "domain_object" | "domain-object" | "object" => {
+            axiograph_tooling_overlays::DefinitionQueryKindV1::DomainObject
+        }
+        "relation" => axiograph_tooling_overlays::DefinitionQueryKindV1::Relation,
+        "invariant" => axiograph_tooling_overlays::DefinitionQueryKindV1::Invariant,
+        "policy" => axiograph_tooling_overlays::DefinitionQueryKindV1::Policy,
+        "implementation_surface" | "implementation-surface" | "surface" => {
+            axiograph_tooling_overlays::DefinitionQueryKindV1::ImplementationSurface
+        }
+        "unknown" => axiograph_tooling_overlays::DefinitionQueryKindV1::Unknown,
+        other => {
+            return Err(anyhow!(
+                "unknown definition kind hint `{other}` (expected process|function|business_rule|domain_object|relation|invariant|policy|implementation_surface)"
+            ))
+        }
+    };
+    Ok(Some(parsed))
+}
+
+fn cmd_discover_route_preview(args: &DiscoverRoutePreviewArgs) -> Result<()> {
+    let db = load_pathdb_for_cli(&args.input)?;
+    let request_json = crate::security::read_utf8_file_bounded(
+        &args.request,
+        crate::security::MAX_TEXT_INPUT_BYTES,
+        "CLI input",
+    )?;
+    let report =
+        crate::route_preview::discover_route_preview_from_request_json(&db, &request_json)?;
+    write_json_output(&report, args.out.as_ref())
+}
+
+fn cmd_discover_transport_preview(args: &DiscoverTransportPreviewArgs) -> Result<()> {
+    let axi_text = crate::security::read_utf8_file_bounded(
+        &args.input,
+        crate::security::MAX_TEXT_INPUT_BYTES,
+        "CLI input",
+    )?;
+    let morphism_json = crate::security::read_utf8_file_bounded(
+        &args.morphism,
+        crate::security::MAX_TEXT_INPUT_BYTES,
+        "CLI input",
+    )?;
+    let preview = discover_transport_preview_from_inputs(
+        &axi_text,
+        args.schema.as_deref(),
+        &morphism_json,
+        args.apply_refinement_handle_id.as_deref(),
+    )?;
+    write_json_output(&preview, args.out.as_ref())
 }
 
 fn cmd_discover_competency_questions(args: &CompetencyQuestionsArgs) -> Result<()> {
@@ -6566,10 +6524,15 @@ fn cmd_discover_competency_questions(args: &CompetencyQuestionsArgs) -> Result<(
         contexts: args.context.clone(),
     };
 
-    let mut out: Vec<crate::world_model::CompetencyQuestionV1> = Vec::new();
+    let mut out: Vec<crate::predictive_proposals::CompetencyQuestionV1> = Vec::new();
     if !args.no_schema {
         let mut generated = crate::competency_questions::generate_from_schema(&db, &options)?;
         out.append(&mut generated);
+    }
+
+    if let Some(path) = args.from_cq.as_ref() {
+        let mut loaded = crate::predictive_proposals::load_competency_questions(path)?;
+        out.append(&mut loaded);
     }
 
     if let Some(path) = args.from_nl.as_ref() {
@@ -6600,7 +6563,7 @@ fn cmd_discover_competency_questions(args: &CompetencyQuestionsArgs) -> Result<(
     }
 
     let json = serde_json::to_string_pretty(&out)?;
-    fs::write(&args.out, json)?;
+    crate::security::write_output_bounded(&args.out, json, "CLI output")?;
     println!("wrote {}", args.out.display());
     Ok(())
 }
@@ -6648,9 +6611,10 @@ fn resolve_llm_state_for_competency_questions(
                 .clone()
                 .unwrap_or_else(crate::llm::default_ollama_host);
             llm.backend = crate::llm::LlmBackend::Ollama { host };
-            let model = args.llm_model.clone().ok_or_else(|| {
-                anyhow!("`--llm-ollama` requires `--llm-model <model>`")
-            })?;
+            let model = args
+                .llm_model
+                .clone()
+                .ok_or_else(|| anyhow!("`--llm-ollama` requires `--llm-model <model>`"))?;
             llm.model = Some(model);
             return Ok(llm);
         }
@@ -6681,7 +6645,11 @@ fn resolve_llm_state_for_competency_questions(
             let model = args.llm_model.clone().or_else(|| {
                 let env = std::env::var(crate::llm::OPENAI_MODEL_ENV).unwrap_or_default();
                 let env = env.trim().to_string();
-                if env.is_empty() { None } else { Some(env) }
+                if env.is_empty() {
+                    None
+                } else {
+                    Some(env)
+                }
             });
             let model = model.ok_or_else(|| {
                 anyhow!(
@@ -6703,8 +6671,7 @@ fn resolve_llm_state_for_competency_questions(
     if args.llm_anthropic {
         #[cfg(feature = "llm-anthropic")]
         {
-            let key =
-                std::env::var(crate::llm::ANTHROPIC_API_KEY_ENV).unwrap_or_default();
+            let key = std::env::var(crate::llm::ANTHROPIC_API_KEY_ENV).unwrap_or_default();
             if key.trim().is_empty() {
                 return Err(anyhow!(
                     "anthropic backend requires {}",
@@ -6718,10 +6685,13 @@ fn resolve_llm_state_for_competency_questions(
                     .unwrap_or_else(crate::llm::default_anthropic_base_url),
             };
             let model = args.llm_model.clone().or_else(|| {
-                let env =
-                    std::env::var(crate::llm::ANTHROPIC_MODEL_ENV).unwrap_or_default();
+                let env = std::env::var(crate::llm::ANTHROPIC_MODEL_ENV).unwrap_or_default();
                 let env = env.trim().to_string();
-                if env.is_empty() { None } else { Some(env) }
+                if env.is_empty() {
+                    None
+                } else {
+                    Some(env)
+                }
             });
             let model = model.ok_or_else(|| {
                 anyhow!(
@@ -6743,32 +6713,29 @@ fn resolve_llm_state_for_competency_questions(
     Err(anyhow!("no LLM backend configured"))
 }
 
-const WORLD_MODEL_BACKEND_ENV: &str = "WORLD_MODEL_BACKEND";
-const WORLD_MODEL_MODEL_ENV: &str = "WORLD_MODEL_MODEL";
+const PREDICTIVE_PROPOSAL_BACKEND_ENV: &str = "PREDICTIVE_PROPOSAL_BACKEND";
+const PREDICTIVE_PROPOSAL_MODEL_ENV: &str = "PREDICTIVE_PROPOSAL_MODEL";
 
-fn resolve_llm_state_for_world_model_plugin(
-    args: &WorldModelPluginLlmArgs,
+fn resolve_llm_state_for_predictive_proposal_plugin(
+    args: &PredictiveProposalsLlmArgs,
 ) -> Result<crate::llm::LlmState> {
     let backend = args
         .backend
         .clone()
         .or_else(|| {
-            env::var(WORLD_MODEL_BACKEND_ENV)
+            env::var(PREDICTIVE_PROPOSAL_BACKEND_ENV)
                 .ok()
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty())
         })
         .unwrap_or_else(|| "openai".to_string());
 
-    let model = args
-        .model
-        .clone()
-        .or_else(|| {
-            env::var(WORLD_MODEL_MODEL_ENV)
-                .ok()
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-        });
+    let model = args.model.clone().or_else(|| {
+        env::var(PREDICTIVE_PROPOSAL_MODEL_ENV)
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    });
 
     let backend_lc = backend.trim().to_ascii_lowercase();
     let mut llm = crate::llm::LlmState::default();
@@ -6794,7 +6761,7 @@ fn resolve_llm_state_for_world_model_plugin(
                 let model = model
                     .or_else(|| env::var("OLLAMA_MODEL").ok().filter(|s| !s.trim().is_empty()))
                     .ok_or_else(|| {
-                        anyhow!("no model selected (use --model, set WORLD_MODEL_MODEL, or set OLLAMA_MODEL)")
+                        anyhow!("no model selected (use --model, set PREDICTIVE_PROPOSAL_MODEL, or set OLLAMA_MODEL)")
                     })?;
                 llm.backend = crate::llm::LlmBackend::Ollama { host };
                 llm.model = Some(model);
@@ -6831,7 +6798,7 @@ fn resolve_llm_state_for_world_model_plugin(
                     .or_else(|| env::var(crate::llm::ANTHROPIC_MODEL_ENV).ok().filter(|s| !s.trim().is_empty()))
                     .ok_or_else(|| {
                         anyhow!(
-                            "no model selected (use --model, set WORLD_MODEL_MODEL, or set {})",
+                            "no model selected (use --model, set PREDICTIVE_PROPOSAL_MODEL, or set {})",
                             crate::llm::ANTHROPIC_MODEL_ENV
                         )
                     })?;
@@ -6870,7 +6837,7 @@ fn resolve_llm_state_for_world_model_plugin(
                     .or_else(|| env::var(crate::llm::OPENAI_MODEL_ENV).ok().filter(|s| !s.trim().is_empty()))
                     .ok_or_else(|| {
                         anyhow!(
-                            "no model selected (use --model, set WORLD_MODEL_MODEL, or set {})",
+                            "no model selected (use --model, set PREDICTIVE_PROPOSAL_MODEL, or set {})",
                             crate::llm::OPENAI_MODEL_ENV
                         )
                     })?;
@@ -6886,58 +6853,59 @@ fn resolve_llm_state_for_world_model_plugin(
             }
         }
         other => Err(anyhow!(
-            "world model backend `{other}` is not supported by --world-model-llm / `axiograph ingest world-model-plugin-llm` (expected openai|anthropic|ollama|mock). If you meant an ONNX or custom model, use --world-model-plugin or --world-model-http instead."
+            "predictive proposal adapter backend `{other}` is not supported by --proposal-adapter-llm / `axiograph ingest predictive-proposals-llm` (expected openai|anthropic|ollama|mock). If you meant an ONNX or custom model, use --proposal-adapter-plugin or --proposal-adapter-http instead."
         )),
     }
 }
 
-fn cmd_world_model_propose(args: &WorldModelProposeArgs) -> Result<()> {
-    let selected = (args.world_model_stub as usize)
-        + (args.world_model_plugin.is_some() as usize)
-        + (args.world_model_http.is_some() as usize)
-        + (args.world_model_llm as usize);
+fn cmd_predictive_proposals(args: &PredictiveProposalsArgs) -> Result<()> {
+    let selected = (args.predictive_proposal_stub as usize)
+        + (args.predictive_proposal_plugin.is_some() as usize)
+        + (args.predictive_proposal_http.is_some() as usize)
+        + (args.predictive_proposal_llm as usize);
     if selected > 1 {
         return Err(anyhow!(
-            "choose at most one world model backend: --world-model-stub, --world-model-plugin, --world-model-http, or --world-model-llm"
+            "choose at most one predictive proposal adapter backend: --proposal-adapter-stub, --proposal-adapter-plugin, --proposal-adapter-http, or --proposal-adapter-llm"
         ));
     }
     if selected == 0 {
         return Err(anyhow!(
-            "world model backend is not configured (use --world-model-plugin, --world-model-http, --world-model-llm, or --world-model-stub)"
+            "predictive proposal adapter backend is not configured (use --proposal-adapter-plugin, --proposal-adapter-http, --proposal-adapter-llm, or --proposal-adapter-stub)"
         ));
     }
 
-    let mut wm = crate::world_model::WorldModelState::default();
-    if args.world_model_stub {
-        wm.backend = crate::world_model::WorldModelBackend::Stub;
-    } else if let Some(url) = args.world_model_http.as_ref() {
-        wm.backend = crate::world_model::WorldModelBackend::Http { url: url.clone() };
-    } else if args.world_model_llm {
+    let mut adapter = crate::predictive_proposals::ProposalAdapterState::default();
+    if args.predictive_proposal_stub {
+        adapter.backend = crate::predictive_proposals::ProposalAdapterBackend::Stub;
+    } else if let Some(url) = args.predictive_proposal_http.as_ref() {
+        adapter.backend =
+            crate::predictive_proposals::ProposalAdapterBackend::Http { url: url.clone() };
+    } else if args.predictive_proposal_llm {
         let exe = std::env::current_exe()
             .map_err(|e| anyhow!("failed to resolve current executable: {e}"))?;
-        let mut args_list = vec!["ingest".to_string(), "world-model-plugin-llm".to_string()];
+        let mut args_list = vec!["ingest".to_string(), "predictive-proposals-llm".to_string()];
         let has_model_arg = args
-            .world_model_plugin_arg
+            .predictive_proposal_plugin_arg
             .iter()
             .any(|a| a == "--model");
-        if let Some(model) = args.world_model_model.as_ref() {
+        if let Some(model) = args.predictive_proposal_model.as_ref() {
             if !has_model_arg {
                 args_list.push("--model".to_string());
                 args_list.push(model.clone());
             }
         }
-        args_list.extend(args.world_model_plugin_arg.clone());
-        wm.backend = crate::world_model::WorldModelBackend::Command {
+        args_list.extend(args.predictive_proposal_plugin_arg.clone());
+        adapter.backend = crate::predictive_proposals::ProposalAdapterBackend::Command {
             program: exe,
             args: args_list,
         };
-    } else if let Some(plugin) = args.world_model_plugin.as_ref() {
-        wm.backend = crate::world_model::WorldModelBackend::Command {
+    } else if let Some(plugin) = args.predictive_proposal_plugin.as_ref() {
+        adapter.backend = crate::predictive_proposals::ProposalAdapterBackend::Command {
             program: plugin.clone(),
-            args: args.world_model_plugin_arg.clone(),
+            args: args.predictive_proposal_plugin_arg.clone(),
         };
     }
-    wm.model = args.world_model_model.clone();
+    adapter.model = args.predictive_proposal_model.clone();
 
     let input_ext = args
         .input
@@ -6945,63 +6913,38 @@ fn cmd_world_model_propose(args: &WorldModelProposeArgs) -> Result<()> {
         .and_then(|s| s.to_str())
         .unwrap_or("");
 
-    let mut axi_text: Option<String> = None;
-    let mut axi_digest: Option<String> = None;
-    if input_ext.eq_ignore_ascii_case("axi") {
-        let text = fs::read_to_string(&args.input)?;
-        axi_digest = Some(axiograph_dsl::digest::axi_digest_v1(&text));
-        axi_text = Some(text);
-    }
-
-    let mut export_inline: Option<crate::world_model::JepaExportFileV1> = None;
-    let mut export_path: Option<String> = None;
-    if let Some(export) = args.export.as_ref() {
-        export_path = Some(export.display().to_string());
-    } else if let Some(text) = axi_text.as_ref() {
-        let opts = crate::world_model::JepaExportOptions {
+    let training_export = Some(
+        crate::predictive_proposals::MaskedTupleTrainingExportOptionsV1 {
             instance_filter: args.export_instance.clone(),
             max_items: args.export_max_items,
             mask_fields: args.export_mask_fields,
             seed: args.export_seed,
             exclude_relations: Vec::new(),
-        };
-        let export = crate::world_model::build_jepa_export_from_axi_text(text, &opts)?;
-        if let Some(out_path) = args.export_out.as_ref() {
-            let json = serde_json::to_string_pretty(&export)?;
-            fs::write(out_path, json)?;
-            export_path = Some(out_path.display().to_string());
-            println!("wrote {}", out_path.display());
-        } else {
-            export_inline = Some(export);
-        }
-    } else if args.export_out.is_some() {
-        return Err(anyhow!("--export-out requires `.axi` input or --export"));
-    }
+        },
+    );
 
-    let mut db: Option<axiograph_pathdb::PathDB> = None;
     let guardrail_profile = args.guardrail_profile.trim().to_ascii_lowercase();
     let guardrail_plane = args.guardrail_plane.trim().to_ascii_lowercase();
     let guardrail_weights = if args.guardrail_weight.is_empty() {
-        crate::world_model::GuardrailCostWeightsV1::defaults()
+        crate::predictive_proposals::GuardrailCostWeightsV1::defaults()
     } else {
-        crate::world_model::parse_guardrail_weights(&args.guardrail_weight)?
+        crate::predictive_proposals::parse_guardrail_weights(&args.guardrail_weight)?
     };
 
-    let task_costs = crate::world_model::parse_task_costs(&args.task_cost)?;
+    let task_costs = crate::predictive_proposals::parse_task_costs(&args.task_cost)?;
 
     let guardrail = if guardrail_profile != "off" {
         let loaded = crate::load_pathdb_for_cli(&args.input)?;
-        let report = crate::world_model::compute_guardrail_costs(
+        let report = crate::predictive_proposals::compute_guardrail_costs(
             &loaded,
             &args.input.display().to_string(),
             &guardrail_profile,
             &guardrail_plane,
             &guardrail_weights,
         )?;
-        db = Some(loaded);
         if let Some(path) = args.guardrail_out.as_ref() {
             let json = serde_json::to_string_pretty(&report)?;
-            fs::write(path, json)?;
+            crate::security::write_output_bounded(path, json, "CLI output")?;
             println!("wrote {}", path.display());
         }
         Some(report)
@@ -7009,141 +6952,144 @@ fn cmd_world_model_propose(args: &WorldModelProposeArgs) -> Result<()> {
         None
     };
 
-    let mut input = crate::world_model::WorldModelInputV1::default();
-    input.axi_digest_v1 = axi_digest.clone();
-    input.axi_module_text = axi_text.clone();
-    input.export = export_inline;
-    input.export_path = export_path;
-    if guardrail.is_some() {
-        input.guardrail = guardrail.clone();
+    let mut input = if input_ext.eq_ignore_ascii_case("axi") {
+        let text = crate::security::read_utf8_file_bounded(
+            &args.input,
+            crate::security::MAX_TEXT_INPUT_BYTES,
+            "CLI input",
+        )?;
+        crate::predictive_proposal_input::build_predictive_proposal_input_from_axi_text(
+            &text,
+            None,
+            None,
+            None,
+            training_export,
+        )?
+    } else {
+        return Err(anyhow!(
+            "predictive proposal adapter input must be exact canonical `.axi` bytes"
+        ));
+    };
+    if let Some(guardrail) = guardrail.clone() {
+        input.set_guardrail_layer(guardrail);
     }
+    input
+        .notes
+        .push("source=cli_predictive_proposals".to_string());
 
-    if input_ext.eq_ignore_ascii_case("axpd") || input_ext.eq_ignore_ascii_case("axi") {
-        let kind = if input_ext.eq_ignore_ascii_case("axpd") {
-            "axpd"
-        } else {
-            "axi"
-        };
-        input.snapshot = Some(crate::world_model::WorldModelSnapshotRefV1 {
-            kind: kind.to_string(),
-            path: args.input.display().to_string(),
-            snapshot_id: None,
-            accepted_snapshot_id: None,
-        });
-    }
+    let options = crate::predictive_proposals::PredictiveProposalOptionsV1 {
+        max_new_proposals: args.max_new_proposals,
+        seed: args.seed,
+        goals: args.goal.clone(),
+        task_costs: task_costs.clone(),
+        horizon_steps: args.horizon_steps,
+        ..Default::default()
+    };
 
-    let mut options = crate::world_model::WorldModelOptionsV1::default();
-    options.max_new_proposals = args.max_new_proposals;
-    options.seed = args.seed;
-    options.goals = args.goal.clone();
-    options.task_costs = task_costs.clone();
-    options.horizon_steps = args.horizon_steps;
-
-    let req = crate::world_model::make_world_model_request(input, options);
-    let mut response = wm.propose(&req)?;
+    let input_materialization_id = input.materialization_id();
+    let input_accepted_snapshot_id = input.accepted_snapshot_id();
+    let req = crate::predictive_proposals::make_predictive_proposal_request(input, options);
+    let mut response = adapter.propose(&req)?;
     if let Some(err) = response.error.take() {
-        return Err(anyhow!("world model error: {err}"));
+        return Err(anyhow!("predictive proposal adapter error: {err}"));
     }
 
-    let provenance = crate::world_model::WorldModelProvenance {
-        trace_id: response.trace_id.clone(),
-        backend: wm.backend_label(),
-        model: wm.model.clone(),
-        axi_digest_v1: axi_digest.clone(),
-        guardrail_total_cost: guardrail
-            .as_ref()
-            .map(|g| g.summary.total_cost),
-        guardrail_profile: if guardrail_profile == "off" {
+    let provenance = crate::predictive_proposals::build_predictive_proposal_provenance(
+        &response,
+        adapter.backend_label(),
+        adapter.model.clone(),
+        req.input.revision_digest_v2.clone(),
+        input_materialization_id,
+        input_accepted_snapshot_id,
+        guardrail.as_ref().map(|g| g.summary.total_cost),
+        if guardrail_profile == "off" {
             None
         } else {
             Some(guardrail_profile.clone())
         },
-        guardrail_plane: if guardrail_profile == "off" {
+        if guardrail_profile == "off" {
             None
         } else {
             Some(guardrail_plane.clone())
         },
-    };
+    )?;
 
-    let mut proposals =
-        crate::world_model::apply_world_model_provenance(response.proposals, &provenance);
+    let mut proposals = crate::predictive_proposals::apply_predictive_proposal_provenance(
+        response.proposals,
+        &provenance,
+    );
 
     if args.max_new_proposals > 0 && proposals.proposals.len() > args.max_new_proposals {
         proposals.proposals.truncate(args.max_new_proposals);
     }
 
     let json = serde_json::to_string_pretty(&proposals)?;
-    fs::write(&args.out, &json)?;
+    crate::security::write_output_bounded(&args.out, &json, "CLI output")?;
     println!("wrote {}", args.out.display());
-
-    if let Some(dir) = args.commit_dir.as_ref() {
-        let should_validate = args.validate.unwrap_or(true);
-        if should_validate {
-            let base = if let Some(db) = db.as_ref() {
-                db
-            } else {
-                db = Some(crate::load_pathdb_for_cli(&args.input)?);
-                db.as_ref().expect("db loaded")
-            };
-            let validation = crate::proposals_validate::validate_proposals_v1(
-                base,
-                &proposals,
-                &args.quality,
-                &args.quality_plane,
-            )?;
-            if !validation.ok {
-                return Err(anyhow!(
-                    "refusing to commit: proposals validation failed (errors={}, warnings={})",
-                    validation.quality_delta.summary.error_count,
-                    validation.quality_delta.summary.warning_count
-                ));
-            }
-        }
-
-        let res = crate::pathdb_wal::commit_pathdb_snapshot_with_overlays(
-            dir,
-            &args.accepted_snapshot,
-            &[],
-            &[args.out.clone()],
-            args.commit_message.as_deref(),
-        )?;
-        println!(
-            "ok committed {} WAL op(s) on accepted snapshot {} → pathdb snapshot {}",
-            res.ops_added, res.accepted_snapshot_id, res.snapshot_id
-        );
-    }
 
     Ok(())
 }
 
-fn cmd_world_model_plugin_llm(args: &WorldModelPluginLlmArgs) -> Result<()> {
-    let mut input = String::new();
-    io::stdin()
-        .read_to_string(&mut input)
-        .map_err(|e| anyhow!("failed to read stdin: {e}"))?;
+fn cmd_predictive_proposal_plugin_llm(args: &PredictiveProposalsLlmArgs) -> Result<()> {
+    let input = crate::security::read_utf8_stream_bounded(
+        io::stdin(),
+        crate::security::MAX_JSON_INPUT_BYTES,
+        "predictive proposal stdin",
+    )?;
     if input.trim().is_empty() {
         return Err(anyhow!("expected JSON request on stdin"));
     }
-    let req: crate::world_model::WorldModelRequestV1 =
-        serde_json::from_str(&input).map_err(|e| anyhow!("invalid JSON request: {e}"))?;
-    let llm = resolve_llm_state_for_world_model_plugin(args)?;
-    let resp = crate::llm::world_model_llm_plugin(&llm, &req)?;
+    let req: crate::predictive_proposals::PredictiveProposalRequestV1 =
+        crate::security::parse_json_bounded(
+            input.as_bytes(),
+            crate::security::MAX_JSON_INPUT_BYTES,
+            "CLI JSON input",
+        )
+        .map_err(|e| anyhow!("invalid JSON request: {e}"))?;
+    let llm = resolve_llm_state_for_predictive_proposal_plugin(args)?;
+    let resp = crate::llm::predictive_proposal_llm_plugin(&llm, &req)?;
     let json = serde_json::to_string(&resp)?;
     println!("{json}");
     Ok(())
 }
 
+fn account_directory_bytes(total: &mut u64, actual: usize, limit: u64) -> Result<()> {
+    *total = total
+        .checked_add(actual as u64)
+        .ok_or_else(|| anyhow!("directory ingest byte count overflow"))?;
+    if *total > limit {
+        return Err(anyhow!("directory ingest exceeds {limit} input bytes"));
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
 fn cmd_ingest_dir(
-    root: &PathBuf,
-    out_dir: &PathBuf,
+    root: &Path,
+    out_dir: &Path,
     confluence_space: &str,
     domain: &str,
-    chunks_path: Option<&PathBuf>,
-    facts_path: Option<&PathBuf>,
-    proposals_path: Option<&PathBuf>,
+    chunks_path: Option<&Path>,
+    facts_path: Option<&Path>,
+    proposals_path: Option<&Path>,
     max_file_bytes: u64,
     max_files: usize,
 ) -> Result<()> {
+    const MAX_DIRECTORY_FILES: usize = 10_000;
+    const MAX_DIRECTORY_SCAN_ENTRIES: usize = 100_000;
+    const MAX_DIRECTORY_DEPTH: usize = 32;
+    const MAX_DIRECTORY_CHUNKS: usize = 100_000;
+    const MAX_DIRECTORY_FACTS: usize = 100_000;
+    const MAX_DIRECTORY_TOTAL_BYTES: u64 = 128 * 1024 * 1024;
+    if !(1..=MAX_DIRECTORY_FILES).contains(&max_files) {
+        return Err(anyhow!("--max-files must be in 1..={MAX_DIRECTORY_FILES}"));
+    }
+    if max_file_bytes == 0 || max_file_bytes > crate::security::MAX_TEXT_INPUT_BYTES as u64 {
+        return Err(anyhow!(
+            "--max-file-bytes must be in 1..={} bytes",
+            crate::security::MAX_TEXT_INPUT_BYTES
+        ));
+    }
     println!(
         "{} {} → {}",
         "Ingesting dir".green().bold(),
@@ -7151,20 +7097,34 @@ fn cmd_ingest_dir(
         out_dir.display()
     );
 
-    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let root_metadata = fs::symlink_metadata(root)
+        .with_context(|| format!("inspect ingest root `{}`", root.display()))?;
+    if root_metadata.file_type().is_symlink() || !root_metadata.file_type().is_dir() {
+        return Err(anyhow!(
+            "directory ingest root must be a real directory, not a symlink or special file"
+        ));
+    }
+    let root = root
+        .canonicalize()
+        .with_context(|| format!("canonicalize ingest root `{}`", root.display()))?;
     fs::create_dir_all(out_dir)?;
 
     let mut all_chunks: Vec<axiograph_ingest_docs::Chunk> = Vec::new();
     let mut all_facts: Vec<axiograph_ingest_docs::ExtractedFact> = Vec::new();
     let mut all_proposals: Vec<axiograph_ingest_docs::ProposalV1> = Vec::new();
     let mut files_ingested = 0usize;
+    let mut entries_scanned = 0_usize;
+    let mut total_input_bytes = 0_u64;
 
-    fn chunk_by_lines(text: &str, max_chars: usize) -> Vec<String> {
+    fn chunk_by_lines(text: &str, max_chars: usize) -> Result<Vec<String>> {
         let mut out: Vec<String> = Vec::new();
         let mut cur = String::new();
         for line in text.lines() {
             let line = line.trim_end();
             if cur.len().saturating_add(line.len() + 1) > max_chars && !cur.is_empty() {
+                if out.len() >= 100_000 {
+                    return Err(anyhow!("directory chunk count exceeds 100000"));
+                }
                 out.push(cur);
                 cur = String::new();
             }
@@ -7174,13 +7134,17 @@ fn cmd_ingest_dir(
             cur.push_str(line);
         }
         if !cur.trim().is_empty() {
+            if out.len() >= 100_000 {
+                return Err(anyhow!("directory chunk count exceeds 100000"));
+            }
             out.push(cur);
         }
-        out
+        Ok(out)
     }
 
     for entry in walkdir::WalkDir::new(&root)
         .follow_links(false)
+        .max_depth(MAX_DIRECTORY_DEPTH)
         .into_iter()
         .filter_entry(|e| {
             if !e.file_type().is_dir() {
@@ -7190,10 +7154,14 @@ fn cmd_ingest_dir(
             name != ".git" && name != "target" && name != "build" && name != "node_modules"
         })
     {
-        let entry = match entry {
-            Ok(e) => e,
-            Err(_) => continue,
-        };
+        let entry = entry
+            .with_context(|| format!("failed while walking ingest root `{}`", root.display()))?;
+        entries_scanned = entries_scanned.saturating_add(1);
+        if entries_scanned > MAX_DIRECTORY_SCAN_ENTRIES {
+            return Err(anyhow!(
+                "directory ingest scan exceeds {MAX_DIRECTORY_SCAN_ENTRIES} filesystem entries"
+            ));
+        }
 
         if !entry.file_type().is_file() {
             continue;
@@ -7204,14 +7172,14 @@ fn cmd_ingest_dir(
         }
 
         let path = entry.path();
-        let metadata = match std::fs::metadata(path) {
-            Ok(m) => m,
-            Err(_) => continue,
-        };
+        let metadata = std::fs::symlink_metadata(path)
+            .with_context(|| format!("inspect ingest input `{}`", path.display()))?;
+        if metadata.file_type().is_symlink() || !metadata.file_type().is_file() {
+            continue;
+        }
         if metadata.len() > max_file_bytes {
             continue;
         }
-
         let ext = path
             .extension()
             .and_then(|e| e.to_str())
@@ -7219,15 +7187,26 @@ fn cmd_ingest_dir(
             .to_lowercase();
         let rel_path = path.strip_prefix(&root).unwrap_or(path);
 
-        // Dispatch by extension.
+        // Dispatch by extension. Count the bytes actually read from the
+        // no-follow handle rather than metadata observed before opening.
+        let mut rdf_grounding_text = None;
         match ext.as_str() {
             "md" | "txt" => {
-                let text = match fs::read_to_string(path) {
-                    Ok(s) => s,
+                let text = match crate::security::read_utf8_file_bounded(
+                    path,
+                    max_file_bytes as usize,
+                    "directory text input",
+                ) {
+                    Ok(text) => text,
                     Err(_) => continue,
                 };
+                account_directory_bytes(
+                    &mut total_input_bytes,
+                    text.len(),
+                    MAX_DIRECTORY_TOTAL_BYTES,
+                )?;
                 let stem = path.file_stem().unwrap_or_default().to_string_lossy();
-                let result = axiograph_ingest_docs::extract_knowledge_full(&text, &stem, domain);
+                let result = axiograph_ingest_docs::extract_knowledge_full(&text, &stem, domain)?;
 
                 // Emit generic proposals (claims + mentions) before moving facts.
                 let proposals = axiograph_ingest_docs::proposals_from_extracted_facts_v1(
@@ -7241,10 +7220,19 @@ fn cmd_ingest_dir(
                 all_proposals.extend(proposals);
             }
             "html" => {
-                let html = match fs::read_to_string(path) {
-                    Ok(s) => s,
+                let html = match crate::security::read_utf8_file_bounded(
+                    path,
+                    max_file_bytes as usize,
+                    "directory HTML input",
+                ) {
+                    Ok(html) => html,
                     Err(_) => continue,
                 };
+                account_directory_bytes(
+                    &mut total_input_bytes,
+                    html.len(),
+                    MAX_DIRECTORY_TOTAL_BYTES,
+                )?;
                 let page_id = path.file_stem().unwrap_or_default().to_string_lossy();
                 match axiograph_ingest_docs::extract_knowledge_from_confluence(
                     &html,
@@ -7269,12 +7257,21 @@ fn cmd_ingest_dir(
                 }
             }
             "sql" => {
-                let text = match fs::read_to_string(path) {
-                    Ok(s) => s,
+                let text = match crate::security::read_utf8_file_bounded(
+                    path,
+                    max_file_bytes as usize,
+                    "directory SQL input",
+                ) {
+                    Ok(text) => text,
                     Err(_) => continue,
                 };
+                account_directory_bytes(
+                    &mut total_input_bytes,
+                    text.len(),
+                    MAX_DIRECTORY_TOTAL_BYTES,
+                )?;
                 let doc_id = rel_path.to_string_lossy().to_string();
-                let doc_digest = axiograph_dsl::digest::fnv1a64_digest_bytes(doc_id.as_bytes());
+                let doc_digest = axiograph_kernel::object_blob_digest_v2(doc_id.as_bytes());
 
                 // Evidence chunk(s) for grounding + provenance pointers.
                 let mut chunks: Vec<axiograph_ingest_docs::Chunk> = Vec::new();
@@ -7282,6 +7279,11 @@ fn cmd_ingest_dir(
                     let stmt = stmt.trim();
                     if stmt.is_empty() {
                         continue;
+                    }
+                    if chunks.len() >= MAX_DIRECTORY_CHUNKS {
+                        return Err(anyhow!(
+                            "SQL statement chunk count exceeds {MAX_DIRECTORY_CHUNKS}"
+                        ));
                     }
                     let mut metadata = std::collections::HashMap::new();
                     metadata.insert("kind".to_string(), "sql_ddl".to_string());
@@ -7307,17 +7309,29 @@ fn cmd_ingest_dir(
                 }
             }
             "json" => {
-                let text = match fs::read_to_string(path) {
-                    Ok(s) => s,
+                let text = match crate::security::read_utf8_file_bounded(
+                    path,
+                    max_file_bytes as usize,
+                    "directory JSON input",
+                ) {
+                    Ok(text) => text,
                     Err(_) => continue,
                 };
-                if let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) {
+                account_directory_bytes(
+                    &mut total_input_bytes,
+                    text.len(),
+                    MAX_DIRECTORY_TOTAL_BYTES,
+                )?;
+                if let Ok(value) = crate::security::parse_json_bounded::<serde_json::Value>(
+                    text.as_bytes(),
+                    max_file_bytes as usize,
+                    "directory JSON input",
+                ) {
                     let schema = axiograph_ingest_json::infer_schema(&value, "Root");
                     let doc_id = rel_path.to_string_lossy().to_string();
-                    let doc_digest =
-                        axiograph_dsl::digest::fnv1a64_digest_bytes(doc_id.as_bytes());
+                    let doc_digest = axiograph_kernel::object_blob_digest_v2(doc_id.as_bytes());
                     let pretty = serde_json::to_string_pretty(&value).unwrap_or(text.clone());
-                    let parts = chunk_by_lines(&pretty, 2_500);
+                    let parts = chunk_by_lines(&pretty, 2_500)?;
 
                     // Evidence chunks for grounding + provenance pointers.
                     let mut chunks: Vec<axiograph_ingest_docs::Chunk> = Vec::new();
@@ -7344,40 +7358,51 @@ fn cmd_ingest_dir(
                 }
             }
             "nt" | "ntriples" | "ttl" | "turtle" | "nq" | "nquads" | "trig" | "rdf" | "owl"
-            | "xml" => match axiograph_ingest_rdfowl::proposals_from_rdf_file_v1(
-                path,
-                Some(rel_path.to_string_lossy().to_string()),
-                Some(domain.to_string()),
-            ) {
-                Ok(proposals) => {
-                    all_proposals.extend(proposals);
-                }
-                Err(_) => {
-                    // Treat RDF ingestion as best-effort for now: keep going so we
-                    // can still preserve text chunks for grounding.
-                }
-            },
+            | "xml" => {
+                let bytes = crate::security::read_file_bounded(
+                    path,
+                    max_file_bytes as usize,
+                    "RDF ingest input",
+                )?;
+                account_directory_bytes(
+                    &mut total_input_bytes,
+                    bytes.len(),
+                    MAX_DIRECTORY_TOTAL_BYTES,
+                )?;
+                rdf_grounding_text = String::from_utf8(bytes.clone()).ok();
+                let format = match ext.as_str() {
+                    "nt" | "ntriples" => axiograph_ingest_rdfowl::RdfFormatV1::NTriples,
+                    "ttl" | "turtle" => axiograph_ingest_rdfowl::RdfFormatV1::Turtle,
+                    "nq" | "nquads" => axiograph_ingest_rdfowl::RdfFormatV1::NQuads,
+                    "trig" => axiograph_ingest_rdfowl::RdfFormatV1::TriG,
+                    "rdf" | "owl" | "xml" => axiograph_ingest_rdfowl::RdfFormatV1::RdfXml,
+                    _ => {
+                        return Err(anyhow!(
+                            "unsupported RDF extension `{ext}` for {}",
+                            rel_path.display()
+                        ));
+                    }
+                };
+                let proposals = axiograph_ingest_rdfowl::proposals_from_rdf_v1(
+                    &bytes,
+                    format,
+                    Some(rel_path.to_string_lossy().to_string()),
+                    Some(domain.to_string()),
+                )?;
+                all_proposals.extend(proposals);
+            }
             _ => continue,
         }
 
         // For RDF/OWL, also try to preserve a text chunk for grounding (best-effort).
         if matches!(
             ext.as_str(),
-            "nt"
-                | "ntriples"
-                | "ttl"
-                | "turtle"
-                | "nq"
-                | "nquads"
-                | "trig"
-                | "rdf"
-                | "owl"
-                | "xml"
+            "nt" | "ntriples" | "ttl" | "turtle" | "nq" | "nquads" | "trig" | "rdf" | "owl" | "xml"
         ) {
-            if let Ok(text) = fs::read_to_string(path) {
+            if let Some(text) = rdf_grounding_text {
                 let doc_id = rel_path.to_string_lossy().to_string();
-                let doc_digest = axiograph_dsl::digest::fnv1a64_digest_bytes(doc_id.as_bytes());
-                let parts = chunk_by_lines(&text, 2_500);
+                let doc_digest = axiograph_kernel::object_blob_digest_v2(doc_id.as_bytes());
+                let parts = chunk_by_lines(&text, 2_500)?;
                 for (i, part) in parts.into_iter().enumerate() {
                     let mut metadata = std::collections::HashMap::new();
                     metadata.insert("kind".to_string(), "rdf".to_string());
@@ -7395,25 +7420,44 @@ fn cmd_ingest_dir(
             }
         }
 
+        if all_chunks.len() > MAX_DIRECTORY_CHUNKS {
+            return Err(anyhow!(
+                "directory ingest chunk count exceeds {MAX_DIRECTORY_CHUNKS}"
+            ));
+        }
+        if all_facts.len() > MAX_DIRECTORY_FACTS {
+            return Err(anyhow!(
+                "directory ingest fact count exceeds {MAX_DIRECTORY_FACTS}"
+            ));
+        }
+        if all_proposals.len() > axiograph_ingest_docs::MAX_PROPOSALS_V1 {
+            return Err(anyhow!(
+                "directory ingest proposal count exceeds hard limit"
+            ));
+        }
         files_ingested += 1;
     }
 
     let chunks_out = chunks_path
-        .cloned()
+        .map(Path::to_path_buf)
         .unwrap_or_else(|| out_dir.join("chunks.json"));
     let facts_out = facts_path
-        .cloned()
+        .map(Path::to_path_buf)
         .unwrap_or_else(|| out_dir.join("facts.json"));
     let proposals_out = proposals_path
-        .cloned()
+        .map(Path::to_path_buf)
         .unwrap_or_else(|| out_dir.join("proposals.json"));
 
-    let chunks_json = serde_json::to_string_pretty(&all_chunks)?;
-    fs::write(&chunks_out, &chunks_json)?;
+    let chunks_json = axiograph_ingest_docs::chunks_to_json_for_chunks(
+        "ingest_dir",
+        root.display().to_string(),
+        all_chunks,
+    )?;
+    crate::security::write_output_bounded(&chunks_out, &chunks_json, "CLI output")?;
     println!("  {} {}", "→".cyan(), chunks_out.display());
 
     let facts_json = serde_json::to_string_pretty(&all_facts)?;
-    fs::write(&facts_out, &facts_json)?;
+    crate::security::write_output_bounded(&facts_out, &facts_json, "CLI output")?;
     println!("  {} {}", "→".cyan(), facts_out.display());
 
     let generated_at = SystemTime::now()
@@ -7431,8 +7475,9 @@ fn cmd_ingest_dir(
         schema_hint: Some(domain.to_string()),
         proposals: all_proposals,
     };
+    axiograph_ingest_docs::validate_proposals_file_v1(&file)?;
     let json = serde_json::to_string_pretty(&file)?;
-    fs::write(&proposals_out, &json)?;
+    crate::security::write_output_bounded(&proposals_out, &json, "CLI output")?;
     println!("  {} {}", "→".cyan(), proposals_out.display());
 
     println!("  {} {} files ingested", "→".yellow(), files_ingested);
@@ -7443,28 +7488,43 @@ fn cmd_ingest_merge(
     proposals_paths: &[PathBuf],
     chunks_paths: &[PathBuf],
     out_proposals: &PathBuf,
-    out_chunks: Option<&PathBuf>,
+    out_chunks: Option<&Path>,
     schema_hint_override: Option<&str>,
 ) -> Result<()> {
     if proposals_paths.is_empty() {
-        return Err(anyhow!("ingest merge requires at least one --proposals <file.json>"));
+        return Err(anyhow!(
+            "ingest merge requires at least one --proposals <file.json>"
+        ));
     }
 
     let mut merged_proposals: Vec<axiograph_ingest_docs::ProposalV1> = Vec::new();
     let mut schema_hint: Option<String> = None;
 
     for p in proposals_paths {
-        let text = fs::read_to_string(p)?;
-        let file: axiograph_ingest_docs::ProposalsFileV1 = serde_json::from_str(&text)?;
+        let text = crate::security::read_utf8_file_bounded(
+            p,
+            crate::security::MAX_TEXT_INPUT_BYTES,
+            "CLI input",
+        )?;
+        let file: axiograph_ingest_docs::ProposalsFileV1 = crate::security::parse_json_bounded(
+            text.as_bytes(),
+            crate::security::MAX_JSON_INPUT_BYTES,
+            "CLI JSON input",
+        )?;
+        axiograph_ingest_docs::validate_proposals_file_v1(&file)?;
         if schema_hint.is_none() {
             schema_hint = file.schema_hint.clone();
         }
         merged_proposals.extend(file.proposals);
+        if merged_proposals.len() > axiograph_ingest_docs::MAX_PROPOSALS_V1 {
+            return Err(anyhow!("merged proposal count exceeds hard limit"));
+        }
     }
 
     // Deduplicate by proposal_id (stable identifiers).
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut deduped: Vec<axiograph_ingest_docs::ProposalV1> = Vec::with_capacity(merged_proposals.len());
+    let mut deduped: Vec<axiograph_ingest_docs::ProposalV1> =
+        Vec::with_capacity(merged_proposals.len());
     for p in merged_proposals {
         let id = match &p {
             axiograph_ingest_docs::ProposalV1::Entity { meta, .. } => meta.proposal_id.clone(),
@@ -7475,9 +7535,7 @@ fn cmd_ingest_merge(
         }
     }
 
-    let schema_hint = schema_hint_override
-        .map(|s| s.to_string())
-        .or(schema_hint);
+    let schema_hint = schema_hint_override.map(|s| s.to_string()).or(schema_hint);
 
     let generated_at = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -7501,17 +7559,29 @@ fn cmd_ingest_merge(
         schema_hint,
         proposals: deduped,
     };
+    axiograph_ingest_docs::validate_proposals_file_v1(&file)?;
 
     fs::create_dir_all(out_proposals.parent().unwrap_or(std::path::Path::new(".")))?;
-    fs::write(out_proposals, serde_json::to_string_pretty(&file)?)?;
+    crate::security::write_output_bounded(
+        out_proposals,
+        serde_json::to_string_pretty(&file)?,
+        "CLI output",
+    )?;
     println!("wrote {}", out_proposals.display());
 
     if !chunks_paths.is_empty() {
         let mut merged_chunks: Vec<axiograph_ingest_docs::Chunk> = Vec::new();
         for p in chunks_paths {
-            let text = fs::read_to_string(p)?;
-            let chunks: Vec<axiograph_ingest_docs::Chunk> = serde_json::from_str(&text)?;
+            let text = crate::security::read_utf8_file_bounded(
+                p,
+                crate::security::MAX_TEXT_INPUT_BYTES,
+                "CLI input",
+            )?;
+            let chunks = axiograph_ingest_docs::chunks_from_json_str(&text)?;
             merged_chunks.extend(chunks);
+            if merged_chunks.len() > 100_000 {
+                return Err(anyhow!("merged chunk count exceeds hard limit"));
+            }
         }
 
         let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -7523,16 +7593,508 @@ fn cmd_ingest_merge(
             }
         }
 
-        let out_path = out_chunks
-            .cloned()
-            .unwrap_or_else(|| out_proposals.parent().unwrap_or(std::path::Path::new(".")).join("chunks.json"));
+        let out_path = out_chunks.map(Path::to_path_buf).unwrap_or_else(|| {
+            out_proposals
+                .parent()
+                .unwrap_or(std::path::Path::new("."))
+                .join("chunks.json")
+        });
         fs::create_dir_all(out_path.parent().unwrap_or(std::path::Path::new(".")))?;
-        fs::write(&out_path, serde_json::to_string_pretty(&deduped)?)?;
+        crate::security::write_output_bounded(
+            &out_path,
+            axiograph_ingest_docs::chunks_to_json_for_chunks(
+                "merged_chunks",
+                "merge-proposals",
+                deduped,
+            )?,
+            "CLI output",
+        )?;
         println!("wrote {}", out_path.display());
     }
 
     Ok(())
 }
 
-// Legacy `.axi` emission has been removed. Ingestion produces `proposals.json`
-// first; promotion into canonical `.axi` is explicit and reviewable.
+// Ingestion emits `ProposalsFileV1` evidence first; promotion into canonical
+// `.axi` is explicit and reviewable.
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[test]
+    fn discover_check_olog_report_from_inputs_can_apply_handle() {
+        let axi_text = r#"
+module Demo
+
+schema S:
+  object Person
+  object Team
+  object Context
+  relation WorksFor(employee: Person, employer: Team, ctx: Context)
+
+theory SRules on S:
+  constraint key WorksFor(employee, employer, ctx)
+
+instance I of S:
+  Person = {Alice}
+  Team = {Ops}
+  Context = {Prod}
+  WorksFor = {(employee=Alice, employer=Ops, ctx=Prod)}
+"#;
+        let fragment_json = serde_json::to_string(&serde_json::json!({
+            "boxes": [
+                {"box_id": "employee", "object_type": "Person"},
+                {"box_id": "team", "object_type": "Team"},
+                {"box_id": "ctx", "object_type": "Context"}
+            ],
+            "relation_boxes": [
+                {
+                    "box_id": "works_for_fact",
+                    "relation": "WorksFor",
+                    "role_bindings": [
+                        {"role": "employee", "target_box": "employee"},
+                        {"role": "ctx", "target_box": "ctx"}
+                    ]
+                }
+            ],
+            "aspects": [],
+            "path_equations": []
+        }))
+        .expect("serialize fragment json");
+
+        let first_report =
+            discover_check_olog_report_from_inputs(axi_text, Some("S"), &fragment_json, None)
+                .expect("initial check olog report");
+        let handle_id = first_report
+            .checked_olog
+            .refinement_candidates
+            .first()
+            .map(|candidate| candidate.handle.id.clone())
+            .expect("expected refinement handle");
+
+        let report = discover_check_olog_report_from_inputs(
+            axi_text,
+            Some("S"),
+            &fragment_json,
+            Some(handle_id.as_str()),
+        )
+        .expect("applied check olog report");
+
+        assert_eq!(report.version, "axiograph_discover_check_olog_v1");
+        assert!(report.checked_olog.ok);
+        assert!(report
+            .applied_refinement
+            .as_ref()
+            .is_some_and(|applied| applied.handle.id == handle_id));
+        let rel_box = report
+            .applied_refinement
+            .as_ref()
+            .expect("applied refinement")
+            .refined_fragment
+            .relation_boxes
+            .iter()
+            .find(|relation_box| relation_box.box_id == "works_for_fact")
+            .expect("refined relation box");
+        assert!(rel_box
+            .role_bindings
+            .iter()
+            .any(|binding| binding.role == "employer" && binding.target_box == "team"));
+    }
+
+    #[test]
+    fn discover_transport_preview_from_inputs_can_apply_handle() {
+        let axi_text = r#"
+module Plant
+
+schema Plant:
+  object PlantAsset
+  object Pump
+  object Compressor
+  object Context
+  relation installed_at(asset: PlantAsset, site: PlantAsset, ctx: Context)
+  subtype Pump < PlantAsset
+  subtype Compressor < PlantAsset
+
+theory PlantTransport on Plant:
+  constraint key installed_at(asset, site, ctx)
+"#;
+        let morphism_json = serde_json::to_string(&serde_json::json!({
+            "source_schema": "Plant",
+            "target_schema": "Ops",
+            "objects": [
+                {"source_object": "PlantAsset", "target_object": "Equipment"},
+                {"source_object": "Pump", "target_object": "Equipment"},
+                {"source_object": "Compressor", "target_object": "Equipment"}
+            ],
+            "arrows": [
+                {"source_arrow": "installed_at", "target_path": ["owned_by", "located_at"]}
+            ]
+        }))
+        .expect("serialize morphism json");
+
+        let first_preview =
+            discover_transport_preview_from_inputs(axi_text, Some("Plant"), &morphism_json, None)
+                .expect("initial transport preview");
+        let handle_id = first_preview
+            .refinement_candidates
+            .first()
+            .map(|candidate| candidate.handle.id.clone())
+            .expect("expected migration refinement handle");
+
+        let preview = discover_transport_preview_from_inputs(
+            axi_text,
+            Some("Plant"),
+            &morphism_json,
+            Some(handle_id.as_str()),
+        )
+        .expect("applied transport preview");
+
+        assert_eq!(preview.kind, "migration_preview");
+        assert!(preview.ok);
+        assert!(preview.residual_obligations.is_empty());
+        assert!(preview.refinement_candidates.is_empty());
+        assert!(preview
+            .typed_change
+            .primitives
+            .iter()
+            .any(|primitive| matches!(
+                primitive,
+                crate::evolution_preview::EvolutionPrimitiveV1::TransportAlongSchemaMorphism {
+                    source_schema,
+                    target_schema,
+                    ..
+                } if source_schema == "Plant" && target_schema == "Ops"
+            )));
+    }
+
+    #[test]
+    fn discover_route_preview_command_parses_nested_subcommand() {
+        let cli = Cli::try_parse_from([
+            "axiograph",
+            "discover",
+            "route-preview",
+            "/tmp/demo.axi",
+            "--request",
+            "/tmp/route.json",
+            "--out",
+            "/tmp/route_preview.json",
+        ])
+        .expect("parse discover route-preview");
+
+        match cli.command {
+            Commands::Discover {
+                command: DiscoverCommands::RoutePreview(args),
+            } => {
+                assert_eq!(args.input, PathBuf::from("/tmp/demo.axi"));
+                assert_eq!(args.request, PathBuf::from("/tmp/route.json"));
+                assert_eq!(args.out, Some(PathBuf::from("/tmp/route_preview.json")));
+            }
+            _ => panic!("unexpected command parse result"),
+        }
+    }
+
+    #[test]
+    fn discover_context_report_command_parses_nested_subcommand() {
+        let cli = Cli::try_parse_from([
+            "axiograph",
+            "discover",
+            "context-report",
+            "/tmp/demo.axi",
+            "--request",
+            "/tmp/context.json",
+            "--out",
+            "/tmp/context_report.json",
+        ])
+        .expect("parse discover context-report");
+
+        match cli.command {
+            Commands::Discover {
+                command: DiscoverCommands::ContextReport(args),
+            } => {
+                assert_eq!(args.input, PathBuf::from("/tmp/demo.axi"));
+                assert_eq!(args.request, PathBuf::from("/tmp/context.json"));
+                assert_eq!(args.out, Some(PathBuf::from("/tmp/context_report.json")));
+            }
+            _ => panic!("unexpected command parse result"),
+        }
+    }
+
+    #[test]
+    fn discover_behavior_case_command_parses_nested_subcommand() {
+        let cli = Cli::try_parse_from([
+            "axiograph",
+            "discover",
+            "behavior-case",
+            "/tmp/demo.axi",
+            "--request",
+            "/tmp/behavior_case.json",
+            "--out",
+            "/tmp/behavior_case_report.json",
+        ])
+        .expect("parse discover behavior-case");
+
+        match cli.command {
+            Commands::Discover {
+                command: DiscoverCommands::BehaviorCase(args),
+            } => {
+                assert_eq!(args.input, PathBuf::from("/tmp/demo.axi"));
+                assert_eq!(args.request, PathBuf::from("/tmp/behavior_case.json"));
+                assert_eq!(
+                    args.out,
+                    Some(PathBuf::from("/tmp/behavior_case_report.json"))
+                );
+            }
+            _ => panic!("unexpected command parse result"),
+        }
+    }
+
+    #[test]
+    fn authoring_workspace_command_parses_unified_request() {
+        let cli = Cli::try_parse_from([
+            "axiograph",
+            "authoring",
+            "workspace",
+            "--workspace",
+            "/tmp/workspace",
+            "--request",
+            "/tmp/authoring_request.json",
+            "--out",
+            "/tmp/authoring_report.json",
+        ])
+        .expect("parse authoring workspace request");
+
+        match cli.command {
+            Commands::Authoring {
+                command:
+                    AuthoringCommands::Workspace {
+                        workspace,
+                        request,
+                        out,
+                    },
+            } => {
+                assert_eq!(workspace, PathBuf::from("/tmp/workspace"));
+                assert_eq!(request, PathBuf::from("/tmp/authoring_request.json"));
+                assert_eq!(out, Some(PathBuf::from("/tmp/authoring_report.json")));
+            }
+            _ => panic!("unexpected command parse result"),
+        }
+    }
+
+    #[test]
+    fn discover_coverage_query_command_accepts_direct_terms() {
+        let cli = Cli::try_parse_from([
+            "axiograph",
+            "discover",
+            "coverage-query",
+            "/tmp/domain.axi",
+            "--term",
+            "shipment eligibility",
+            "--relation",
+            "OrderEligibleForShipment",
+            "--cq-name",
+            "accepted_order_is_shipment_eligible",
+            "--code-ref",
+            "workers/shipping/src/eligibility.rs",
+            "--surface-hint",
+            "shipping",
+            "--max-matches",
+            "8",
+            "--out",
+            "/tmp/coverage_query.json",
+        ])
+        .expect("parse discover coverage-query direct flags");
+
+        match cli.command {
+            Commands::Discover {
+                command: DiscoverCommands::CoverageQuery(args),
+            } => {
+                assert_eq!(args.input, PathBuf::from("/tmp/domain.axi"));
+                assert_eq!(args.query, None);
+                assert_eq!(args.terms, vec!["shipment eligibility"]);
+                assert_eq!(args.relation_names, vec!["OrderEligibleForShipment"]);
+                assert_eq!(args.cq_names, vec!["accepted_order_is_shipment_eligible"]);
+                assert_eq!(args.code_refs, vec!["workers/shipping/src/eligibility.rs"]);
+                assert_eq!(args.surface_hints, vec!["shipping"]);
+                assert_eq!(args.max_matches, Some(8));
+                assert_eq!(args.out, Some(PathBuf::from("/tmp/coverage_query.json")));
+            }
+            _ => panic!("unexpected command parse result"),
+        }
+    }
+
+    #[test]
+    fn discover_transport_preview_command_parses_nested_subcommand() {
+        let cli = Cli::try_parse_from([
+            "axiograph",
+            "discover",
+            "transport-preview",
+            "/tmp/demo.axi",
+            "--morphism",
+            "/tmp/morphism.json",
+            "--schema",
+            "Plant",
+            "--apply-refinement-handle-id",
+            "migration_refine_v2:demo",
+            "--out",
+            "/tmp/preview.json",
+        ])
+        .expect("parse discover transport-preview");
+
+        match cli.command {
+            Commands::Discover {
+                command: DiscoverCommands::TransportPreview(args),
+            } => {
+                assert_eq!(args.input, PathBuf::from("/tmp/demo.axi"));
+                assert_eq!(args.morphism, PathBuf::from("/tmp/morphism.json"));
+                assert_eq!(args.schema.as_deref(), Some("Plant"));
+                assert_eq!(
+                    args.apply_refinement_handle_id.as_deref(),
+                    Some("migration_refine_v2:demo")
+                );
+                assert_eq!(args.out, Some(PathBuf::from("/tmp/preview.json")));
+            }
+            _ => panic!("unexpected command parse result"),
+        }
+    }
+
+    #[test]
+    fn discover_theory_graph_command_parses_nested_subcommand() {
+        let cli = Cli::try_parse_from([
+            "axiograph",
+            "discover",
+            "theory-graph",
+            "/tmp/family.axi",
+            "--theory",
+            "FamRules",
+            "--out",
+            "/tmp/theory_graph.json",
+        ])
+        .expect("parse discover theory-graph");
+
+        match cli.command {
+            Commands::Discover {
+                command: DiscoverCommands::TheoryGraph(args),
+            } => {
+                assert_eq!(args.input, PathBuf::from("/tmp/family.axi"));
+                assert_eq!(args.theory.as_deref(), Some("FamRules"));
+                assert_eq!(args.out, Some(PathBuf::from("/tmp/theory_graph.json")));
+            }
+            _ => panic!("unexpected command parse result"),
+        }
+    }
+
+    #[test]
+    fn check_theory_command_parses_nested_subcommand() {
+        let cli = Cli::try_parse_from([
+            "axiograph",
+            "check",
+            "theory",
+            "/tmp/family.axi",
+            "--theory",
+            "FamRules",
+            "--closure-tier",
+            "evidence_weighted",
+            "--world-id",
+            "review:family",
+            "--evidence-threshold-ppm",
+            "700000",
+            "--weighted-evidence",
+            "--evidence-weight",
+            "rule:family=250000",
+            "--json",
+        ])
+        .expect("parse check theory");
+
+        match cli.command {
+            Commands::Check {
+                command: CheckCommands::Theory(args),
+            } => {
+                assert_eq!(args.input, PathBuf::from("/tmp/family.axi"));
+                assert_eq!(args.theory.as_deref(), Some("FamRules"));
+                assert_eq!(args.closure_tier, "evidence_weighted");
+                assert_eq!(args.world_id.as_deref(), Some("review:family"));
+                assert_eq!(args.evidence_threshold_ppm, Some(700_000));
+                assert!(args.weighted_evidence);
+                assert_eq!(args.evidence_weights, vec!["rule:family=250000"]);
+                assert!(args.json);
+            }
+            _ => panic!("unexpected command parse result"),
+        }
+    }
+
+    #[test]
+    fn discover_theory_check_command_parses_nested_subcommand() {
+        let cli = Cli::try_parse_from([
+            "axiograph",
+            "discover",
+            "theory-check",
+            "/tmp/family.axi",
+            "--theory",
+            "FamRules",
+            "--closure-tier",
+            "global_indexed",
+            "--included-ref",
+            "refs/heads/main",
+            "--included-slice",
+            "slice:billing",
+            "--included-import",
+            "import:erp",
+            "--undeclared-import",
+            "import:rogue",
+            "--out",
+            "/tmp/theory_check.json",
+        ])
+        .expect("parse discover theory-check");
+
+        match cli.command {
+            Commands::Discover {
+                command: DiscoverCommands::TheoryCheck(args),
+            } => {
+                assert_eq!(args.input, PathBuf::from("/tmp/family.axi"));
+                assert_eq!(args.theory.as_deref(), Some("FamRules"));
+                assert_eq!(args.closure_tier, "global_indexed");
+                assert_eq!(args.included_refs, vec!["refs/heads/main"]);
+                assert_eq!(args.included_slices, vec!["slice:billing"]);
+                assert_eq!(args.included_imports, vec!["import:erp"]);
+                assert_eq!(args.undeclared_imports, vec!["import:rogue"]);
+                assert_eq!(args.out, Some(PathBuf::from("/tmp/theory_check.json")));
+            }
+            _ => panic!("unexpected command parse result"),
+        }
+    }
+
+    #[test]
+    fn discover_theory_graph_report_exposes_runtime_obligation_graphs() {
+        let family_axi = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../..")
+            .join("examples/Family.axi");
+        let axi_text = crate::security::read_utf8_file_bounded(
+            &family_axi,
+            crate::security::MAX_TEXT_INPUT_BYTES,
+            "CLI input",
+        )
+        .expect("read Family.axi");
+        let report = discover_theory_graph_report_from_axi_text(&axi_text, Some("FamRules"))
+            .expect("build theory graph report");
+
+        assert_eq!(report.version, "discover_theory_graph_report_v1");
+        assert_eq!(report.graphs.len(), 1);
+        let graph = &report.graphs[0];
+        assert!(!graph.nodes.is_empty());
+        assert!(!graph.edges.is_empty());
+        assert!(graph.nodes.iter().any(|node| {
+            node.kind == axiograph_pathdb::kernel_ir::TheoryObligationGraphNodeKindV1::Obligation
+                && node.label.contains("Parent")
+        }));
+        assert!(graph.edges.iter().any(|edge| {
+            edge.kind
+                == axiograph_pathdb::kernel_ir::TheoryObligationGraphEdgeKindV1::SubjectSupportsObligation
+        }));
+        assert_eq!(
+            graph.completeness_claim,
+            "use RuntimeTheoryCheckReportV1 for scoped runtime completeness claims"
+        );
+    }
+}

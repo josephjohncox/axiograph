@@ -1,8 +1,7 @@
 # Axiograph REPL script: import canonical `.axi` schema module (PhysicsKnowledge)
 #
 # Demonstrates that `import_axi` accepts:
-# - PathDB snapshot exports (`PathDBExportV1`)
-# - Canonical `axi_schema_v1` modules (schema/theory/instance)
+# - Canonical `axi_v1` modules (schema/theory/instance)
 #
 # Run (from repo root):
 #   make binaries
@@ -26,13 +25,10 @@ validate_axi
 stats
 
 # Derived binary edges for 2-field relations let us traverse directly.
-q select ?cat where name("NewtonsSecond") -LawCategory-> ?cat limit 10
+q select ?cat where name("NewtonsSecond") -LawHasCategory-> ?cat limit 10
 
 # Reified tuples are still available as first-class objects (fact nodes).
 q select ?rule where name("CuttingForceProportional") -HeuristicRule-> ?rule limit 10
 
-# Fact atom demo: query the relation tuples directly (uses FactIndex via `axi_relation="LawCategory"`).
-q select ?f ?cat where ?f = LawCategory(law=NewtonsSecond, category=?cat) limit 10
-
-export_axi build/physics_knowledge_export_v1.axi
-save build/physics_knowledge.axpd
+# Fact atom demo: query the relation tuples directly (uses FactIndex via `axi_relation="LawHasCategory"`).
+q select ?f ?cat where ?f = LawHasCategory(law=NewtonsSecond, category=?cat) limit 10

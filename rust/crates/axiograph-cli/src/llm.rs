@@ -19,20 +19,24 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::PathBuf;
-use std::process::{Command, Output, Stdio};
-use std::thread;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::process::Command;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use roaring::RoaringBitmap;
-
+#[cfg(any(
+    feature = "llm-ollama",
+    feature = "llm-openai",
+    feature = "llm-anthropic"
+))]
+use crate::predictive_proposals::predictive_proposal_llm_prompt;
+use crate::predictive_proposals::{
+    normalize_predictive_proposal_proposals_value, PredictiveProposalRequestV1,
+    PredictiveProposalResponseV1,
+};
+use crate::query_ir::QueryIrV1;
 use axiograph_ingest_docs::{Chunk, ProposalSourceV1, ProposalV1, ProposalsFileV1};
 use axiograph_pathdb::axi_semantics::MetaPlaneIndex;
 use axiograph_pathdb::PathDB;
-use crate::query_ir::QueryIrV1;
-use crate::world_model::{
-    normalize_world_model_proposals_value, world_model_llm_prompt, WorldModelRequestV1,
-    WorldModelResponseV1,
-};
+use axiograph_pathdb::{AcceptedAxiAnchor, AcceptedSnapshotId};
 
 // Common attribute keys (shared with viz overlays).
 const ATTR_AXI_RELATION: &str = "axi_relation";
@@ -50,7 +54,7 @@ pub(crate) const AXIOGRAPH_LLM_TIMEOUT_SECS_ENV: &str = "AXIOGRAPH_LLM_TIMEOUT_S
 pub(crate) const AXIOGRAPH_LLM_MAX_STEPS_ENV: &str = "AXIOGRAPH_LLM_MAX_STEPS";
 pub(crate) const AXIOGRAPH_LLM_MAX_STEPS_CAP_ENV: &str = "AXIOGRAPH_LLM_MAX_STEPS_CAP";
 pub(crate) const AXIOGRAPH_LLM_MAX_OUTPUT_TOKENS_ENV: &str = "AXIOGRAPH_LLM_MAX_OUTPUT_TOKENS";
-pub(crate) const WORLD_MODEL_BACKEND_ENV: &str = "WORLD_MODEL_BACKEND";
+pub(crate) const PREDICTIVE_PROPOSAL_BACKEND_ENV: &str = "PREDICTIVE_PROPOSAL_BACKEND";
 pub(crate) const AXIOGRAPH_LLM_REASONING_EFFORT_ENV: &str = "AXIOGRAPH_LLM_REASONING_EFFORT";
 pub(crate) const AXIOGRAPH_LLM_CHAT_MAX_MESSAGES_ENV: &str = "AXIOGRAPH_LLM_CHAT_MAX_MESSAGES";
 pub(crate) const AXIOGRAPH_LLM_JSON_REPAIR_ENV: &str = "AXIOGRAPH_LLM_JSON_REPAIR";
@@ -69,7 +73,8 @@ pub(crate) const AXIOGRAPH_LLM_PREFETCH_DESCRIBE_ENTITIES_ENV: &str =
 pub(crate) const AXIOGRAPH_LLM_PREFETCH_DOCCHUNKS_ENV: &str = "AXIOGRAPH_LLM_PREFETCH_DOCCHUNKS";
 pub(crate) const AXIOGRAPH_LLM_PREFETCH_LOOKUP_RELATIONS_ENV: &str =
     "AXIOGRAPH_LLM_PREFETCH_LOOKUP_RELATIONS";
-pub(crate) const AXIOGRAPH_LLM_PREFETCH_LOOKUP_TYPES_ENV: &str = "AXIOGRAPH_LLM_PREFETCH_LOOKUP_TYPES";
+pub(crate) const AXIOGRAPH_LLM_PREFETCH_LOOKUP_TYPES_ENV: &str =
+    "AXIOGRAPH_LLM_PREFETCH_LOOKUP_TYPES";
 
 // External LLM provider env vars (recommended configuration path).
 pub(crate) const OPENAI_API_KEY_ENV: &str = "OPENAI_API_KEY";
@@ -93,6 +98,11 @@ const DEFAULT_LLM_MAX_STEPS: usize = 12;
 // `AXIOGRAPH_LLM_MAX_STEPS_CAP` when you intentionally want longer multi-step
 // tool use (e.g. ontology engineering workflows).
 const DEFAULT_LLM_MAX_STEPS_CAP: usize = 64;
+const MAX_LLM_TOOL_STEPS: usize = 64;
+const MAX_LLM_TOOL_ROWS: usize = 200;
+const MAX_LLM_TOOL_DOC_CHUNKS: usize = 50;
+const MIN_LLM_TOOL_DOC_CHARS: usize = 32;
+const MAX_LLM_TOOL_DOC_CHARS: usize = 8_000;
 const DEFAULT_LLM_MAX_OUTPUT_TOKENS: u32 = 1200;
 const DEFAULT_LLM_CHAT_MAX_MESSAGES: usize = 24;
 const DEFAULT_LLM_PROMPT_MAX_TRANSCRIPT_ITEMS: usize = 12;
@@ -108,6 +118,11 @@ const DEFAULT_LLM_PREFETCH_LOOKUP_TYPES: usize = 1;
 const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com";
 const DEFAULT_ANTHROPIC_BASE_URL: &str = "https://api.anthropic.com";
 const DEFAULT_ANTHROPIC_VERSION: &str = "2023-06-01";
+const MAX_EMBEDDING_BATCH_ITEMS: usize = 256;
+const MAX_EMBEDDING_TEXT_BYTES: usize = 1024 * 1024;
+const MAX_EMBEDDING_BATCH_TEXT_BYTES: usize = 8 * 1024 * 1024;
+const MAX_EMBEDDING_VECTOR_DIM: usize = 8_192;
+const MAX_EMBEDDING_RESPONSE_COMPONENTS: usize = 2_000_000;
 
 /// Resolve the default maximum number of LLM tool-loop steps.
 ///
@@ -119,19 +134,28 @@ pub(crate) fn llm_default_max_steps() -> Result<usize> {
         Ok(v) => {
             let v = v.trim();
             if v.is_empty() {
-                return Ok(DEFAULT_LLM_MAX_STEPS);
+                return require_bounded_usize(
+                    DEFAULT_LLM_MAX_STEPS,
+                    1,
+                    llm_max_steps_cap()?,
+                    AXIOGRAPH_LLM_MAX_STEPS_ENV,
+                );
             }
             let n = v.parse::<usize>().map_err(|_| {
                 anyhow!(
                     "invalid {AXIOGRAPH_LLM_MAX_STEPS_ENV}={v:?} (expected integer tool-loop step bound)"
                 )
             })?;
-            Ok(n.max(1))
+            let cap = llm_max_steps_cap()?;
+            require_bounded_usize(n, 1, cap, AXIOGRAPH_LLM_MAX_STEPS_ENV)
         }
-        Err(std::env::VarError::NotPresent) => Ok(DEFAULT_LLM_MAX_STEPS),
-        Err(e) => Err(anyhow!(
-            "failed to read {AXIOGRAPH_LLM_MAX_STEPS_ENV}: {e}"
-        )),
+        Err(std::env::VarError::NotPresent) => require_bounded_usize(
+            DEFAULT_LLM_MAX_STEPS,
+            1,
+            llm_max_steps_cap()?,
+            AXIOGRAPH_LLM_MAX_STEPS_ENV,
+        ),
+        Err(e) => Err(anyhow!("failed to read {AXIOGRAPH_LLM_MAX_STEPS_ENV}: {e}")),
     }
 }
 
@@ -146,7 +170,7 @@ pub(crate) fn llm_max_steps_cap() -> Result<usize> {
         AXIOGRAPH_LLM_MAX_STEPS_CAP_ENV,
         DEFAULT_LLM_MAX_STEPS_CAP,
         1,
-        10_000,
+        MAX_LLM_TOOL_STEPS,
     )
 }
 
@@ -171,11 +195,12 @@ pub(crate) fn llm_max_output_tokens() -> Result<u32> {
                     "invalid {AXIOGRAPH_LLM_MAX_OUTPUT_TOKENS_ENV}={v:?} (expected integer tokens, e.g. 1200)"
                 )
             })?;
-            if parsed == 0 {
-                Ok(DEFAULT_LLM_MAX_OUTPUT_TOKENS)
-            } else {
-                Ok(parsed.min(32_000))
+            if !(1..=32_000).contains(&parsed) {
+                return Err(anyhow!(
+                    "{AXIOGRAPH_LLM_MAX_OUTPUT_TOKENS_ENV} must be in 1..=32000"
+                ));
             }
+            Ok(parsed)
         }
         Err(std::env::VarError::NotPresent) => Ok(DEFAULT_LLM_MAX_OUTPUT_TOKENS),
         Err(e) => Err(anyhow!(
@@ -232,19 +257,26 @@ Invalid response (truncated):
     )
 }
 
+fn require_bounded_usize(value: usize, min: usize, max: usize, label: &str) -> Result<usize> {
+    if !(min..=max).contains(&value) {
+        return Err(anyhow!("{label} must be in {min}..={max}"));
+    }
+    Ok(value)
+}
+
 fn llm_env_usize(name: &str, default: usize, min: usize, max: usize) -> Result<usize> {
     match std::env::var(name) {
         Ok(v) => {
             let v = v.trim();
             if v.is_empty() {
-                return Ok(default);
+                return require_bounded_usize(default, min, max, name);
             }
             let parsed = v
                 .parse::<usize>()
                 .map_err(|_| anyhow!("invalid {name}={v:?} (expected integer)"))?;
-            Ok(parsed.clamp(min, max))
+            require_bounded_usize(parsed, min, max, name)
         }
-        Err(std::env::VarError::NotPresent) => Ok(default),
+        Err(std::env::VarError::NotPresent) => require_bounded_usize(default, min, max, name),
         Err(e) => Err(anyhow!("failed to read {name}: {e}")),
     }
 }
@@ -337,7 +369,8 @@ fn llm_prefetch_lookup_types() -> Result<usize> {
 /// 3) default (`DEFAULT_LLM_TIMEOUT_SECS`)
 ///
 /// Semantics:
-/// - `0` disables the timeout (wait forever)
+/// - timeouts are mandatory and capped; `0` is rejected rather than creating
+///   an unbounded network or child-process wait.
 pub(crate) fn llm_timeout(timeout_secs_override: Option<u64>) -> Result<Option<Duration>> {
     let secs = match timeout_secs_override {
         Some(v) => v,
@@ -349,7 +382,7 @@ pub(crate) fn llm_timeout(timeout_secs_override: Option<u64>) -> Result<Option<D
                 } else {
                     v.parse::<u64>().map_err(|_| {
                         anyhow!(
-                            "invalid {AXIOGRAPH_LLM_TIMEOUT_SECS_ENV}={v:?} (expected integer seconds; 0 disables)"
+                            "invalid {AXIOGRAPH_LLM_TIMEOUT_SECS_ENV}={v:?} (expected integer seconds)"
                         )
                     })?
                 }
@@ -363,57 +396,119 @@ pub(crate) fn llm_timeout(timeout_secs_override: Option<u64>) -> Result<Option<D
         },
     };
 
-    Ok(if secs == 0 {
-        None
-    } else {
-        Some(Duration::from_secs(secs))
-    })
+    if secs == 0 || secs > crate::security::MAX_CHILD_RUNTIME.as_secs() {
+        return Err(anyhow!(
+            "{AXIOGRAPH_LLM_TIMEOUT_SECS_ENV} must be in 1..={} seconds",
+            crate::security::MAX_CHILD_RUNTIME.as_secs()
+        ));
+    }
+    Ok(Some(Duration::from_secs(secs)))
 }
 
-pub(crate) fn wait_with_output_timeout(
-    mut child: std::process::Child,
-    timeout: Option<Duration>,
-    context: &str,
-) -> Result<Output> {
-    let Some(timeout) = timeout else {
-        return child
-            .wait_with_output()
-            .map_err(|e| anyhow!("{context}: {e}"));
-    };
+fn required_network_timeout(timeout: Option<Duration>) -> Result<Duration> {
+    let timeout = timeout.ok_or_else(|| anyhow!("network timeout is required"))?;
+    if timeout.is_zero() || timeout > crate::security::MAX_CHILD_RUNTIME {
+        return Err(anyhow!(
+            "network timeout must be in 1ms..={}s",
+            crate::security::MAX_CHILD_RUNTIME.as_secs()
+        ));
+    }
+    Ok(timeout)
+}
 
-    let start = Instant::now();
-    loop {
-        if child
-            .try_wait()
-            .map_err(|e| anyhow!("{context}: failed to poll child status: {e}"))?
-            .is_some()
-        {
-            break;
-        }
+fn validate_network_json_request(value: &serde_json::Value, label: &str) -> Result<()> {
+    axiograph_security::validate_json_value_bounded(
+        value,
+        crate::security::MAX_JSON_INPUT_BYTES,
+        label,
+    )?;
+    Ok(())
+}
 
-        if start.elapsed() > timeout {
-            let _ = child.kill();
-            let output = child
-                .wait_with_output()
-                .map_err(|e| anyhow!("{context}: failed to collect output after kill: {e}"))?;
-            let stderr = String::from_utf8_lossy(&output.stderr);
+fn validate_embedding_inputs(texts: &[String]) -> Result<()> {
+    if texts.len() > MAX_EMBEDDING_BATCH_ITEMS {
+        return Err(anyhow!(
+            "embedding input count {} exceeds {MAX_EMBEDDING_BATCH_ITEMS}",
+            texts.len()
+        ));
+    }
+    let mut total = 0_usize;
+    for text in texts {
+        if text.len() > MAX_EMBEDDING_TEXT_BYTES {
             return Err(anyhow!(
-                "{context}: timed out after {}s (set {AXIOGRAPH_LLM_TIMEOUT_SECS_ENV}=0 to disable). stderr: {}",
-                timeout.as_secs(),
-                stderr.trim()
+                "embedding input exceeds {MAX_EMBEDDING_TEXT_BYTES} bytes"
             ));
         }
-
-        thread::sleep(Duration::from_millis(50));
+        total = total
+            .checked_add(text.len())
+            .ok_or_else(|| anyhow!("embedding input byte count overflow"))?;
     }
-
-    child
-        .wait_with_output()
-        .map_err(|e| anyhow!("{context}: {e}"))
+    if total > MAX_EMBEDDING_BATCH_TEXT_BYTES {
+        return Err(anyhow!(
+            "embedding input bytes {total} exceed {MAX_EMBEDDING_BATCH_TEXT_BYTES}"
+        ));
+    }
+    Ok(())
 }
 
-#[derive(Debug, Clone)]
+fn validate_embedding_vectors(vectors: &[Vec<f32>], expected: usize) -> Result<()> {
+    if vectors.len() != expected {
+        return Err(anyhow!(
+            "embedding response returned {} vectors for {expected} inputs",
+            vectors.len()
+        ));
+    }
+    let dimension = vectors.first().map_or(0, Vec::len);
+    if expected > 0 && (dimension == 0 || dimension > MAX_EMBEDDING_VECTOR_DIM) {
+        return Err(anyhow!(
+            "embedding vector dimension must be in 1..={MAX_EMBEDDING_VECTOR_DIM}"
+        ));
+    }
+    let components = expected
+        .checked_mul(dimension)
+        .ok_or_else(|| anyhow!("embedding response component count overflow"))?;
+    if components > MAX_EMBEDDING_RESPONSE_COMPONENTS {
+        return Err(anyhow!(
+            "embedding response components {components} exceed {MAX_EMBEDDING_RESPONSE_COMPONENTS}"
+        ));
+    }
+    for vector in vectors {
+        if vector.len() != dimension {
+            return Err(anyhow!(
+                "embedding response contains inconsistent dimensions"
+            ));
+        }
+        if vector.iter().any(|component| !component.is_finite()) {
+            return Err(anyhow!("embedding response contains non-finite component"));
+        }
+    }
+    Ok(())
+}
+
+fn bounded_http_text(response: reqwest::blocking::Response, label: &str) -> Result<String> {
+    let bytes = crate::security::read_blocking_response_bounded(
+        response,
+        crate::security::MAX_NETWORK_ERROR_BYTES,
+        label,
+    )?;
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+fn bounded_http_json<T: for<'de> Deserialize<'de>>(
+    response: reqwest::blocking::Response,
+    label: &str,
+) -> Result<T> {
+    let bytes = crate::security::read_blocking_response_bounded(
+        response,
+        crate::security::MAX_NETWORK_RESPONSE_BYTES,
+        label,
+    )?;
+    crate::security::parse_json_bounded(&bytes, crate::security::MAX_NETWORK_RESPONSE_BYTES, label)
+}
+
+#[derive(Debug, Clone, Default)]
 pub enum LlmBackend {
+    #[default]
     Disabled,
     /// A deterministic “mock LLM” for local demos/tests: it runs the same
     /// template parser as the `ask` command and returns the compiled AxQL.
@@ -427,18 +522,14 @@ pub enum LlmBackend {
     /// This uses Ollama's native `/api/chat` endpoint so you can run local
     /// models without a separate plugin process.
     #[cfg(feature = "llm-ollama")]
-    Ollama {
-        host: String,
-    },
+    Ollama { host: String },
     /// OpenAI API (networked).
     ///
     /// Configuration is read from env vars (recommended):
     /// - `OPENAI_API_KEY` (required)
     /// - `OPENAI_BASE_URL` (optional; default `https://api.openai.com`)
     #[cfg(feature = "llm-openai")]
-    OpenAI {
-        base_url: String,
-    },
+    OpenAI { base_url: String },
     /// Anthropic API (networked).
     ///
     /// Configuration is read from env vars (recommended):
@@ -446,21 +537,10 @@ pub enum LlmBackend {
     /// - `ANTHROPIC_BASE_URL` (optional; default `https://api.anthropic.com`)
     /// - `ANTHROPIC_VERSION` (optional; default `2023-06-01`)
     #[cfg(feature = "llm-anthropic")]
-    Anthropic {
-        base_url: String,
-    },
+    Anthropic { base_url: String },
     /// External command plugin that speaks `axiograph_llm_plugin_v1` over
     /// stdin/stdout JSON.
-    Command {
-        program: PathBuf,
-        args: Vec<String>,
-    },
-}
-
-impl Default for LlmBackend {
-    fn default() -> Self {
-        Self::Disabled
-    }
+    Command { program: PathBuf, args: Vec<String> },
 }
 
 #[derive(Debug, Clone, Default)]
@@ -471,7 +551,6 @@ pub struct LlmState {
 
 #[derive(Debug, Clone)]
 pub enum GeneratedQuery {
-    Axql(String),
     QueryIrV1(QueryIrV1),
 }
 
@@ -499,7 +578,7 @@ impl LlmState {
                 let tokens: Vec<String> =
                     question.split_whitespace().map(|s| s.to_string()).collect();
                 let q = crate::nlq::parse_ask_query(&tokens)?;
-                Ok(GeneratedQuery::Axql(crate::nlq::render_axql_query(&q)))
+                Ok(GeneratedQuery::QueryIrV1(QueryIrV1::from_axql_query(&q)))
             }
             #[cfg(feature = "llm-ollama")]
             LlmBackend::Ollama { host } => {
@@ -546,14 +625,11 @@ impl LlmState {
                 if let Some(ir) = response.query_ir_v1 {
                     return Ok(GeneratedQuery::QueryIrV1(ir));
                 }
-                if let Some(axql) = response.axql {
-                    return Ok(GeneratedQuery::Axql(axql));
-                }
-                Err(anyhow!("llm plugin returned no `query_ir_v1` or `axql`"))
+                Err(anyhow!("llm plugin returned no `query_ir_v1`"))
             }
         }?;
 
-        Ok(normalize_generated_query(out))
+        Ok(out)
     }
 
     pub fn summarize_answer(
@@ -570,10 +646,9 @@ impl LlmState {
                     model: self.model.clone(),
                     task: PluginTaskV1::Answer {
                         question: question.to_string(),
-                        query: QueryPayloadV1::Axql {
-                            axql: match query {
-                                GeneratedQuery::Axql(q) => q.clone(),
-                                GeneratedQuery::QueryIrV1(ir) => ir.to_axql_text()?,
+                        query: QueryPayloadV1::QueryIrV1 {
+                            query_ir_v1: match query {
+                                GeneratedQuery::QueryIrV1(ir) => ir.clone(),
                             },
                         },
                         results: result.to_plugin_results(db),
@@ -624,21 +699,22 @@ impl LlmState {
     }
 }
 
-pub(crate) fn world_model_llm_plugin(
+pub(crate) fn predictive_proposal_llm_plugin(
     llm: &LlmState,
-    req: &WorldModelRequestV1,
-) -> Result<WorldModelResponseV1> {
+    req: &PredictiveProposalRequestV1,
+) -> Result<PredictiveProposalResponseV1> {
+    crate::predictive_proposals::validate_predictive_proposal_request(req)?;
     let _max_tokens_guard = maybe_bump_llm_max_output_tokens(req);
-    let content = match &llm.backend {
+    let content: String = match &llm.backend {
         LlmBackend::Disabled => {
             return Err(anyhow!(
-                "world model LLM backend is disabled (configure `--llm-openai/--llm-ollama/--llm-anthropic`)"
+                "predictive proposal adapter LLM backend is disabled (configure `--llm-openai/--llm-ollama/--llm-anthropic`)"
             ))
         }
         LlmBackend::Mock => {
-            let proposals = normalize_world_model_proposals_value(&req.trace_id, json!({}));
-            return Ok(WorldModelResponseV1 {
-                protocol: crate::world_model::WORLD_MODEL_PROTOCOL_V1.to_string(),
+            let proposals = normalize_predictive_proposal_proposals_value(&req.trace_id, json!({}));
+            return Ok(PredictiveProposalResponseV1 {
+                protocol: crate::predictive_proposals::PREDICTIVE_PROPOSAL_PROTOCOL_V1.to_string(),
                 trace_id: req.trace_id.clone(),
                 generated_at_unix_secs: now_unix_secs(),
                 proposals,
@@ -650,10 +726,10 @@ pub(crate) fn world_model_llm_plugin(
         LlmBackend::Ollama { host } => {
             let Some(model) = llm.model.as_deref() else {
                 return Err(anyhow!(
-                    "no model selected (use WORLD_MODEL_MODEL or set `llm model <ollama_model>`)"
+                    "no model selected (use PREDICTIVE_PROPOSAL_MODEL or set `llm model <ollama_model>`)"
                 ));
             };
-            let (system, summary) = world_model_llm_prompt(req);
+            let (system, summary) = predictive_proposal_llm_prompt(req);
             let user = serde_json::to_string_pretty(&summary)
                 .unwrap_or_else(|_| "{\"summary\":\"unavailable\"}".to_string());
             let timeout = llm_timeout(None)?;
@@ -664,10 +740,10 @@ pub(crate) fn world_model_llm_plugin(
         LlmBackend::OpenAI { base_url } => {
             let Some(model) = llm.model.as_deref() else {
                 return Err(anyhow!(
-                    "no model selected (use WORLD_MODEL_MODEL or set {OPENAI_MODEL_ENV})"
+                    "no model selected (use PREDICTIVE_PROPOSAL_MODEL or set {OPENAI_MODEL_ENV})"
                 ));
             };
-            let (system, summary) = world_model_llm_prompt(req);
+            let (system, summary) = predictive_proposal_llm_prompt(req);
             let user = serde_json::to_string_pretty(&summary)
                 .unwrap_or_else(|_| "{\"summary\":\"unavailable\"}".to_string());
             let timeout = llm_timeout(None)?;
@@ -678,10 +754,10 @@ pub(crate) fn world_model_llm_plugin(
         LlmBackend::Anthropic { base_url } => {
             let Some(model) = llm.model.as_deref() else {
                 return Err(anyhow!(
-                    "no model selected (use WORLD_MODEL_MODEL or set {ANTHROPIC_MODEL_ENV})"
+                    "no model selected (use PREDICTIVE_PROPOSAL_MODEL or set {ANTHROPIC_MODEL_ENV})"
                 ));
             };
-            let (system, summary) = world_model_llm_prompt(req);
+            let (system, summary) = predictive_proposal_llm_prompt(req);
             let user = serde_json::to_string_pretty(&summary)
                 .unwrap_or_else(|_| "{\"summary\":\"unavailable\"}".to_string());
             let timeout = llm_timeout(None)?;
@@ -689,15 +765,15 @@ pub(crate) fn world_model_llm_plugin(
         }
         LlmBackend::Command { .. } => {
             return Err(anyhow!(
-                "world model LLM backend does not support LLM command plugins (use openai/anthropic/ollama)"
+                "predictive proposal adapter LLM backend does not support LLM command plugins (use openai/anthropic/ollama)"
             ));
         }
     };
 
     let parsed: Value = parse_llm_json_object(&content)?;
-    let proposals = normalize_world_model_proposals_value(&req.trace_id, parsed);
-    Ok(WorldModelResponseV1 {
-        protocol: crate::world_model::WORLD_MODEL_PROTOCOL_V1.to_string(),
+    let proposals = normalize_predictive_proposal_proposals_value(&req.trace_id, parsed);
+    Ok(PredictiveProposalResponseV1 {
+        protocol: crate::predictive_proposals::PREDICTIVE_PROPOSAL_PROTOCOL_V1.to_string(),
         trace_id: req.trace_id.clone(),
         generated_at_unix_secs: now_unix_secs(),
         proposals,
@@ -721,8 +797,8 @@ impl Drop for EnvVarGuard {
     }
 }
 
-fn maybe_bump_llm_max_output_tokens(req: &WorldModelRequestV1) -> Option<EnvVarGuard> {
-    let target = world_model_output_token_budget(req);
+fn maybe_bump_llm_max_output_tokens(req: &PredictiveProposalRequestV1) -> Option<EnvVarGuard> {
+    let target = predictive_proposal_output_token_budget(req);
     if target <= DEFAULT_LLM_MAX_OUTPUT_TOKENS {
         return None;
     }
@@ -738,368 +814,10 @@ fn maybe_bump_llm_max_output_tokens(req: &WorldModelRequestV1) -> Option<EnvVarG
     }
 }
 
-fn world_model_output_token_budget(req: &WorldModelRequestV1) -> u32 {
+fn predictive_proposal_output_token_budget(req: &PredictiveProposalRequestV1) -> u32 {
     let max_items = req.options.max_new_proposals.max(1) as u32;
     let estimate = 800 + max_items.saturating_mul(60);
     estimate.clamp(DEFAULT_LLM_MAX_OUTPUT_TOKENS, 12000)
-}
-
-fn normalize_generated_query(q: GeneratedQuery) -> GeneratedQuery {
-    match q {
-        GeneratedQuery::Axql(text) => {
-            let normalized = normalize_axql_candidate(&text);
-            // Keep the LLM/tooling boundary typed when possible: if the AxQL
-            // parses, convert it into QueryIrV1 so downstream components can
-            // consume a stable JSON form.
-            if let Ok(parsed) = crate::axql::parse_axql_query(&normalized) {
-                GeneratedQuery::QueryIrV1(QueryIrV1::from_axql_query(&parsed))
-            } else {
-                GeneratedQuery::Axql(normalized)
-            }
-        }
-        GeneratedQuery::QueryIrV1(ir) => GeneratedQuery::QueryIrV1(ir),
-    }
-}
-
-fn normalize_axql_candidate(text: &str) -> String {
-    let mut s = text.trim().to_string();
-    if s.is_empty() {
-        return s;
-    }
-
-    // Trim common wrappers produced by models (even when we ask them not to).
-    if let Some(rest) = s.strip_prefix("axql:") {
-        s = rest.trim().to_string();
-    }
-    if let Some(rest) = s.strip_prefix("AxQL:") {
-        s = rest.trim().to_string();
-    }
-
-    // Strip a single surrounding markdown fence.
-    if s.starts_with("```") {
-        if let Some(end) = s.rfind("```") {
-            if end > 0 {
-                let inner = &s[3..end];
-                s = inner.trim().to_string();
-            }
-        }
-        if let Some(rest) = s.strip_prefix("text") {
-            // ```text
-            s = rest.trim().to_string();
-        }
-    }
-
-    // Many LLMs add a trailing ';' out of SQL habit.
-    while s.ends_with(';') {
-        s.pop();
-        s = s.trim_end().to_string();
-    }
-
-    // AxQL queries must start with either `where ...` (implicit select) or
-    // `select ... where ...`. If the model returns just an atom/conjunction,
-    // treat it as a `where` clause.
-    let lower = s.to_ascii_lowercase();
-    if !(lower.starts_with("where") || lower.starts_with("select")) {
-        s = format!("where {s}");
-    }
-
-    s = rewrite_common_llm_axql_mistakes(&s);
-    s
-}
-
-fn rewrite_common_llm_axql_mistakes(text: &str) -> String {
-    let mut s = text.to_string();
-    s = rewrite_bracketed_limit_syntax(&s);
-    s = rewrite_colon_attr_equality(&s);
-    s = rewrite_var_is_quoted_string_as_name_attr(&s);
-    s
-}
-
-fn rewrite_bracketed_limit_syntax(text: &str) -> String {
-    // Common LLM mistake: `[...]` around the query limit, like `[limit 10]`.
-    //
-    // Note: AxQL uses brackets for path expressions (RPQs), so we only rewrite
-    // bracket groups that *start* with `limit`.
-    let mut out = String::new();
-    let mut i = 0usize;
-    while let Some(open_rel) = text[i..].find('[') {
-        let open = i + open_rel;
-        out.push_str(&text[i..open]);
-
-        let Some(close_rel) = text[open + 1..].find(']') else {
-            // No closing bracket; emit the rest unchanged.
-            out.push_str(&text[open..]);
-            return out;
-        };
-        let close = open + 1 + close_rel;
-
-        let inner = text[open + 1..close].trim();
-        if let Some(limit) = parse_bracketed_limit(inner) {
-            if !out.is_empty() && !out.ends_with(char::is_whitespace) {
-                out.push(' ');
-            }
-            out.push_str(&limit);
-        } else {
-            // Keep untouched: this could be a bracketed RPQ like `-[a/b]->`.
-            out.push_str(&text[open..=close]);
-        }
-
-        i = close + 1;
-    }
-    out.push_str(&text[i..]);
-    out
-}
-
-fn parse_bracketed_limit(inner: &str) -> Option<String> {
-    // Supports:
-    // - limit 10
-    // - LIMIT 10
-    // - limit=10
-    // - limit: 10
-    let mut s = inner.trim().to_string();
-    if s.is_empty() {
-        return None;
-    }
-    let lower = s.to_ascii_lowercase();
-    if !lower.starts_with("limit") {
-        return None;
-    }
-
-    // Keep slicing by byte offset: ASCII only ("limit").
-    let rest = s[5..].trim_start();
-    let rest = rest
-        .strip_prefix('=')
-        .or_else(|| rest.strip_prefix(':'))
-        .unwrap_or(rest);
-    let rest = rest.trim_start();
-
-    let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
-    if digits.is_empty() {
-        return None;
-    }
-    Some(format!("limit {digits}"))
-}
-
-fn rewrite_var_is_quoted_string_as_name_attr(text: &str) -> String {
-    // Common LLM mistake: `?x is "SomeEntityName"` when it means attribute
-    // equality on `name`.
-    //
-    // We rewrite only when the RHS is a *quoted string* so we don't conflict
-    // with the valid type atom form: `?x is TypeName`.
-    let mut out = String::new();
-    let mut i = 0usize;
-
-    while let Some(q_rel) = text[i..].find('?') {
-        let q = i + q_rel;
-        out.push_str(&text[i..q]);
-
-        let Some((var_end, var_name)) = parse_var_token(text, q) else {
-            // Not a valid variable; emit '?' and continue.
-            out.push('?');
-            i = q + 1;
-            continue;
-        };
-
-        // Lookahead: `?var <ws> is <ws> "<string>"`
-        let mut j = var_end;
-        while let Some(c) = text[j..].chars().next() {
-            if c.is_whitespace() {
-                j += c.len_utf8();
-            } else {
-                break;
-            }
-        }
-        if !starts_with_kw_case_insensitive(text, j, "is") {
-            out.push_str(&text[q..var_end]);
-            i = var_end;
-            continue;
-        }
-        j += 2;
-        if let Some(c) = text[j..].chars().next() {
-            if c.is_whitespace() {
-                // ok
-            } else {
-                out.push_str(&text[q..var_end]);
-                i = var_end;
-                continue;
-            }
-        } else {
-            out.push_str(&text[q..var_end]);
-            i = var_end;
-            continue;
-        }
-        while let Some(c) = text[j..].chars().next() {
-            if c.is_whitespace() {
-                j += c.len_utf8();
-            } else {
-                break;
-            }
-        }
-        let Some((lit_end, lit)) = parse_string_literal(text, j) else {
-            out.push_str(&text[q..var_end]);
-            i = var_end;
-            continue;
-        };
-
-        // Rewrite: `?var is "X"` → `?var.name = "X"`
-        out.push_str(&var_name);
-        out.push_str(".name = ");
-        out.push_str(lit);
-
-        i = lit_end;
-    }
-
-    out.push_str(&text[i..]);
-    out
-}
-
-fn rewrite_colon_attr_equality(text: &str) -> String {
-    // Common LLM mistake: `?x :name = "Alice"` or `?x :full_name = "..."`.
-    //
-    // AxQL uses `:` for type constraints only; attribute equality is
-    // `?x.name = "Alice"` or `attr(?x, "name", "Alice")`.
-    //
-    // We rewrite only when the `:<ident>` is followed by `=`.
-    let mut out = String::new();
-    let mut i = 0usize;
-
-    while let Some(q_rel) = text[i..].find('?') {
-        let q = i + q_rel;
-        out.push_str(&text[i..q]);
-
-        let Some((var_end, var_name)) = parse_var_token(text, q) else {
-            out.push('?');
-            i = q + 1;
-            continue;
-        };
-
-        let mut j = var_end;
-        while let Some(c) = text[j..].chars().next() {
-            if c.is_whitespace() {
-                j += c.len_utf8();
-            } else {
-                break;
-            }
-        }
-        if text.as_bytes().get(j) != Some(&b':') {
-            out.push_str(&text[q..var_end]);
-            i = var_end;
-            continue;
-        }
-        j += 1;
-        while let Some(c) = text[j..].chars().next() {
-            if c.is_whitespace() {
-                j += c.len_utf8();
-            } else {
-                break;
-            }
-        }
-
-        let Some((key_end, key)) = parse_ident_token(text, j) else {
-            out.push_str(&text[q..var_end]);
-            i = var_end;
-            continue;
-        };
-
-        let mut k = key_end;
-        while let Some(c) = text[k..].chars().next() {
-            if c.is_whitespace() {
-                k += c.len_utf8();
-            } else {
-                break;
-            }
-        }
-        if text.as_bytes().get(k) != Some(&b'=') {
-            // This is probably a valid type atom: `?x : TypeName`.
-            out.push_str(&text[q..var_end]);
-            i = var_end;
-            continue;
-        }
-
-        // Rewrite `?x :key =` → `?x.key =`
-        out.push_str(&var_name);
-        out.push('.');
-        out.push_str(&key);
-        out.push_str(&text[key_end..=k]); // include any spaces before '=' plus '=' itself
-
-        i = k + 1;
-    }
-
-    out.push_str(&text[i..]);
-    out
-}
-
-fn parse_var_token(text: &str, start: usize) -> Option<(usize, String)> {
-    if !text.as_bytes().get(start).is_some_and(|b| *b == b'?') {
-        return None;
-    }
-    let mut i = start + 1;
-    let mut chars = text[i..].chars();
-    let first = chars.next()?;
-    if !(first.is_ascii_alphabetic() || first == '_') {
-        return None;
-    }
-    i += first.len_utf8();
-    while let Some(c) = text[i..].chars().next() {
-        if c.is_ascii_alphanumeric() || c == '_' {
-            i += c.len_utf8();
-        } else {
-            break;
-        }
-    }
-    Some((i, text[start..i].to_string()))
-}
-
-fn parse_ident_token(text: &str, start: usize) -> Option<(usize, String)> {
-    let mut i = start;
-    let first = text[i..].chars().next()?;
-    if !(first.is_ascii_alphabetic() || first == '_') {
-        return None;
-    }
-    i += first.len_utf8();
-    while let Some(c) = text[i..].chars().next() {
-        if c.is_ascii_alphanumeric() || c == '_' {
-            i += c.len_utf8();
-        } else {
-            break;
-        }
-    }
-    Some((i, text[start..i].to_string()))
-}
-
-fn starts_with_kw_case_insensitive(text: &str, start: usize, kw: &str) -> bool {
-    let Some(slice) = text.get(start..) else {
-        return false;
-    };
-    slice
-        .as_bytes()
-        .get(..kw.len())
-        .is_some_and(|b| b.eq_ignore_ascii_case(kw.as_bytes()))
-}
-
-fn parse_string_literal<'a>(text: &'a str, start: usize) -> Option<(usize, &'a str)> {
-    let quote = *text.as_bytes().get(start)?;
-    if quote != b'"' && quote != b'\'' {
-        return None;
-    }
-    let mut i = start + 1;
-    while i < text.len() {
-        let b = text.as_bytes()[i];
-        if b == b'\\' {
-            // Skip escaped char.
-            i += 1;
-            if i < text.len() {
-                i += 1;
-            }
-            continue;
-        }
-        if b == quote {
-            let end = i + 1;
-            return Some((end, &text[start..end]));
-        }
-        i += 1;
-    }
-    None
 }
 
 #[cfg(feature = "llm-ollama")]
@@ -1133,6 +851,24 @@ fn normalize_http_base_url(base_url: &str, default: &str) -> String {
         host = format!("https://{host}");
     }
     host.trim_end_matches('/').to_string()
+}
+
+#[cfg(any(feature = "llm-openai", feature = "llm-anthropic"))]
+fn public_llm_endpoint(base_url: &str, default: &str, endpoint: &str) -> Result<url::Url> {
+    let base_url = normalize_http_base_url(base_url, default);
+    let url = url::Url::parse(&format!("{base_url}{endpoint}"))
+        .map_err(|error| anyhow!("invalid public LLM endpoint: {error}"))?;
+    if url.scheme() != "https"
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return Err(anyhow!(
+            "public LLM endpoints require credential-free HTTPS without query or fragment components"
+        ));
+    }
+    Ok(url)
 }
 
 #[cfg(feature = "llm-openai")]
@@ -1177,7 +913,6 @@ fn ollama_generate_query(
 
 You MUST return a single JSON object with one of these shapes:
 - { "query_ir_v1": { ... } }
-- { "axql": "<AxQL query>" }   (fallback; only if you cannot produce query_ir_v1)
 - { "error": "<error message>" }
 
 Do not wrap in markdown or code fences."#;
@@ -1255,8 +990,8 @@ Schema context:
 Query IR (preferred):
 - Use `query_ir_v1` with fields:
   - version: 1
-  - select: ["?x", ...]   (or omit for implicit select)
-  - where: [ atoms... ]   (single conjunction), OR disjuncts: [ [atoms...], [atoms...] ] for OR
+  - select_vars: ["?x", ...]   (or omit for implicit select)
+  - where_atoms: [ atoms... ]   (single conjunction), OR disjuncts: [ [atoms...], [atoms...] ] for OR
   - limit: N (optional)
   - max_hops: N (optional)
   - min_confidence: 0..1 (optional)
@@ -1270,8 +1005,6 @@ Terms:
 - variable:  "?x"
 - name ref:  "acme.svc0.v1.Service0"   (means name("acme.svc0.v1.Service0"))
 - wildcard:  "_"
-
-AxQL is accepted as a fallback (same semantics), but prefer `query_ir_v1`.
 
 Return ONLY the JSON object."#,
         schemas = schemas_text,
@@ -1296,11 +1029,8 @@ Return ONLY the JSON object."#,
     if let Some(ir) = parsed.query_ir_v1 {
         return Ok(GeneratedQuery::QueryIrV1(ir));
     }
-    if let Some(axql) = parsed.axql {
-        return Ok(GeneratedQuery::Axql(axql));
-    }
 
-    Err(anyhow!("ollama returned no `query_ir_v1` or `axql`"))
+    Err(anyhow!("ollama returned no `query_ir_v1`"))
 }
 
 #[cfg(feature = "llm-openai")]
@@ -1321,7 +1051,6 @@ fn openai_generate_query(
 
 You MUST return a single JSON object with one of these shapes:
 - { "query_ir_v1": { ... } }
-- { "axql": "<AxQL query>" }   (fallback; only if you cannot produce query_ir_v1)
 - { "error": "<error message>" }
 
 Do not wrap in markdown or code fences."#;
@@ -1399,8 +1128,8 @@ Schema context:
 Query IR (preferred):
 - Use `query_ir_v1` with fields:
   - version: 1
-  - select: ["?x", ...]   (or omit for implicit select)
-  - where: [ atoms... ]   (single conjunction), OR disjuncts: [ [atoms...], [atoms...] ] for OR
+  - select_vars: ["?x", ...]   (or omit for implicit select)
+  - where_atoms: [ atoms... ]   (single conjunction), OR disjuncts: [ [atoms...], [atoms...] ] for OR
   - limit: N (optional)
   - max_hops: N (optional)
   - min_confidence: 0..1 (optional)
@@ -1414,8 +1143,6 @@ Terms:
 - variable:  "?x"
 - name ref:  "acme.svc0.v1.Service0"   (means name("acme.svc0.v1.Service0"))
 - wildcard:  "_"
-
-AxQL is accepted as a fallback (same semantics), but prefer `query_ir_v1`.
 
 Return ONLY the JSON object."#,
         schemas = schemas_text,
@@ -1434,12 +1161,10 @@ Return ONLY the JSON object."#,
         "additionalProperties": false,
         "properties": {
             "query_ir_v1": query_ir_v1_schema,
-            "axql": { "type": "string" },
             "error": { "type": "string" }
         },
         "oneOf": [
             { "required": ["query_ir_v1"] },
-            { "required": ["axql"] },
             { "required": ["error"] }
         ]
     });
@@ -1450,7 +1175,14 @@ Return ONLY the JSON object."#,
         "schema": response_schema
     });
 
-    let content = openai_responses(base_url, &api_key, model, &user, Some(system), Some(text_format))?;
+    let content = openai_responses(
+        base_url,
+        &api_key,
+        model,
+        &user,
+        Some(system),
+        Some(text_format),
+    )?;
     let parsed: PluginResponseV1 = parse_llm_json_object(&content)?;
 
     if let Some(err) = parsed.error {
@@ -1459,11 +1191,8 @@ Return ONLY the JSON object."#,
     if let Some(ir) = parsed.query_ir_v1 {
         return Ok(GeneratedQuery::QueryIrV1(ir));
     }
-    if let Some(axql) = parsed.axql {
-        return Ok(GeneratedQuery::Axql(axql));
-    }
 
-    Err(anyhow!("openai returned no `query_ir_v1` or `axql`"))
+    Err(anyhow!("openai returned no `query_ir_v1`"))
 }
 
 #[cfg(feature = "llm-anthropic")]
@@ -1484,7 +1213,6 @@ fn anthropic_generate_query(
 
 You MUST return a single JSON object with one of these shapes:
 - { "query_ir_v1": { ... } }
-- { "axql": "<AxQL query>" }   (fallback; only if you cannot produce query_ir_v1)
 - { "error": "<error message>" }
 
 Do not wrap in markdown or code fences."#;
@@ -1562,8 +1290,8 @@ Schema context:
 Query IR (preferred):
 - Use `query_ir_v1` with fields:
   - version: 1
-  - select: ["?x", ...]   (or omit for implicit select)
-  - where: [ atoms... ]   (single conjunction), OR disjuncts: [ [atoms...], [atoms...] ] for OR
+  - select_vars: ["?x", ...]   (or omit for implicit select)
+  - where_atoms: [ atoms... ]   (single conjunction), OR disjuncts: [ [atoms...], [atoms...] ] for OR
   - limit: N (optional)
   - max_hops: N (optional)
   - min_confidence: 0..1 (optional)
@@ -1577,8 +1305,6 @@ Terms:
 - variable:  "?x"
 - name ref:  "acme.svc0.v1.Service0"   (means name("acme.svc0.v1.Service0"))
 - wildcard:  "_"
-
-AxQL is accepted as a fallback (same semantics), but prefer `query_ir_v1`.
 
 Return ONLY the JSON object."#,
         schemas = schemas_text,
@@ -1600,11 +1326,8 @@ Return ONLY the JSON object."#,
     if let Some(ir) = parsed.query_ir_v1 {
         return Ok(GeneratedQuery::QueryIrV1(ir));
     }
-    if let Some(axql) = parsed.axql {
-        return Ok(GeneratedQuery::Axql(axql));
-    }
 
-    Err(anyhow!("anthropic returned no `query_ir_v1` or `axql`"))
+    Err(anyhow!("anthropic returned no `query_ir_v1`"))
 }
 
 fn render_doc_grounding(
@@ -1695,7 +1418,9 @@ fn render_entity_name_samples(db: &PathDB, schema: &SchemaContextV1) -> String {
     }
 
     let mut out = String::new();
-    out.push_str("Entity examples (use with `lookup_entity`, `describe_entity`, or `name(\"...\")`):\n");
+    out.push_str(
+        "Entity examples (use with `lookup_entity`, `describe_entity`, or `name(\"...\")`):\n",
+    );
     for l in lines {
         out.push_str(&l);
         out.push('\n');
@@ -1720,10 +1445,17 @@ fn render_quasi_rag_preview(
     let args = serde_json::json!({
         "query": query,
         "entity_limit": 8,
-        "chunk_limit": options.max_doc_chunks.min(8).max(1),
+        "chunk_limit": options.max_doc_chunks.clamp(1, 8),
     });
 
-    let Ok(v) = tool_semantic_search(db, &args, snapshot_key, options, embeddings, ollama_embed_host) else {
+    let Ok(v) = tool_semantic_search(
+        db,
+        &args,
+        snapshot_key,
+        options,
+        embeddings,
+        ollama_embed_host,
+    ) else {
         return String::new();
     };
 
@@ -1748,9 +1480,15 @@ fn render_quasi_rag_preview(
     if !entities.is_empty() {
         out.push_str("Entities:\n");
         for hit in entities.iter().take(8) {
-            let ent = hit.get("entity").cloned().unwrap_or_else(|| serde_json::json!({}));
+            let ent = hit
+                .get("entity")
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!({}));
             let id = ent.get("id").and_then(|x| x.as_u64()).unwrap_or(0);
-            let ety = ent.get("entity_type").and_then(|x| x.as_str()).unwrap_or("?");
+            let ety = ent
+                .get("entity_type")
+                .and_then(|x| x.as_str())
+                .unwrap_or("?");
             let name = ent.get("name").and_then(|x| x.as_str()).unwrap_or("");
             if name.is_empty() {
                 out.push_str(&format!("- {ety}#{id}\n"));
@@ -1764,9 +1502,16 @@ fn render_quasi_rag_preview(
         out.push_str("DocChunks:\n");
         for hit in chunks.iter().take(6) {
             let chunk_id = hit.get("chunk_id").and_then(|x| x.as_str()).unwrap_or("?");
-            let doc = hit.get("document_id").and_then(|x| x.as_str()).unwrap_or("");
+            let doc = hit
+                .get("document_id")
+                .and_then(|x| x.as_str())
+                .unwrap_or("");
             let span = hit.get("span_id").and_then(|x| x.as_str()).unwrap_or("");
-            let snippet = hit.get("snippet").and_then(|x| x.as_str()).unwrap_or("").trim();
+            let snippet = hit
+                .get("snippet")
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .trim();
             let mut label = chunk_id.to_string();
             if !doc.is_empty() {
                 label.push_str(&format!(" (doc={doc}"));
@@ -1786,7 +1531,6 @@ fn render_quasi_rag_preview(
     out.trim_end().to_string()
 }
 
-#[cfg(feature = "llm-ollama")]
 fn sample_entity_names(db: &PathDB, type_name: &str, max: usize) -> Option<Vec<String>> {
     let bm = db.find_by_type(type_name)?;
     let mut out: Vec<String> = Vec::new();
@@ -1798,7 +1542,6 @@ fn sample_entity_names(db: &PathDB, type_name: &str, max: usize) -> Option<Vec<S
     Some(out)
 }
 
-#[cfg(feature = "llm-ollama")]
 fn retrieve_doc_grounding_snippets(
     db: &PathDB,
     question: &str,
@@ -1868,7 +1611,7 @@ fn retrieve_doc_grounding_snippets(
             }
             if !span.is_empty() {
                 if !doc.is_empty() {
-                    line.push_str(" ");
+                    line.push(' ');
                 }
                 line.push_str(&span);
             }
@@ -1895,14 +1638,12 @@ fn retrieve_doc_grounding_snippets(
     out
 }
 
-#[cfg(feature = "llm-ollama")]
 fn entity_attr_string(db: &PathDB, entity_id: u32, key: &str) -> Option<String> {
     let key_id = db.interner.id_of(key)?;
     let value_id = db.entities.get_attr(entity_id, key_id)?;
     db.interner.lookup(value_id)
 }
 
-#[cfg(feature = "llm-ollama")]
 fn truncate_for_prompt(s: &str, max_chars: usize) -> String {
     let s = s.trim();
     if s.chars().count() <= max_chars {
@@ -1912,7 +1653,6 @@ fn truncate_for_prompt(s: &str, max_chars: usize) -> String {
     format!("{truncated}…")
 }
 
-#[cfg(feature = "llm-ollama")]
 fn tokenize_grounding_query(question: &str) -> BTreeSet<String> {
     // Keep it deterministic and aligned with PathDB's `fts` tokenizer (same
     // tokenization rules, stopwords, and minimum token length).
@@ -1950,7 +1690,6 @@ Return a single JSON object with an \"answer\" field.
 
 Write a concise answer grounded ONLY in the results. If the results are empty, say you don't know."#,
         query_json = match query {
-            GeneratedQuery::Axql(q) => format!("AxQL: {q}"),
             GeneratedQuery::QueryIrV1(ir) => format!(
                 "query_ir_v1 (compiled): {}",
                 ir.to_axql_text()
@@ -2010,7 +1749,6 @@ Return a single JSON object with an "answer" field.
 
 Write a concise answer grounded ONLY in the results. If the results are empty, say you don't know."#,
         query_json = match query {
-            GeneratedQuery::Axql(q) => format!("AxQL: {q}"),
             GeneratedQuery::QueryIrV1(ir) => format!(
                 "query_ir_v1 (compiled): {}",
                 ir.to_axql_text()
@@ -2090,7 +1828,6 @@ Return a single JSON object with an "answer" field.
 
 Write a concise answer grounded ONLY in the results. If the results are empty, say you don't know."#,
         query_json = match query {
-            GeneratedQuery::Axql(q) => format!("AxQL: {q}"),
             GeneratedQuery::QueryIrV1(ir) => format!(
                 "query_ir_v1 (compiled): {}",
                 ir.to_axql_text()
@@ -2140,7 +1877,8 @@ pub(crate) fn ollama_chat_with_timeout(
     timeout: Option<Duration>,
 ) -> Result<String> {
     let host = normalize_ollama_host(host);
-    let url = format!("{host}/api/chat");
+    let url = url::Url::parse(&format!("{host}/api/chat"))
+        .map_err(|error| anyhow!("invalid Ollama endpoint: {error}"))?;
 
     let mut messages = Vec::new();
     if let Some(system) = system {
@@ -2161,32 +1899,30 @@ pub(crate) fn ollama_chat_with_timeout(
         body["format"] = format;
     }
 
-    let mut builder = reqwest::blocking::Client::builder();
-    if let Some(timeout) = timeout {
-        builder = builder.timeout(timeout);
-    }
-    let client = builder
-        .build()
-        .map_err(|e| anyhow!("failed to build http client: {e}"))?;
+    let timeout = required_network_timeout(timeout)?;
+    validate_network_json_request(&body, "Ollama chat request")?;
+    let transport = crate::web::PinnedLoopbackClient::new(&url, timeout)?;
 
     let send = |payload: &serde_json::Value| -> Result<reqwest::blocking::Response> {
-        client
-            .post(&url)
+        validate_network_json_request(payload, "Ollama chat request")?;
+        let response = transport
+            .post()
             .json(payload)
             .send()
             .map_err(|e| anyhow!(
                 "failed to reach ollama at {url} (is it running?) ({e}). Try: `ollama serve` or set OLLAMA_HOST / pass `--llm-ollama-host`"
-            ))
+            ))?;
+        transport.verify_response(response)
     };
 
     let mut resp = send(&body)?;
     if !resp.status().is_success() {
         let status = resp.status();
-        let text = resp.text().unwrap_or_default();
+        let text = bounded_http_text(resp, "Ollama error response")?;
 
-        // Compatibility fallback:
-        // Some Ollama versions expect `format` to be a JSON schema object (not the
-        // string `"json"`). When they reject it, retry once with `format` omitted.
+        // Provider retry: some Ollama builds expect `format` to be a JSON
+        // schema object instead of the string `"json"`. When they reject it,
+        // retry once with `format` omitted.
         if has_format && text.contains("invalid JSON schema in format") {
             let mut body2 = body.clone();
             if let Some(obj) = body2.as_object_mut() {
@@ -2195,7 +1931,7 @@ pub(crate) fn ollama_chat_with_timeout(
             resp = send(&body2)?;
             if !resp.status().is_success() {
                 let status2 = resp.status();
-                let text2 = resp.text().unwrap_or_default();
+                let text2 = bounded_http_text(resp, "Ollama retry error response")?;
                 return Err(anyhow!("ollama http error {status2}: {text2}"));
             }
         } else {
@@ -2213,9 +1949,7 @@ pub(crate) fn ollama_chat_with_timeout(
         content: String,
     }
 
-    let out: OllamaChatResponse = resp
-        .json()
-        .map_err(|e| anyhow!("ollama returned invalid JSON: {e}"))?;
+    let out: OllamaChatResponse = bounded_http_json(resp, "Ollama chat response")?;
     Ok(out.message.content)
 }
 
@@ -2245,7 +1979,11 @@ fn openai_extract_output_text(v: &serde_json::Value) -> Option<String> {
         if kind != "message" {
             continue;
         }
-        let content = item.get("content").and_then(|x| x.as_array()).cloned().unwrap_or_default();
+        let content = item
+            .get("content")
+            .and_then(|x| x.as_array())
+            .cloned()
+            .unwrap_or_default();
         for c in content {
             let ckind = c.get("type").and_then(|x| x.as_str()).unwrap_or("");
             if ckind != "output_text" {
@@ -2277,8 +2015,7 @@ fn openai_responses_with_timeout(
     text_format: Option<serde_json::Value>,
     timeout: Option<Duration>,
 ) -> Result<String> {
-    let base_url = normalize_http_base_url(base_url, DEFAULT_OPENAI_BASE_URL);
-    let url = format!("{base_url}/v1/responses");
+    let url = public_llm_endpoint(base_url, DEFAULT_OPENAI_BASE_URL, "/v1/responses")?;
 
     let max_output_tokens = llm_max_output_tokens()?;
     let reasoning_effort = llm_reasoning_effort()?;
@@ -2301,38 +2038,42 @@ fn openai_responses_with_timeout(
         });
     }
 
-    let mut builder = reqwest::blocking::Client::builder();
-    if let Some(timeout) = timeout {
-        builder = builder.timeout(timeout);
-    }
-    let client = builder
-        .build()
-        .map_err(|e| anyhow!("failed to build http client: {e}"))?;
+    let timeout = required_network_timeout(timeout)?;
+    validate_network_json_request(&body, "OpenAI response request")?;
+    let transport =
+        crate::web::PinnedPublicClient::new(&url, reqwest::header::HeaderMap::new(), timeout)?;
 
     let send = |payload: &serde_json::Value| -> Result<reqwest::blocking::Response> {
-        client
-            .post(&url)
+        validate_network_json_request(payload, "OpenAI response request")?;
+        let response = transport
+            .post()
             .bearer_auth(api_key)
             .json(payload)
             .send()
-            .map_err(|e| anyhow!("failed to reach OpenAI at {url}: {e}"))
+            .map_err(|e| anyhow!("failed to reach OpenAI at {url}: {e}"))?;
+        transport.verify_response(response)
     };
 
     let mut resp = send(&body)?;
     if !resp.status().is_success() {
         let status = resp.status();
-        let text = resp.text().unwrap_or_default();
+        let text = bounded_http_text(resp, "OpenAI error response")?;
 
         fn openai_error_param(text: &str) -> Option<String> {
-            let v: serde_json::Value = serde_json::from_str(text).ok()?;
+            let v: serde_json::Value = crate::security::parse_json_bounded(
+                text.as_bytes(),
+                crate::security::MAX_NETWORK_ERROR_BYTES,
+                "OpenAI error response",
+            )
+            .ok()?;
             v.get("error")?
                 .get("param")?
                 .as_str()
                 .map(|s| s.to_string())
         }
 
-        // Compatibility fallbacks: different OpenAI model families do not all
-        // accept the same optional parameters.
+        // Provider retries: different OpenAI model families do not all accept
+        // the same optional parameters.
         //
         // We retry once with a reduced request for a few common incompatibilities:
         // - `text.format` (structured output schema)
@@ -2367,7 +2108,7 @@ fn openai_responses_with_timeout(
             resp = send(&body2)?;
             if !resp.status().is_success() {
                 let status2 = resp.status();
-                let text2 = resp.text().unwrap_or_default();
+                let text2 = bounded_http_text(resp, "OpenAI retry error response")?;
                 return Err(anyhow!("openai http error {status2}: {text2}"));
             }
         } else {
@@ -2375,9 +2116,7 @@ fn openai_responses_with_timeout(
         }
     }
 
-    let v: serde_json::Value = resp
-        .json()
-        .map_err(|e| anyhow!("openai returned invalid JSON: {e}"))?;
+    let v: serde_json::Value = bounded_http_json(resp, "OpenAI response")?;
     if let Some(text) = openai_extract_output_text(&v) {
         return Ok(text);
     }
@@ -2424,10 +2163,10 @@ pub(crate) fn openai_embed_texts_with_timeout(
     if texts.is_empty() {
         return Ok(Vec::new());
     }
+    validate_embedding_inputs(texts)?;
 
     let api_key = openai_api_key()?;
-    let base_url = normalize_http_base_url(base_url, DEFAULT_OPENAI_BASE_URL);
-    let url = format!("{base_url}/v1/embeddings");
+    let url = public_llm_endpoint(base_url, DEFAULT_OPENAI_BASE_URL, "/v1/embeddings")?;
 
     #[derive(Debug, Deserialize)]
     struct EmbeddingsResponse {
@@ -2440,36 +2179,31 @@ pub(crate) fn openai_embed_texts_with_timeout(
         index: usize,
     }
 
-    let mut builder = reqwest::blocking::Client::builder();
-    if let Some(timeout) = timeout {
-        builder = builder.timeout(timeout);
-    }
-    let client = builder
-        .build()
-        .map_err(|e| anyhow!("failed to build http client: {e}"))?;
-
+    let timeout = required_network_timeout(timeout)?;
     let body = json!({
         "model": model,
         "input": texts,
         "encoding_format": "float"
     });
+    validate_network_json_request(&body, "OpenAI embeddings request")?;
+    let transport =
+        crate::web::PinnedPublicClient::new(&url, reqwest::header::HeaderMap::new(), timeout)?;
 
-    let resp = client
-        .post(&url)
+    let response = transport
+        .post()
         .bearer_auth(&api_key)
         .json(&body)
         .send()
         .map_err(|e| anyhow!("failed to reach OpenAI at {url}: {e}"))?;
+    let resp = transport.verify_response(response)?;
 
     if !resp.status().is_success() {
         let status = resp.status();
-        let text = resp.text().unwrap_or_default();
+        let text = bounded_http_text(resp, "OpenAI embeddings error response")?;
         return Err(anyhow!("openai http error {status}: {text}"));
     }
 
-    let parsed: EmbeddingsResponse = resp
-        .json()
-        .map_err(|e| anyhow!("openai embeddings returned invalid JSON: {e}"))?;
+    let parsed: EmbeddingsResponse = bounded_http_json(resp, "OpenAI embeddings response")?;
 
     if parsed.data.len() != texts.len() {
         return Err(anyhow!(
@@ -2480,15 +2214,18 @@ pub(crate) fn openai_embed_texts_with_timeout(
     }
 
     let mut out = vec![Vec::<f32>::new(); texts.len()];
+    let mut seen = vec![false; texts.len()];
     for row in parsed.data {
-        if row.index >= out.len() {
-            continue;
+        if row.index >= out.len() || seen[row.index] {
+            return Err(anyhow!(
+                "openai embeddings returned duplicate or out-of-range index {}",
+                row.index
+            ));
         }
+        seen[row.index] = true;
         out[row.index] = row.embedding;
     }
-    if out.iter().any(|v| v.is_empty()) {
-        return Err(anyhow!("openai embeddings returned empty vector(s)"));
-    }
+    validate_embedding_vectors(&out, texts.len())?;
     Ok(out)
 }
 
@@ -2525,7 +2262,11 @@ fn anthropic_extract_output_text(v: &serde_json::Value) -> Option<String> {
         }
     }
     let trimmed = out.trim().to_string();
-    if trimmed.is_empty() { None } else { Some(trimmed) }
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed)
+    }
 }
 
 #[cfg(feature = "llm-anthropic")]
@@ -2537,8 +2278,7 @@ fn anthropic_messages_with_timeout(
     system: Option<&str>,
     timeout: Option<Duration>,
 ) -> Result<String> {
-    let base_url = normalize_http_base_url(base_url, DEFAULT_ANTHROPIC_BASE_URL);
-    let url = format!("{base_url}/v1/messages");
+    let url = public_llm_endpoint(base_url, DEFAULT_ANTHROPIC_BASE_URL, "/v1/messages")?;
     let version = default_anthropic_version();
 
     let max_tokens = llm_max_output_tokens()?;
@@ -2555,31 +2295,27 @@ fn anthropic_messages_with_timeout(
         body["system"] = json!(system);
     }
 
-    let mut builder = reqwest::blocking::Client::builder();
-    if let Some(timeout) = timeout {
-        builder = builder.timeout(timeout);
-    }
-    let client = builder
-        .build()
-        .map_err(|e| anyhow!("failed to build http client: {e}"))?;
+    let timeout = required_network_timeout(timeout)?;
+    validate_network_json_request(&body, "Anthropic messages request")?;
+    let transport =
+        crate::web::PinnedPublicClient::new(&url, reqwest::header::HeaderMap::new(), timeout)?;
 
-    let resp = client
-        .post(&url)
+    let response = transport
+        .post()
         .header("x-api-key", api_key)
         .header("anthropic-version", version)
         .json(&body)
         .send()
         .map_err(|e| anyhow!("failed to reach Anthropic at {url}: {e}"))?;
+    let resp = transport.verify_response(response)?;
 
     if !resp.status().is_success() {
         let status = resp.status();
-        let text = resp.text().unwrap_or_default();
+        let text = bounded_http_text(resp, "Anthropic error response")?;
         return Err(anyhow!("anthropic http error {status}: {text}"));
     }
 
-    let v: serde_json::Value = resp
-        .json()
-        .map_err(|e| anyhow!("anthropic returned invalid JSON: {e}"))?;
+    let v: serde_json::Value = bounded_http_json(resp, "Anthropic messages response")?;
     if let Some(text) = anthropic_extract_output_text(&v) {
         return Ok(text);
     }
@@ -2613,11 +2349,7 @@ pub(crate) fn anthropic_chat_with_timeout(
     anthropic_messages_with_timeout(base_url, &key, model, user, system, timeout)
 }
 
-/// Compute embeddings for a batch of texts using Ollama.
-///
-/// Endpoint strategy:
-/// - Prefer `/api/embed` (batched) when available.
-/// - Fallback to `/api/embeddings` (per-item) for older Ollama versions.
+/// Compute embeddings for a batch of texts using Ollama's canonical `/api/embed` endpoint.
 #[cfg(feature = "llm-ollama")]
 pub(crate) fn ollama_embed_texts_with_timeout(
     host: &str,
@@ -2628,103 +2360,73 @@ pub(crate) fn ollama_embed_texts_with_timeout(
     if texts.is_empty() {
         return Ok(Vec::new());
     }
+    validate_embedding_inputs(texts)?;
 
     let host = normalize_ollama_host(host);
-
-    let mut builder = reqwest::blocking::Client::builder();
-    if let Some(timeout) = timeout {
-        builder = builder.timeout(timeout);
-    }
-    let client = builder
-        .build()
-        .map_err(|e| anyhow!("failed to build http client: {e}"))?;
-
-    // ---------------------------------------------------------------------
-    // Try the newer batched endpoint first: `/api/embed`.
-    // ---------------------------------------------------------------------
-    let url_embed = format!("{host}/api/embed");
-    let body_embed = serde_json::json!({
+    let timeout = required_network_timeout(timeout)?;
+    let url = url::Url::parse(&format!("{host}/api/embed"))
+        .map_err(|error| anyhow!("invalid Ollama endpoint: {error}"))?;
+    let transport = crate::web::PinnedLoopbackClient::new(&url, timeout)?;
+    let body = serde_json::json!({
         "model": model,
         "input": texts,
         "truncate": true
     });
+    validate_network_json_request(&body, "Ollama embeddings request")?;
 
-    let resp_embed = client.post(&url_embed).json(&body_embed).send();
-    match resp_embed {
-        Ok(resp) if resp.status().is_success() => {
-            #[derive(Deserialize)]
-            struct EmbedResp {
-                embeddings: Vec<Vec<f32>>,
-            }
-
-            let out: EmbedResp = resp
-                .json()
-                .map_err(|e| anyhow!("ollama /api/embed returned invalid JSON: {e}"))?;
-            if out.embeddings.len() != texts.len() {
-                return Err(anyhow!(
-                    "ollama /api/embed returned {} embeddings for {} inputs",
-                    out.embeddings.len(),
-                    texts.len()
-                ));
-            }
-            return Ok(out.embeddings);
-        }
-        Ok(resp) => {
-            // Non-success: fall back to `/api/embeddings` (older versions).
-            let status = resp.status();
-            let text = resp.text().unwrap_or_default();
-            let _ = (status, text);
-        }
-        Err(e) => {
-            // If we can't even reach Ollama, surface that error instead of masking.
-            return Err(anyhow!(
-                "failed to reach ollama at {url_embed} (is it running?) ({e}). Try: `ollama serve` or set OLLAMA_HOST"
-            ));
-        }
+    let response = transport
+        .post()
+        .json(&body)
+        .send()
+        .map_err(|error| {
+            anyhow!(
+                "failed to reach ollama at {url} (is it running?) ({error}). Try: `ollama serve` or set OLLAMA_HOST"
+            )
+        })?;
+    let response = transport.verify_response(response)?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let text = bounded_http_text(response, "Ollama /api/embed error response")?;
+        return Err(anyhow!("ollama /api/embed http error {status}: {text}"));
     }
 
-    // ---------------------------------------------------------------------
-    // Fallback: `/api/embeddings` (per-item).
-    // ---------------------------------------------------------------------
-    let url = format!("{host}/api/embeddings");
     #[derive(Deserialize)]
-    struct EmbeddingsResp {
-        embedding: Vec<f32>,
+    #[serde(deny_unknown_fields)]
+    struct EmbedResp {
+        #[serde(default, rename = "model")]
+        _model: Option<String>,
+        embeddings: Vec<Vec<f32>>,
+        #[serde(default, rename = "total_duration")]
+        _total_duration: Option<u64>,
+        #[serde(default, rename = "load_duration")]
+        _load_duration: Option<u64>,
+        #[serde(default, rename = "prompt_eval_count")]
+        _prompt_eval_count: Option<u64>,
     }
 
-    let mut out: Vec<Vec<f32>> = Vec::with_capacity(texts.len());
-    for t in texts {
-        let body = serde_json::json!({
-            "model": model,
-            "prompt": t
-        });
-        let resp = client
-            .post(&url)
-            .json(&body)
-            .send()
-            .map_err(|e| anyhow!(
-                "failed to reach ollama at {url} (is it running?) ({e}). Try: `ollama serve` or set OLLAMA_HOST"
-            ))?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let text = resp.text().unwrap_or_default();
-            return Err(anyhow!("ollama http error {status}: {text}"));
-        }
-
-        let r: EmbeddingsResp = resp
-            .json()
-            .map_err(|e| anyhow!("ollama /api/embeddings returned invalid JSON: {e}"))?;
-        out.push(r.embedding);
-    }
-
-    Ok(out)
+    let out: EmbedResp = bounded_http_json(response, "Ollama /api/embed response")?;
+    validate_embedding_vectors(&out.embeddings, texts.len())?;
+    Ok(out.embeddings)
 }
 
 pub(crate) fn parse_llm_json_object<T: for<'de> Deserialize<'de>>(text: &str) -> Result<T> {
+    if text.len() > crate::security::MAX_NETWORK_RESPONSE_BYTES {
+        return Err(anyhow!(
+            "LLM JSON exceeds {} bytes",
+            crate::security::MAX_NETWORK_RESPONSE_BYTES
+        ));
+    }
     let trimmed = text.trim();
-    if let Ok(v) = serde_json::from_str(trimmed) {
-        return Ok(v);
+    if axiograph_security::validate_json_nesting(
+        trimmed.as_bytes(),
+        axiograph_security::MAX_JSON_NESTING_DEPTH,
+        "LLM response",
+    )
+    .is_ok()
+    {
+        if let Ok(value) = serde_json::from_str(trimmed) {
+            return Ok(value);
+        }
     }
 
     // Best-effort recovery:
@@ -2765,7 +2467,15 @@ pub(crate) fn parse_llm_json_object<T: for<'de> Deserialize<'de>>(text: &str) ->
 
         match ch {
             '"' => in_string = true,
-            '{' | '[' => stack.push(ch),
+            '{' | '[' => {
+                stack.push(ch);
+                if stack.len() > axiograph_security::MAX_JSON_NESTING_DEPTH {
+                    return Err(anyhow!(
+                        "LLM JSON nesting exceeds {}",
+                        axiograph_security::MAX_JSON_NESTING_DEPTH
+                    ));
+                }
+            }
             '}' => {
                 if stack.last() == Some(&'{') {
                     stack.pop();
@@ -2775,13 +2485,11 @@ pub(crate) fn parse_llm_json_object<T: for<'de> Deserialize<'de>>(text: &str) ->
                     }
                 }
             }
-            ']' => {
-                if stack.last() == Some(&'[') {
-                    stack.pop();
-                    if stack.is_empty() {
-                        end = Some(idx);
-                        break;
-                    }
+            ']' if stack.last() == Some(&'[') => {
+                stack.pop();
+                if stack.is_empty() {
+                    end = Some(idx);
+                    break;
                 }
             }
             _ => {}
@@ -2828,10 +2536,15 @@ pub(crate) fn parse_llm_json_object<T: for<'de> Deserialize<'de>>(text: &str) ->
         }
     }
 
-    serde_json::from_str(&candidate).map_err(|e| anyhow!("LLM returned invalid JSON: {e}"))
+    crate::security::parse_json_bounded(
+        candidate.as_bytes(),
+        crate::security::MAX_NETWORK_RESPONSE_BYTES,
+        "LLM response",
+    )
+    .map_err(|error| anyhow!("LLM returned invalid JSON: {error}"))
 }
 
-pub(crate) fn validate_world_model_llm_backend_arg(args: &[String]) -> Result<()> {
+pub(crate) fn validate_predictive_proposal_llm_backend_arg(args: &[String]) -> Result<()> {
     let mut backend: Option<String> = None;
     let mut iter = args.iter().peekable();
     while let Some(arg) = iter.next() {
@@ -2846,7 +2559,7 @@ pub(crate) fn validate_world_model_llm_backend_arg(args: &[String]) -> Result<()
 
     let backend = backend
         .or_else(|| {
-            std::env::var(WORLD_MODEL_BACKEND_ENV)
+            std::env::var(PREDICTIVE_PROPOSAL_BACKEND_ENV)
                 .ok()
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty())
@@ -2856,60 +2569,69 @@ pub(crate) fn validate_world_model_llm_backend_arg(args: &[String]) -> Result<()
     match backend.trim().to_ascii_lowercase().as_str() {
         "openai" | "anthropic" | "ollama" | "mock" => Ok(()),
         other => Err(anyhow!(
-            "world model backend `{other}` is not supported by --world-model-llm / `axiograph ingest world-model-plugin-llm` (expected openai|anthropic|ollama|mock). If you meant an ONNX or custom model, use --world-model-plugin or --world-model-http instead."
+            "predictive proposal adapter backend `{other}` is not supported by --proposal-adapter-llm / `axiograph ingest predictive-proposals-llm` (expected openai|anthropic|ollama|mock). If you meant an ONNX or custom model, use --proposal-adapter-plugin or --proposal-adapter-http instead."
         )),
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{normalize_axql_candidate, parse_llm_json_object};
+    use super::parse_llm_json_object;
+    #[cfg(any(feature = "llm-openai", feature = "llm-anthropic"))]
+    use super::public_llm_endpoint;
+    use anyhow::Result;
+    use serde_json::json;
+    use std::path::PathBuf;
 
+    #[cfg(any(feature = "llm-openai", feature = "llm-anthropic"))]
     #[test]
-    fn normalizes_bare_atom_to_where_clause() {
-        let s = normalize_axql_candidate("?x : Node");
-        assert_eq!(s, "where ?x : Node");
-        crate::axql::parse_axql_query(&s).expect("normalized query parses");
-    }
-
-    #[test]
-    fn strips_trailing_semicolons() {
-        let s = normalize_axql_candidate("where ?x : Node;");
-        assert_eq!(s, "where ?x : Node");
-        crate::axql::parse_axql_query(&s).expect("normalized query parses");
-    }
-
-    #[test]
-    fn strips_axql_prefix() {
-        let s = normalize_axql_candidate("axql: where ?x : Node limit 1");
-        assert_eq!(s, "where ?x : Node limit 1");
-        crate::axql::parse_axql_query(&s).expect("normalized query parses");
-    }
-
-    #[test]
-    fn rewrites_common_ollama_mistakes_to_parseable_axql() {
-        let cases = [
-            // `?x is "..."` (should become `?x.name = "..."`)
-            r#"select ?rpc where ?svc is "acme.svc0.v1.Service0", ?svc -proto_service_has_rpc-> ?rpc"#,
-            // `?x :name = ...` (should become `?x.name = ...`)
-            r#"select ?ep where ?rpc :ProtoRpc, ?rpc :name = "GetWidget", ?rpc :full_name = "acme.svc0.v1.Service0.GetWidget", ?rpc -proto_rpc_http_endpoint-> ?ep"#,
-            // `[limit 10]` (should become `limit 10`)
-            r#"select ?x where doc_proto_api_0 -mentions_http_endpoint|mentions_rpc-> ?x [limit 10]"#,
-            r#"select ?next where acme.svc0.v1.Service0.CreateWidget -observed_next-> ?next [LIMIT 10]"#,
-        ];
-
-        for raw in cases {
-            let normalized = normalize_axql_candidate(raw);
-            crate::axql::parse_axql_query(&normalized).unwrap_or_else(|e| {
-                panic!(
-                    "normalized query must parse\nraw: {raw}\nnormalized: {normalized}\nerr: {e}"
-                )
-            });
+    fn public_llm_endpoint_requires_clean_https_url() {
+        assert!(public_llm_endpoint(
+            "https://api.openai.com",
+            "https://api.openai.com",
+            "/v1/responses"
+        )
+        .is_ok());
+        for invalid in [
+            "http://api.openai.com",
+            "https://user@api.openai.com",
+            "https://api.openai.com?redirect=https://127.0.0.1",
+            "https://api.openai.com#fragment",
+        ] {
+            assert!(
+                public_llm_endpoint(invalid, "https://api.openai.com", "/v1/responses").is_err(),
+                "accepted {invalid}"
+            );
         }
     }
 
+    fn semantic_tool_db_and_meta() -> Result<(
+        axiograph_pathdb::PathDB,
+        axiograph_pathdb::axi_semantics::MetaPlaneIndex,
+    )> {
+        let axi = r#"
+module Family
+
+schema Family:
+  object Person
+  relation parent(child: Person, parent: Person)
+
+theory FamilyTheory on Family:
+  constraint functional parent.child -> parent.parent
+
+instance FamilyInst of Family:
+  Person = {Alice, Bob}
+  parent = {(child=Bob, parent=Alice)}
+"#;
+        let mut db = axiograph_pathdb::PathDB::new();
+        axiograph_pathdb::axi_module_import::import_axi_schema_v1_into_pathdb(&mut db, axi)?;
+        db.build_indexes();
+        let meta = axiograph_pathdb::axi_semantics::MetaPlaneIndex::from_db(&db)?;
+        Ok((db, meta))
+    }
+
     #[test]
-    fn parse_llm_json_object_repairs_truncated_world_model_output() {
+    fn parse_llm_json_object_repairs_truncated_predictive_proposal_output() {
         // Realistic failure mode: the model produces a correct prefix but the
         // last closing delimiters are missing (often reported as "EOF while
         // parsing a list").
@@ -2917,18 +2639,18 @@ mod tests {
 {
   "version": 1,
   "generated_at": "0",
-  "source": {"source_type":"world_model","locator":"wm::test"},
+  "source": {"source_type":"predictive_proposal_adapter","locator":"proposal::test"},
   "schema_hint": null,
   "proposals": [
     {
       "kind":"Relation",
-      "proposal_id":"wm::test::0",
+      "proposal_id":"proposal::test::0",
       "confidence":0.7,
       "evidence":[],
       "public_rationale":"demo",
       "metadata":{},
       "schema_hint":null,
-      "relation_id":"wm::test::r0",
+      "relation_id":"proposal::test::r0",
       "rel_type":"Parent",
       "source":"Alice",
       "target":"Bob",
@@ -2950,10 +2672,117 @@ mod tests {
     }
 
     #[test]
-    fn semantic_search_token_hnsw_finds_basic_entities() {
+    fn tool_loop_parser_accepts_strict_tool_call_contract() {
+        let parsed = super::parse_tool_loop_response_json(
+            r#"{"tool_call":{"name":"describe_entity","args":{"name":"Alice"}}}"#,
+            super::ToolLoopOptions::default(),
+        )
+        .expect("strict tool_call should parse");
+        let call = parsed.tool_call.expect("tool_call");
+        assert_eq!(call.name, "describe_entity");
+        assert_eq!(call.args["name"].as_str(), Some("Alice"));
+    }
+
+    #[test]
+    fn tool_loop_parser_accepts_strict_tool_calls_contract() {
+        let parsed = super::parse_tool_loop_response_json(
+            r#"{"tool_calls":[{"name":"axql_run","args":{"query_ir_v1":{"version":1,"select_vars":["x"],"where_atoms":[]}}}]}"#,
+            super::ToolLoopOptions::default(),
+        )
+        .expect("strict tool_calls should parse");
+        let calls = parsed.tool_calls.expect("tool_calls");
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "axql_run");
+        assert_eq!(calls[0].args["limit"].as_u64(), Some(25));
+    }
+
+    #[test]
+    fn tool_loop_parser_rejects_unbounded_options_and_batched_calls() {
+        let mut invalid = super::ToolLoopOptions::default();
+        invalid.max_steps = 0;
+        let error = super::parse_tool_loop_response_json(
+            r#"{"final_answer":{"answer":"Done.","citations":[],"queries":[],"notes":[]}}"#,
+            invalid,
+        )
+        .expect_err("zero tool-loop steps must reject rather than clamp");
+        assert!(error.to_string().contains("max_steps"));
+
+        let calls = (0..super::ToolLoopOptions::default().max_steps + 1)
+            .map(|_| json!({"name": "db_summary", "args": {}}))
+            .collect::<Vec<_>>();
+        let response = json!({"tool_calls": calls}).to_string();
+        let error =
+            super::parse_tool_loop_response_json(&response, super::ToolLoopOptions::default())
+                .expect_err("oversized tool-call batch must reject");
+        assert!(error.to_string().contains("tool_calls"));
+
+        let db = axiograph_pathdb::PathDB::new();
+        let error = super::tool_lookup_entity(&db, &json!({"name": "Alice", "limit": 0}))
+            .expect_err("invalid tool argument must reject rather than clamp");
+        assert!(error.to_string().contains("lookup_entity.limit"));
+    }
+
+    #[test]
+    fn tool_loop_parser_accepts_strict_final_answer_contract() {
+        let parsed = super::parse_tool_loop_response_json(
+            r#"{"final_answer":{"answer":"Done.","citations":[],"queries":[],"notes":[]}}"#,
+            super::ToolLoopOptions::default(),
+        )
+        .expect("strict final_answer should parse");
+        assert_eq!(parsed.final_answer.expect("final_answer").answer, "Done.");
+    }
+
+    #[test]
+    fn tool_loop_parser_rejects_top_level_tool_wrapper() {
+        let err = super::parse_tool_loop_response_json(
+            r#"{"tool":"axql_run","args":{"query_ir_v1":{"version":1,"select_vars":["x"],"where_atoms":[]}}}"#,
+            super::ToolLoopOptions::default(),
+        )
+        .expect_err("top-level tool wrapper should fail");
+        assert!(err.to_string().contains("exactly one"));
+    }
+
+    #[test]
+    fn tool_loop_parser_rejects_nested_tool_alias_wrapper() {
+        let err = super::parse_tool_loop_response_json(
+            r#"{"tool_call":{"tool":"axql_run","args":{"query_ir_v1":{"version":1,"select_vars":["x"],"where_atoms":[]}}}}"#,
+            super::ToolLoopOptions::default(),
+        )
+        .expect_err("nested tool alias wrapper should fail");
+        assert!(err.to_string().contains("invalid tool-loop tool call"));
+    }
+
+    #[test]
+    fn tool_loop_parser_rejects_top_level_answer_wrapper() {
+        let err = super::parse_tool_loop_response_json(
+            r#"{"answer":"Done."}"#,
+            super::ToolLoopOptions::default(),
+        )
+        .expect_err("top-level answer wrapper should fail");
+        assert!(err.to_string().contains("exactly one"));
+    }
+
+    #[test]
+    fn tool_loop_parser_rejects_bare_query_ir_payload() {
+        let err = super::parse_tool_loop_response_json(
+            r#"{"query_ir_v1":{"version":1,"select_vars":["x"],"where_atoms":[]}}"#,
+            super::ToolLoopOptions::default(),
+        )
+        .expect_err("bare query_ir_v1 wrapper should fail");
+        assert!(err.to_string().contains("exactly one"));
+    }
+
+    #[test]
+    fn semantic_search_exact_token_index_finds_basic_entities() {
         let mut db = axiograph_pathdb::PathDB::new();
-        db.add_entity("Person", vec![("name", "Alice"), ("description", "likes cats")]);
-        db.add_entity("Person", vec![("name", "Bob"), ("description", "likes dogs")]);
+        db.add_entity(
+            "Person",
+            vec![("name", "Alice"), ("description", "likes cats")],
+        );
+        db.add_entity(
+            "Person",
+            vec![("name", "Bob"), ("description", "likes dogs")],
+        );
         db.add_entity(
             "DocChunk",
             vec![
@@ -2974,7 +2803,7 @@ mod tests {
         let out = super::tool_semantic_search(
             &db,
             &args,
-            "test_snapshot_semantic_search_hnsw",
+            "test_snapshot_semantic_search_exact",
             super::ToolLoopOptions::default(),
             None,
             None,
@@ -2991,7 +2820,9 @@ mod tests {
 
         let chunks = out["chunk_hits"].as_array().expect("chunk_hits array");
         assert!(
-            chunks.iter().any(|c| c["chunk_id"].as_str() == Some("chunk_0")),
+            chunks
+                .iter()
+                .any(|c| c["chunk_id"].as_str() == Some("chunk_0")),
             "expected chunk_0 in chunk_hits: {out}"
         );
     }
@@ -3005,7 +2836,10 @@ mod tests {
                 ("chunk_id", "chunk_0"),
                 ("document_id", "doc"),
                 ("span_id", "s0"),
-                ("text", "Alice is Bob's parent. Alice is Bob's parent. Alice is Bob's parent."),
+                (
+                    "text",
+                    "Alice is Bob's parent. Alice is Bob's parent. Alice is Bob's parent.",
+                ),
             ],
         );
         db.build_indexes();
@@ -3022,6 +2856,594 @@ mod tests {
         assert_eq!(out["span_id"].as_str(), Some("s0"));
         assert_eq!(out["text"].as_str().unwrap_or("").chars().count(), 33); // 32 + ellipsis
         assert_eq!(out["text_truncated"].as_bool(), Some(true));
+    }
+
+    #[test]
+    fn axql_elaborate_returns_trust_contract_payload() {
+        let db = axiograph_pathdb::PathDB::new();
+        let mut query_cache = crate::axql::AxqlPreparedQueryCache::default();
+        let args = serde_json::json!({
+            "query_ir_v1": {
+                "version": 1,
+                "select_vars": ["x"],
+                "disjuncts": [
+                    [
+                        {"kind": "type", "term": "?x", "type": "Node"}
+                    ],
+                    [
+                        {"kind": "attr_contains", "term": "?x", "key": "name", "needle": "a"}
+                    ]
+                ],
+                "limit": 10
+            }
+        });
+
+        let out = super::tool_axql_elaborate(
+            &db,
+            None,
+            &[],
+            "trust-test-snapshot",
+            &mut query_cache,
+            &args,
+        )
+        .expect("axql_elaborate should succeed");
+
+        assert_eq!(out["trust"]["trust_class"].as_str(), Some("mixed"));
+        assert_eq!(
+            out["trust"]["coverage"].as_str(),
+            Some("mixed_union_of_branches")
+        );
+        assert_eq!(
+            out["trust"]["claim_scope"].as_str(),
+            Some("finite_query_denotation_within_exact_accepted_module")
+        );
+        assert_eq!(
+            out["trust"]["completeness_claim"].as_str(),
+            Some("not_claimed")
+        );
+        assert_eq!(
+            out["trust"]["ontology_closure_claim"].as_str(),
+            Some("not_claimed")
+        );
+        assert_eq!(out["trust"]["scope"]["context"].as_str(), Some("unscoped"));
+        let notes = out["trust"]["notes"]
+            .as_array()
+            .expect("trust.notes should be an array");
+        assert!(notes.iter().any(|note| note
+            .as_str()
+            .unwrap_or("")
+            .contains("no exact-completeness claim")));
+    }
+
+    #[test]
+    fn axql_explore_returns_focused_hole_driven_payload() -> Result<()> {
+        let axi = r#"
+module Demo
+
+schema Demo:
+  object Node
+  object Supplier
+  subtype Supplier < Node
+  relation Flow(from: Supplier, to: Supplier)
+
+instance I of Demo:
+  Supplier = {a, b}
+  Flow = {(from=a, to=b)}
+"#;
+        let mut db = axiograph_pathdb::PathDB::new();
+        axiograph_pathdb::axi_module_import::import_axi_schema_v1_into_pathdb(&mut db, axi)?;
+        db.build_indexes();
+        let meta = axiograph_pathdb::axi_semantics::MetaPlaneIndex::from_db(&db)?;
+        let mut query_cache = crate::axql::AxqlPreparedQueryCache::default();
+        let args = serde_json::json!({
+            "variable": "?dst",
+            "query_ir_v1": {
+                "version": 1,
+                "select_vars": ["src", "dst"],
+                "where_atoms": [
+                    {
+                        "kind": "fact",
+                        "fact": "?f",
+                        "relation": "Flow",
+                        "fields": {
+                            "from": "?src",
+                            "to": "?dst"
+                        }
+                    }
+                ],
+                "limit": 5
+            }
+        });
+
+        let out = super::tool_axql_explore(
+            &db,
+            Some(&meta),
+            &[],
+            "explore-test-snapshot",
+            &mut query_cache,
+            &args,
+        )?;
+
+        assert_eq!(out["focus_variable"].as_str(), Some("?dst"));
+        assert_eq!(out["trust"]["trust_class"].as_str(), Some("certifiable"));
+        assert!(out["elaborated_query_ir_v1"].is_object());
+        let suggestions = out["exploration"]["exploration_suggestions"]
+            .as_array()
+            .expect("exploration suggestions array");
+        assert!(!suggestions.is_empty());
+        assert!(suggestions
+            .iter()
+            .all(|suggestion| suggestion["variable"].as_str() == Some("?dst")));
+        assert!(out["exploration"]["semantic_claims"]
+            .as_array()
+            .is_some_and(|claims| !claims.is_empty()));
+        Ok(())
+    }
+
+    #[test]
+    fn axql_run_returns_trust_contract_payload() -> anyhow::Result<()> {
+        let db = axiograph_pathdb::PathDB::new();
+        let mut query_cache = crate::axql::AxqlPreparedQueryCache::default();
+        let args = serde_json::json!({
+            "query_ir_v1": {
+                "version": 1,
+                "select_vars": ["x"],
+                "where_atoms": [
+                    {"kind": "attr_eq", "term": "?x", "key": "name", "value": "Alice"}
+                ],
+                "limit": 3
+            }
+        });
+
+        let out = super::tool_axql_run(
+            &db,
+            None,
+            &[],
+            "trust-test-snapshot",
+            None,
+            &mut query_cache,
+            &args,
+            super::ToolLoopOptions::default(),
+        )?;
+
+        assert_eq!(out["trust"]["trust_class"].as_str(), Some("certifiable"));
+        assert_eq!(out["trust"]["coverage"].as_str(), Some("full_query"));
+        assert_eq!(
+            out["trust"]["soundness"].as_str(),
+            Some("certificate_available_but_not_emitted")
+        );
+        assert_eq!(
+            out["trust"]["claim_scope"].as_str(),
+            Some("finite_query_denotation_within_exact_accepted_module")
+        );
+        assert_eq!(
+            out["trust"]["completeness_claim"].as_str(),
+            Some("not_claimed")
+        );
+        assert_eq!(
+            out["trust"]["ontology_closure_claim"].as_str(),
+            Some("not_claimed")
+        );
+        assert_eq!(out["trust"]["scope"]["context"].as_str(), Some("unscoped"));
+        let notes = out["trust"]["notes"]
+            .as_array()
+            .expect("trust.notes should be an array");
+        assert!(notes.iter().any(|note| note
+            .as_str()
+            .unwrap_or("")
+            .contains("does not claim full ontology closure")));
+        Ok(())
+    }
+
+    #[test]
+    fn tool_loop_tools_schema_includes_semantic_report_tools() {
+        let names = super::tool_loop_tools_schema(false)
+            .into_iter()
+            .map(|tool| tool.name)
+            .collect::<Vec<_>>();
+        assert!(names.iter().any(|name| name == "semantic_business_rule"));
+        assert!(names.iter().any(|name| name == "semantic_coverage"));
+        assert!(names.iter().any(|name| name == "semantic_agent_report"));
+        assert!(names.iter().any(|name| name == "semantic_context_report"));
+        assert!(names.iter().any(|name| name == "semantic_behavior_case"));
+        assert!(names.iter().any(|name| name == "semantic_slice_build"));
+        assert!(names.iter().any(|name| name == "semantic_slice_show"));
+        assert!(names.iter().any(|name| name == "semantic_slice_diff"));
+        assert!(names.iter().any(|name| name == "semantic_merge_plan"));
+        assert!(names.iter().any(|name| name == "semantic_rebase_plan"));
+        assert!(names.iter().any(|name| name == "semantic_resolver_steps"));
+        assert!(names
+            .iter()
+            .any(|name| name == crate::route_preview_tools::ROUTE_PREVIEW_TOOL_NAME));
+        assert!(names
+            .iter()
+            .any(|name| name == crate::transport_preview_tools::TRANSPORT_PREVIEW_TOOL_NAME));
+    }
+
+    #[test]
+    fn tool_loop_tools_schema_advertises_route_preview_schema() {
+        let tools = super::tool_loop_tools_schema(false);
+        let route_preview = tools
+            .iter()
+            .find(|tool| tool.name == crate::route_preview_tools::ROUTE_PREVIEW_TOOL_NAME)
+            .expect("route_preview should be advertised");
+
+        assert_eq!(
+            route_preview.args_schema,
+            crate::route_preview_tools::route_preview_tool_specs()
+                .into_iter()
+                .find(|tool| tool.name == crate::route_preview_tools::ROUTE_PREVIEW_TOOL_NAME)
+                .expect("route preview spec")
+                .input_schema
+        );
+    }
+
+    #[test]
+    fn tool_loop_tools_schema_advertises_transport_preview_schema() {
+        let tools = super::tool_loop_tools_schema(false);
+        let transport_preview = tools
+            .iter()
+            .find(|tool| tool.name == crate::transport_preview_tools::TRANSPORT_PREVIEW_TOOL_NAME)
+            .expect("transport_preview should be advertised");
+
+        assert_eq!(
+            transport_preview.args_schema,
+            crate::transport_preview_tools::transport_preview_tool_specs()
+                .into_iter()
+                .find(
+                    |tool| tool.name == crate::transport_preview_tools::TRANSPORT_PREVIEW_TOOL_NAME
+                )
+                .expect("transport preview spec")
+                .input_schema
+        );
+    }
+
+    #[test]
+    fn execute_tool_call_supports_semantic_business_rule() -> Result<()> {
+        let (db, meta) = semantic_tool_db_and_meta()?;
+        let accepted_snapshot_id = axiograph_pathdb::AcceptedSnapshotId::new("accepted:family");
+        let mut query_cache = crate::axql::AxqlPreparedQueryCache::default();
+        let out = super::execute_tool_call(
+            &db,
+            Some(&meta),
+            &[],
+            "semantic-tool-snapshot",
+            Some(&accepted_snapshot_id),
+            None,
+            None,
+            None,
+            None,
+            &mut query_cache,
+            &super::ToolCallV1 {
+                name: "semantic_business_rule".to_string(),
+                args: json!({
+                    "scope": {
+                        "schema": "Family",
+                        "scope_class": "relation",
+                        "relation": "parent"
+                    }
+                }),
+            },
+            super::ToolLoopOptions::default(),
+        )?;
+
+        assert_eq!(
+            out["version"].as_str(),
+            Some("axiograph_semantic_business_rule_v1")
+        );
+        assert_eq!(
+            out["accepted_snapshot_id"].as_str(),
+            Some("accepted:family")
+        );
+        assert_eq!(
+            out["report"]["scope"]["scope_id"].as_str(),
+            Some("schema/family/relation/parent")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn execute_tool_call_supports_semantic_context_report() -> Result<()> {
+        let (db, meta) = semantic_tool_db_and_meta()?;
+        let accepted_snapshot_id = axiograph_pathdb::AcceptedSnapshotId::new("accepted:family");
+        let mut query_cache = crate::axql::AxqlPreparedQueryCache::default();
+        let out = super::execute_tool_call(
+            &db,
+            Some(&meta),
+            &[],
+            "semantic-tool-snapshot",
+            Some(&accepted_snapshot_id),
+            None,
+            None,
+            None,
+            None,
+            &mut query_cache,
+            &super::ToolCallV1 {
+                name: "semantic_context_report".to_string(),
+                args: json!({
+                    "context": {
+                        "context_id": "domain:family_lookup",
+                        "label": "Family lookup",
+                        "scopes": [{
+                            "schema": "Family",
+                            "scope_class": "relation",
+                            "relation": "parent"
+                        }],
+                        "surfaces": [{
+                            "surface_id": "endpoint:family_lookup",
+                            "kind": "endpoint",
+                            "label": "GET /family/lookup",
+                            "scopes": [{
+                                "schema": "Family",
+                                "scope_class": "relation",
+                                "relation": "parent"
+                            }]
+                        }],
+                        "edges": [{
+                            "surface_id": "endpoint:family_lookup",
+                            "rule_id": "schema/family/relation/parent/rule/functional/0",
+                            "status": "tested"
+                        }],
+                        "competency_questions": [{
+                            "name": "family_lookup_returns_bob",
+                            "query": "select ?f where ?f = Family.parent(child=Bob, parent=Alice) limit 1",
+                            "min_rows": 1,
+                            "weight": 1.0
+                        }]
+                    }
+                }),
+            },
+            super::ToolLoopOptions::default(),
+        )?;
+
+        assert_eq!(
+            out["version"].as_str(),
+            Some("axiograph_semantic_context_report_v1")
+        );
+        assert_eq!(
+            out["report"]["context"]["context_id"].as_str(),
+            Some("domain:family_lookup")
+        );
+        assert_eq!(out["report"]["coverage"]["tested_rules"].as_u64(), Some(1));
+        assert_eq!(
+            out["report"]["competency_coverage"]["total"].as_u64(),
+            Some(1)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn execute_tool_call_supports_route_preview() -> Result<()> {
+        let mut db = axiograph_pathdb::PathDB::new();
+        let a = db.add_entity("Node", vec![("name", "A")]);
+        let b = db.add_entity("Node", vec![("name", "B")]);
+        let ab = db.add_relation("road", a, b, 0.9, Vec::new());
+        db.build_indexes();
+
+        let mut query_cache = crate::axql::AxqlPreparedQueryCache::default();
+        let out = super::execute_tool_call(
+            &db,
+            None,
+            &[],
+            "route-preview-tool-snapshot",
+            None,
+            None,
+            None,
+            None,
+            None,
+            &mut query_cache,
+            &super::ToolCallV1 {
+                name: crate::route_preview_tools::ROUTE_PREVIEW_TOOL_NAME.to_string(),
+                args: json!({
+                    "route": {
+                        "start_entity": a,
+                        "segments": [
+                            {
+                                "relation_id": ab,
+                                "direction": "forward"
+                            }
+                        ]
+                    }
+                }),
+            },
+            super::ToolLoopOptions::default(),
+        )?;
+
+        assert_eq!(
+            out["version"].as_str(),
+            Some("axiograph_discover_route_preview_v1")
+        );
+        assert_eq!(out["route"]["end_entity"].as_u64(), Some(b as u64));
+        assert_eq!(
+            out["route"]["normalized"]["hops"][0]["relation"].as_str(),
+            Some("road")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn execute_tool_call_supports_transport_preview() -> Result<()> {
+        let mut query_cache = crate::axql::AxqlPreparedQueryCache::default();
+        let out = super::execute_tool_call(
+            &axiograph_pathdb::PathDB::new(),
+            None,
+            &[],
+            "transport-preview-tool-snapshot",
+            None,
+            None,
+            None,
+            None,
+            None,
+            &mut query_cache,
+            &super::ToolCallV1 {
+                name: crate::transport_preview_tools::TRANSPORT_PREVIEW_TOOL_NAME.to_string(),
+                args: json!({
+                    "axi_text": r#"
+module Plant
+
+schema Plant:
+  object PlantAsset
+  object Pump
+  object Compressor
+  object Context
+  relation installed_at(asset: PlantAsset, site: PlantAsset, ctx: Context)
+  subtype Pump < PlantAsset
+  subtype Compressor < PlantAsset
+
+theory PlantTransport on Plant:
+  constraint key installed_at(asset, site, ctx)
+"#,
+                    "schema": "Plant",
+                    "morphism": {
+                        "source_schema": "Plant",
+                        "target_schema": "Ops",
+                        "objects": [
+                            {"source_object": "PlantAsset", "target_object": "Equipment"},
+                            {"source_object": "Pump", "target_object": "Equipment"},
+                            {"source_object": "Compressor", "target_object": "Equipment"}
+                        ],
+                        "arrows": [
+                            {"source_arrow": "installed_at", "target_path": ["owned_by", "located_at"]}
+                        ]
+                    }
+                }),
+            },
+            super::ToolLoopOptions::default(),
+        )?;
+
+        assert_eq!(
+            out["version"].as_str(),
+            Some(crate::evolution_preview::EVOLUTION_PREVIEW_VERSION_V1)
+        );
+        assert_eq!(out["kind"].as_str(), Some("migration_preview"));
+        assert_eq!(out["candidate_label"].as_str(), Some("Plant->Ops"));
+        Ok(())
+    }
+
+    #[test]
+    fn draft_axi_from_proposals_returns_typed_authoring_summary() -> Result<()> {
+        let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../..")
+            .canonicalize()
+            .unwrap_or_else(|_| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../.."));
+        let db = crate::load_pathdb_for_cli(&repo_root.join("examples/Family.axi"))?;
+        let generated = crate::proposal_gen::propose_relation_proposals_v1(
+            &db,
+            &[],
+            crate::proposal_gen::ProposeRelationInputV1 {
+                rel_type: "Parent".to_string(),
+                source_name: "Jamison".to_string(),
+                target_name: "Bob".to_string(),
+                source_type: None,
+                target_type: None,
+                source_field: Some("child".to_string()),
+                target_field: Some("parent".to_string()),
+                context: Some("FamilyTree".to_string()),
+                time: Some("T2025".to_string()),
+                confidence: Some(0.9),
+                schema_hint: Some("Fam".to_string()),
+                public_rationale: Some("Jamison is a child of Bob.".to_string()),
+                evidence_text: None,
+                evidence_locator: None,
+                extra_fields: std::collections::HashMap::new(),
+            },
+        )?;
+
+        let out = super::tool_draft_axi_from_proposals(&json!({
+            "proposals_json": generated.proposals,
+            "module_name": "DraftFamily",
+            "schema_name": "DraftFam",
+            "instance_name": "DraftFamilyInst",
+            "infer_constraints": true
+        }))?;
+
+        assert_eq!(
+            out["typed_authoring"]["lifecycle_state"].as_str(),
+            Some("validated")
+        );
+        assert_eq!(
+            out["typed_authoring"]["trust"]["trust_class"].as_str(),
+            Some("validated_draft")
+        );
+        assert_eq!(
+            out["typed_authoring"]["axi_well_typed_proof_v1"]["module_name"].as_str(),
+            Some("DraftFamily")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn axql_tools_require_query_ir_v1_args() {
+        let db = axiograph_pathdb::PathDB::new();
+        let mut query_cache = crate::axql::AxqlPreparedQueryCache::default();
+        let args = serde_json::json!({
+            "axql": "select ?x where ?x is Node limit 1"
+        });
+
+        let err = super::tool_axql_elaborate(
+            &db,
+            None,
+            &[],
+            "typed-tool-boundary",
+            &mut query_cache,
+            &args,
+        )
+        .expect_err("raw axql tool args should be rejected");
+        assert!(err.to_string().contains("expected `query_ir_v1`"));
+    }
+
+    #[test]
+    fn propose_relation_tool_returns_competency_gate_validation() -> Result<()> {
+        let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../..")
+            .canonicalize()
+            .unwrap_or_else(|_| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../.."));
+        let db = crate::load_pathdb_for_cli(&repo_root.join("examples/Family.axi"))?;
+
+        let out = super::tool_propose_relation_proposals(
+            &db,
+            &[],
+            &json!({
+                "rel_type": "Parent",
+                "source_name": "Jamison",
+                "target_name": "Bob",
+                "source_field": "child",
+                "target_field": "parent",
+                "context": "FamilyTree",
+                "time": "T2025",
+                "schema_hint": "Fam",
+                "validate": true,
+                "competency_questions": [
+                    {
+                        "name": "jamison_parent",
+                        "query": "select ?f where ?f = Fam.Parent(child=Jamison, parent=Bob, ctx=FamilyTree, time=?t) limit 1",
+                        "min_rows": 1,
+                        "weight": 1.0
+                    },
+                    {
+                        "name": "jamison_spouse",
+                        "query": "select ?f where ?f = Fam.Spouse(a=Jamison, b=Bob, ctx=FamilyTree) limit 1",
+                        "min_rows": 1,
+                        "weight": 2.0
+                    }
+                ],
+                "cq_fail_on_unsatisfied_after": true
+            }),
+        )?;
+
+        assert_eq!(
+            out["validation"]["trust"]["trust_class"].as_str(),
+            Some("preview_validated")
+        );
+        assert_eq!(
+            out["validation"]["competency_gate"]["gate_passed"].as_bool(),
+            Some(false)
+        );
+        assert_eq!(
+            out["validation"]["competency_gate"]["questions"][0]["after_trust_class"].as_str(),
+            Some("certifiable")
+        );
+        Ok(())
     }
 }
 
@@ -3043,13 +3465,10 @@ impl ExecutionResult {
 
 pub fn execute_generated_query(db: &PathDB, query: &GeneratedQuery) -> Result<ExecutionResult> {
     Ok(match query {
-        GeneratedQuery::Axql(text) => {
-            let q = crate::axql::parse_axql_query(text)?;
-            ExecutionResult::Axql(crate::axql::execute_axql_query(db, &q)?)
-        }
         GeneratedQuery::QueryIrV1(ir) => {
-            let q = ir.to_axql_query()?;
-            ExecutionResult::Axql(crate::axql::execute_axql_query(db, &q)?)
+            let meta = axiograph_pathdb::axi_semantics::MetaPlaneIndex::from_db(db)?;
+            let mut compiled = ir.compile_with_meta(db, Some(&meta))?;
+            ExecutionResult::Axql(compiled.execute(db, Some(&meta))?)
         }
     })
 }
@@ -3060,13 +3479,9 @@ pub fn execute_generated_query_with_meta(
     meta: Option<&axiograph_pathdb::axi_semantics::MetaPlaneIndex>,
 ) -> Result<ExecutionResult> {
     Ok(match query {
-        GeneratedQuery::Axql(text) => {
-            let q = crate::axql::parse_axql_query(text)?;
-            ExecutionResult::Axql(crate::axql::execute_axql_query_with_meta(db, &q, meta)?)
-        }
         GeneratedQuery::QueryIrV1(ir) => {
-            let q = ir.to_axql_query()?;
-            ExecutionResult::Axql(crate::axql::execute_axql_query_with_meta(db, &q, meta)?)
+            let mut compiled = ir.compile_with_meta(db, meta)?;
+            ExecutionResult::Axql(compiled.execute(db, meta)?)
         }
     })
 }
@@ -3082,6 +3497,36 @@ pub(crate) struct ToolLoopOptions {
     pub max_rows: usize,
     pub max_doc_chunks: usize,
     pub max_doc_chars: usize,
+}
+
+impl ToolLoopOptions {
+    fn validate(self) -> Result<Self> {
+        require_bounded_usize(
+            self.max_steps,
+            1,
+            llm_max_steps_cap()?,
+            "LLM tool-loop max_steps",
+        )?;
+        require_bounded_usize(
+            self.max_rows,
+            1,
+            MAX_LLM_TOOL_ROWS,
+            "LLM tool-loop max_rows",
+        )?;
+        require_bounded_usize(
+            self.max_doc_chunks,
+            1,
+            MAX_LLM_TOOL_DOC_CHUNKS,
+            "LLM tool-loop max_doc_chunks",
+        )?;
+        require_bounded_usize(
+            self.max_doc_chars,
+            MIN_LLM_TOOL_DOC_CHARS,
+            MAX_LLM_TOOL_DOC_CHARS,
+            "LLM tool-loop max_doc_chars",
+        )?;
+        Ok(self)
+    }
 }
 
 impl Default for ToolLoopOptions {
@@ -3103,22 +3548,10 @@ pub(crate) struct ToolLoopOutcome {
     pub artifacts: ToolLoopArtifactsV1,
 }
 
-/// Optional access to a snapshot store for tool-loop helpers like:
-/// - listing snapshots,
-/// - diffing two snapshots.
-///
-/// This is only available in db-server mode when running from a store-backed
-/// directory (`axiograph db serve --dir ...`).
 #[derive(Debug, Clone)]
-pub(crate) struct ToolLoopStoreContext {
-    pub dir: PathBuf,
-    pub default_layer: String, // "accepted" | "pathdb"
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct ToolLoopWorldModelContext {
-    pub world_model: crate::world_model::WorldModelState,
-    pub snapshot: Option<crate::world_model::WorldModelSnapshotRefV1>,
+pub(crate) struct ToolLoopPredictiveProposalContext {
+    pub predictive_proposal: crate::predictive_proposals::ProposalAdapterState,
+    pub accepted_snapshot_id: Option<axiograph_pathdb::AcceptedSnapshotId>,
     pub snapshot_label: String,
 }
 
@@ -3154,6 +3587,7 @@ pub(crate) struct ToolLoopArtifactsV1 {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct ToolCallV1 {
     pub name: String,
     #[serde(default)]
@@ -3161,10 +3595,11 @@ pub(crate) struct ToolCallV1 {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct ToolLoopFinalV1 {
     pub answer: String,
     /// Public (non-private) rationale for why these tools/queries were used.
-    ///
+    ///execute_compiled_query_for_test
     /// This must NOT contain chain-of-thought. Keep it short and operational:
     /// e.g. “looked up Alice, described neighbors, ran Parent/Grandparent queries”.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -3185,6 +3620,7 @@ pub(crate) struct ToolLoopTranscriptItemV1 {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ToolLoopModelResponseV1 {
     #[serde(default)]
     tool_call: Option<ToolCallV1>,
@@ -3203,7 +3639,7 @@ fn tool_loop_extract_artifacts(transcript: &[ToolLoopTranscriptItemV1]) -> ToolL
         .rev()
         .find(|s| s.tool == "draft_axi_from_proposals")
         .map(|s| s.result.clone())
-        .and_then(|v| if v.get("error").is_some() { None } else { Some(v) });
+        .filter(|v| v.get("error").is_none());
 
     ToolLoopArtifactsV1 {
         generated_overlay,
@@ -3211,7 +3647,9 @@ fn tool_loop_extract_artifacts(transcript: &[ToolLoopTranscriptItemV1]) -> ToolL
     }
 }
 
-fn tool_loop_extract_generated_overlay(transcript: &[ToolLoopTranscriptItemV1]) -> Option<serde_json::Value> {
+fn tool_loop_extract_generated_overlay(
+    transcript: &[ToolLoopTranscriptItemV1],
+) -> Option<serde_json::Value> {
     #[derive(Clone, Deserialize)]
     struct OverlayToolResult {
         proposals_json: ProposalsFileV1,
@@ -3235,8 +3673,8 @@ fn tool_loop_extract_generated_overlay(transcript: &[ToolLoopTranscriptItemV1]) 
         if step.tool != "propose_relation_proposals"
             && step.tool != "propose_relations_proposals"
             && step.tool != "propose_fact_proposals"
-            && step.tool != "world_model_propose"
-            && step.tool != "world_model_plan"
+            && step.tool != "predictive_proposals"
+            && step.tool != "proposal_rollout_plan"
         {
             continue;
         }
@@ -3470,7 +3908,7 @@ fn tool_loop_extract_generated_overlay(transcript: &[ToolLoopTranscriptItemV1]) 
 /// - Rust executes tools against the loaded snapshot,
 /// - the model produces a final answer grounded in tool outputs.
 ///
-/// This is designed to avoid brittle “LLM outputs raw AxQL text”.
+/// This is designed to avoid brittle “LLM outputs lowered AxQL text”.
 fn finalize_tool_loop_outcome(
     steps: Vec<ToolLoopTranscriptItemV1>,
     mut final_answer: ToolLoopFinalV1,
@@ -3484,7 +3922,10 @@ fn finalize_tool_loop_outcome(
     }
 }
 
-fn tool_loop_enrich_final_answer(steps: &[ToolLoopTranscriptItemV1], final_answer: &mut ToolLoopFinalV1) {
+fn tool_loop_enrich_final_answer(
+    steps: &[ToolLoopTranscriptItemV1],
+    final_answer: &mut ToolLoopFinalV1,
+) {
     fn push_unique(out: &mut Vec<String>, seen: &mut HashSet<String>, s: String) {
         let s = s.trim().to_string();
         if s.is_empty() {
@@ -3534,7 +3975,9 @@ fn tool_loop_enrich_final_answer(steps: &[ToolLoopTranscriptItemV1], final_answe
                     }
                 }
             }
-            "propose_relation_proposals" | "propose_relations_proposals" | "propose_fact_proposals" => {
+            "propose_relation_proposals"
+            | "propose_relations_proposals"
+            | "propose_fact_proposals" => {
                 if let Some(chunks) = step.result.get("chunks").and_then(|v| v.as_array()) {
                     for c in chunks.iter().take(12) {
                         if let Some(cid) = c.get("chunk_id").and_then(|v| v.as_str()) {
@@ -3559,25 +4002,34 @@ fn tool_loop_enrich_final_answer(steps: &[ToolLoopTranscriptItemV1], final_answe
     final_answer.queries = queries_out;
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn run_tool_loop_with_meta(
     llm: &LlmState,
     db: &PathDB,
     meta: Option<&MetaPlaneIndex>,
     default_contexts: &[crate::axql::AxqlContextSpec],
     snapshot_key: &str,
-    store: Option<&ToolLoopStoreContext>,
-    world_model: Option<&ToolLoopWorldModelContext>,
+    accepted_snapshot_id: Option<&AcceptedSnapshotId>,
+    accepted_axi_anchor: Option<&AcceptedAxiAnchor>,
+    predictive_proposal: Option<&ToolLoopPredictiveProposalContext>,
     embeddings: Option<&crate::embeddings::ResolvedEmbeddingsIndexV1>,
     ollama_embed_host: Option<&str>,
     query_cache: &mut crate::axql::AxqlPreparedQueryCache,
     question: &str,
     options: ToolLoopOptions,
 ) -> Result<ToolLoopOutcome> {
+    let options = options.validate()?;
+    if question.len() > crate::security::MAX_TEXT_INPUT_BYTES {
+        return Err(anyhow!(
+            "LLM question exceeds {} bytes",
+            crate::security::MAX_TEXT_INPUT_BYTES
+        ));
+    }
     let schema = match meta {
         Some(m) => SchemaContextV1::from_db_with_meta(db, m),
         None => SchemaContextV1::from_db(db),
     };
-    let tools = tool_loop_tools_schema(store, world_model.is_some());
+    let tools = tool_loop_tools_schema(predictive_proposal.is_some());
 
     let mut transcript: Vec<ToolLoopTranscriptItemV1> = Vec::new();
     // RAG-like flow (backend-owned): prefetch a compact overview + semantic-ish
@@ -3667,7 +4119,7 @@ pub(crate) fn run_tool_loop_with_meta(
         let search_args = serde_json::json!({
             "query": truncate_preview(question, 420),
             "entity_limit": 8,
-            "chunk_limit": options.max_doc_chunks.min(8).max(1),
+            "chunk_limit": options.max_doc_chunks.clamp(1, 8),
         });
         if let Ok(result) = tool_semantic_search(
             db,
@@ -3757,7 +4209,7 @@ pub(crate) fn run_tool_loop_with_meta(
                 if !have_chunks {
                     let fts_args = serde_json::json!({
                         "query": truncate_preview(question, 420),
-                        "limit": options.max_doc_chunks.min(6).max(1),
+                        "limit": options.max_doc_chunks.clamp(1, 6),
                     });
                     if let Ok(fts) = tool_fts_chunks(db, &fts_args, options) {
                         transcript.push(ToolLoopTranscriptItemV1 {
@@ -3794,7 +4246,7 @@ pub(crate) fn run_tool_loop_with_meta(
         }
     }
 
-    let mut remaining_steps = options.max_steps.max(1);
+    let mut remaining_steps = options.max_steps;
     while remaining_steps > 0 {
         let resp = llm.tool_loop_step(
             db,
@@ -3855,7 +4307,6 @@ pub(crate) fn run_tool_loop_with_meta(
             return Ok(finalize_tool_loop_outcome(transcript, final_answer));
         };
 
-
         for tool_call in tool_calls {
             if remaining_steps == 0 {
                 break;
@@ -3865,8 +4316,9 @@ pub(crate) fn run_tool_loop_with_meta(
                 meta,
                 default_contexts,
                 snapshot_key,
-                store,
-                world_model,
+                accepted_snapshot_id,
+                accepted_axi_anchor,
+                predictive_proposal,
                 embeddings,
                 ollama_embed_host,
                 query_cache,
@@ -3939,7 +4391,10 @@ fn fallback_tool_loop_final_answer(
             }
 
             let mut notes = Vec::new();
-            notes.push(format!("auto-finalized: {reason} (max_steps={})", options.max_steps));
+            notes.push(format!(
+                "auto-finalized: {reason} (max_steps={})",
+                options.max_steps
+            ));
             notes.push(format!("question: {question}"));
             notes.push(format!("snapshot_entities={}", db.entities.len()));
 
@@ -3963,7 +4418,10 @@ fn fallback_tool_loop_final_answer(
                 public_rationale: None,
                 citations: Vec::new(),
                 queries: Vec::new(),
-                notes: vec![format!("auto-finalized: {reason} (max_steps={})", options.max_steps)],
+                notes: vec![format!(
+                    "auto-finalized: {reason} (max_steps={})",
+                    options.max_steps
+                )],
             };
         }
     }
@@ -3980,7 +4438,10 @@ fn fallback_tool_loop_final_answer(
                 public_rationale: None,
                 citations: Vec::new(),
                 queries: Vec::new(),
-                notes: vec![format!("auto-finalized: {reason} (max_steps={})", options.max_steps)],
+                notes: vec![format!(
+                    "auto-finalized: {reason} (max_steps={})",
+                    options.max_steps
+                )],
             };
         }
 
@@ -3998,19 +4459,33 @@ fn fallback_tool_loop_final_answer(
             .and_then(|v| v.as_str())
             .unwrap_or("(unknown type)");
 
-        fn summarize_edge_groups(v: &serde_json::Value, dir: &str, max_groups: usize) -> Vec<String> {
+        fn summarize_edge_groups(
+            v: &serde_json::Value,
+            dir: &str,
+            max_groups: usize,
+        ) -> Vec<String> {
             let mut lines = Vec::new();
             let Some(groups) = v.as_array() else {
                 return lines;
             };
             for g in groups.iter().take(max_groups) {
                 let rel = g.get("rel").and_then(|x| x.as_str()).unwrap_or("?");
-                let edges = g.get("edges").and_then(|x| x.as_array()).cloned().unwrap_or_default();
+                let edges = g
+                    .get("edges")
+                    .and_then(|x| x.as_array())
+                    .cloned()
+                    .unwrap_or_default();
                 let mut targets = Vec::new();
                 for e in edges.iter().take(6) {
-                    let ent = e.get("entity").cloned().unwrap_or_else(|| serde_json::json!({}));
+                    let ent = e
+                        .get("entity")
+                        .cloned()
+                        .unwrap_or_else(|| serde_json::json!({}));
                     let ename = ent.get("name").and_then(|x| x.as_str()).unwrap_or("");
-                    let ety = ent.get("entity_type").and_then(|x| x.as_str()).unwrap_or("");
+                    let ety = ent
+                        .get("entity_type")
+                        .and_then(|x| x.as_str())
+                        .unwrap_or("");
                     let id = ent.get("id").and_then(|x| x.as_u64()).unwrap_or(0);
                     if !ename.is_empty() {
                         targets.push(format!("{ename}#{id}"));
@@ -4073,12 +4548,19 @@ fn fallback_tool_loop_final_answer(
                 public_rationale: None,
                 citations: Vec::new(),
                 queries: Vec::new(),
-                notes: vec![format!("auto-finalized: {reason} (max_steps={})", options.max_steps)],
+                notes: vec![format!(
+                    "auto-finalized: {reason} (max_steps={})",
+                    options.max_steps
+                )],
             };
         }
 
         let summary = item.result.get("summary").cloned().unwrap_or_default();
-        let proposals = item.result.get("proposals_json").cloned().unwrap_or_default();
+        let proposals = item
+            .result
+            .get("proposals_json")
+            .cloned()
+            .unwrap_or_default();
         let mut lines = Vec::new();
         lines.push("Generated a reviewable `proposals.json` overlay (untrusted).".to_string());
         if let Some(rel) = summary.get("rel_type").and_then(|v| v.as_str()) {
@@ -4098,7 +4580,9 @@ fn fallback_tool_loop_final_answer(
                     .map(|a| a.len())
                     .unwrap_or(0);
                 if let Some(ctx) = ctx {
-                    lines.push(format!("Proposed: {rel} for {sources}×{targets} (context={ctx})"));
+                    lines.push(format!(
+                        "Proposed: {rel} for {sources}×{targets} (context={ctx})"
+                    ));
                 } else {
                     lines.push(format!("Proposed: {rel} for {sources}×{targets}"));
                 }
@@ -4147,7 +4631,7 @@ fn fallback_tool_loop_final_answer(
         lines.push("".to_string());
         lines.push(serde_json::to_string_pretty(&proposals).unwrap_or_else(|_| "{}".to_string()));
         lines.push("".to_string());
-        lines.push("Next: commit this to the PathDB WAL (evidence plane), review, then promote into accepted `.axi` when ready.".to_string());
+        lines.push("Next: retain this as typed evidence, review it, then promote the canonical `.axi` change through AxiStore when ready.".to_string());
 
         return ToolLoopFinalV1 {
             answer: lines.join("\n"),
@@ -4173,12 +4657,23 @@ fn fallback_tool_loop_final_answer(
                 public_rationale: None,
                 citations: Vec::new(),
                 queries: Vec::new(),
-                notes: vec![format!("auto-finalized: {reason} (max_steps={})", options.max_steps)],
+                notes: vec![format!(
+                    "auto-finalized: {reason} (max_steps={})",
+                    options.max_steps
+                )],
             };
         }
 
-        let entities = item.result.get("entities").and_then(|v| v.as_u64()).unwrap_or(0);
-        let relations = item.result.get("relations").and_then(|v| v.as_u64()).unwrap_or(0);
+        let entities = item
+            .result
+            .get("entities")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let relations = item
+            .result
+            .get("relations")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
         let doc_chunks_loaded = item
             .result
             .get("doc_chunks_loaded")
@@ -4192,7 +4687,10 @@ fn fallback_tool_loop_final_answer(
         if doc_chunks_loaded {
             lines.push("Document chunks are loaded (the assistant can cite them as evidence when answering).".to_string());
         } else {
-            lines.push("No document chunks are loaded (answers are based only on graph structure).".to_string());
+            lines.push(
+                "No document chunks are loaded (answers are based only on graph structure)."
+                    .to_string(),
+            );
         }
 
         if let Some(ctxs) = item.result.get("contexts").and_then(|v| v.as_array()) {
@@ -4268,7 +4766,10 @@ fn fallback_tool_loop_final_answer(
         public_rationale: None,
         citations: Vec::new(),
         queries: Vec::new(),
-        notes: vec![format!("auto-finalized: {reason} (max_steps={})", options.max_steps)],
+        notes: vec![format!(
+            "auto-finalized: {reason} (max_steps={})",
+            options.max_steps
+        )],
     }
 }
 
@@ -4279,10 +4780,7 @@ fn is_trivial_model_answer(answer: &str) -> bool {
     }
 }
 
-fn tool_loop_tools_schema(
-    store: Option<&ToolLoopStoreContext>,
-    world_model_enabled: bool,
-) -> Vec<ToolSpecV1> {
+pub(crate) fn tool_loop_tools_schema(predictive_proposal_enabled: bool) -> Vec<ToolSpecV1> {
     let query_ir_v1_schema = crate::query_ir::query_ir_v1_json_schema();
 
     let mut out = vec![
@@ -4404,38 +4902,73 @@ fn tool_loop_tools_schema(
         },
         ToolSpecV1 {
             name: "axql_elaborate".to_string(),
-            description: "Typecheck/elaborate an AxQL query using the meta-plane, returning the elaborated query + inferred types + plan.".to_string(),
-            args_schema: {
-                let mut schema = serde_json::json!({
-                    "type": "object",
-                    "required": ["query_ir_v1"],
-                    "properties": {
-                        "query_ir_v1": query_ir_v1_schema.clone(),
-                        "limit": { "type": "integer", "minimum": 1, "maximum": 200 }
-                    }
-                });
-                // Backward-compatible escape hatch for older models; prefer query_ir_v1.
-                schema["properties"]["axql"] = serde_json::json!({ "type": "string" });
-                schema
-            },
+            description: "Typecheck/elaborate a structured `query_ir_v1` query using the meta-plane, returning the elaborated query, inferred types, typed holes, type-directed next moves, and plan. The returned trust payload is explicit about soundness being scoped to returned rows only, not completeness or ontology closure.".to_string(),
+            args_schema: serde_json::json!({
+                "type": "object",
+                "required": ["query_ir_v1"],
+                "properties": {
+                    "query_ir_v1": query_ir_v1_schema.clone(),
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 200 }
+                }
+            }),
+        },
+        ToolSpecV1 {
+            name: "axql_explore".to_string(),
+            description: "Ask the typed elaborator what can go here next for a structured `query_ir_v1` query. This is the hole-driven exploration surface for editors/agents: it returns inferred types, typed holes, admissible next moves, semantic claims, and trust gaps, optionally focused on one variable, without claiming completeness or ontology closure.".to_string(),
+            args_schema: serde_json::json!({
+                "type": "object",
+                "required": ["query_ir_v1"],
+                "properties": {
+                    "query_ir_v1": query_ir_v1_schema.clone(),
+                    "variable": { "type": "string" }
+                }
+            }),
         },
         ToolSpecV1 {
             name: "axql_run".to_string(),
-            description: "Run an AxQL query (or query_ir_v1) over the snapshot (uncertified, unless you later emit a certificate).".to_string(),
-            args_schema: {
-                let mut schema = serde_json::json!({
-                    "type": "object",
-                    "required": ["query_ir_v1"],
-                    "properties": {
-                        "query_ir_v1": query_ir_v1_schema.clone(),
-                        "limit": { "type": "integer", "minimum": 1, "maximum": 200 }
-                    }
-                });
-                // Backward-compatible escape hatch for older models; prefer query_ir_v1.
-                schema["properties"]["axql"] = serde_json::json!({ "type": "string" });
-                schema
-            },
+            description: "Compile and run structured `query_ir_v1` through `CompiledFiniteQuery`. Unverified execution carries no completeness claim; an accepted bound `query_result_v4` Lean receipt proves exact completeness only for the declared finite fragment and never ontology closure.".to_string(),
+            args_schema: serde_json::json!({
+                "type": "object",
+                "required": ["query_ir_v1"],
+                "properties": {
+                    "query_ir_v1": query_ir_v1_schema.clone(),
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 200 }
+                }
+            }),
         },
+    ];
+
+    out.extend(
+        crate::semantic_tools::semantic_tool_specs()
+            .into_iter()
+            .map(|tool| ToolSpecV1 {
+                name: tool.name.to_string(),
+                description: tool.description.to_string(),
+                args_schema: tool.input_schema,
+            }),
+    );
+
+    out.extend(
+        crate::route_preview_tools::route_preview_tool_specs()
+            .into_iter()
+            .map(|tool| ToolSpecV1 {
+                name: tool.name.to_string(),
+                description: tool.description.to_string(),
+                args_schema: tool.input_schema,
+            }),
+    );
+
+    out.extend(
+        crate::transport_preview_tools::transport_preview_tool_specs()
+            .into_iter()
+            .map(|tool| ToolSpecV1 {
+                name: tool.name.to_string(),
+                description: tool.description.to_string(),
+                args_schema: tool.input_schema,
+            }),
+    );
+
+    out.extend([
         ToolSpecV1 {
             name: "viz_render".to_string(),
             description: "Render an HTML neighborhood visualization (restricted to build/llm_agent).".to_string(),
@@ -4479,7 +5012,7 @@ fn tool_loop_tools_schema(
         },
         ToolSpecV1 {
             name: "draft_axi_from_proposals".to_string(),
-            description: "Generate a draft canonical `.axi` module directly from an in-memory `proposals_json` object (deterministic, untrusted; for review).".to_string(),
+            description: "Generate a draft canonical `.axi` module directly from an in-memory `proposals_json` object (deterministic, untrusted; for review). The result now also includes a Rust-side well-typed module check summary when the draft parses as canonical `.axi`, so authoring flows can distinguish \"syntactically drafted\" from \"validated draft\".".to_string(),
             args_schema: serde_json::json!({
                 "type": "object",
                 "required": ["proposals_json"],
@@ -4494,7 +5027,7 @@ fn tool_loop_tools_schema(
         },
         ToolSpecV1 {
             name: "propose_relation_proposals".to_string(),
-            description: "Generate an untrusted `proposals.json` (Evidence/Proposals schema) for adding a relation assertion between two entities in the current snapshot. This does NOT mutate the DB; it produces a reviewable overlay artifact.\n\nImportant:\n- By default, `source_name` binds to the canonical relation's source-ish field (`from`/`source`/`child`/`lhs`) and `target_name` binds to the target-ish field (`to`/`target`/`parent`/`rhs`). If you need to disambiguate direction, set `source_field` and `target_field` explicitly (e.g. for Parent(child,parent): source_field=\"parent\" target_field=\"child\").\n- For n-ary relations, use `extra_fields` for required fields beyond endpoints (e.g. amount/currency/policy), or prefer `propose_fact_proposals` to specify all fields directly.".to_string(),
+            description: "Generate an untrusted `proposals.json` (Evidence/Proposals schema) for adding a relation assertion between two entities in the current snapshot. This does NOT mutate the DB; it produces a reviewable overlay artifact.\n\nImportant:\n- By default, `source_name` binds to the canonical relation's source-ish field (`from`/`source`/`child`/`lhs`) and `target_name` binds to the target-ish field (`to`/`target`/`parent`/`rhs`). If you need to disambiguate direction, set `source_field` and `target_field` explicitly (e.g. for Parent(child,parent): source_field=\"parent\" target_field=\"child\").\n- For n-ary relations, use `extra_fields` for required fields beyond endpoints (e.g. amount/currency/policy), or prefer `propose_fact_proposals` to specify all fields directly.\n- Optional `competency_questions` let you preview whether the proposal helps or regresses ontology intent before review/promotion.".to_string(),
             args_schema: serde_json::json!({
                 "type": "object",
                 "required": ["rel_type", "source_name", "target_name"],
@@ -4516,13 +5049,16 @@ fn tool_loop_tools_schema(
                     "extra_fields": { "type": "object", "additionalProperties": { "type": "string" } },
                     "validate": { "type": "boolean" },
                     "quality_profile": { "type": "string", "enum": ["fast", "strict"] },
-                    "quality_plane": { "type": "string", "enum": ["meta", "data", "both"] }
+                    "quality_plane": { "type": "string", "enum": ["meta", "data", "both"] },
+                    "competency_questions": { "type": "array", "items": { "type": "object" } },
+                    "cq_fail_on_regression": { "type": "boolean" },
+                    "cq_fail_on_unsatisfied_after": { "type": "boolean" }
                 }
             }),
         },
         ToolSpecV1 {
             name: "propose_fact_proposals".to_string(),
-            description: "Generate an untrusted `proposals.json` overlay for adding a *typed fact node* (n-ary relation) by specifying field values directly (recommended when direction is ambiguous or the relation has more than 2 fields).\n\nExample fields for Parent(child,parent,ctx,time): {\"child\":\"Jamison\",\"parent\":\"Bob\",\"ctx\":\"FamilyTree\",\"time\":\"T2025\"}.\n\nYou may pass `rel_type` as schema-qualified `Schema.Rel` when multiple schemas share the same relation name.".to_string(),
+            description: "Generate an untrusted `proposals.json` overlay for adding a *typed fact node* (n-ary relation) by specifying field values directly (recommended when direction is ambiguous or the relation has more than 2 fields).\n\nExample fields for Parent(child,parent,ctx,time): {\"child\":\"Jamison\",\"parent\":\"Bob\",\"ctx\":\"FamilyTree\",\"time\":\"T2025\"}.\n\nYou may pass `rel_type` as schema-qualified `Schema.Rel` when multiple schemas share the same relation name. Optional `competency_questions` let you attach CQ regression checks to the preview validation.".to_string(),
             args_schema: serde_json::json!({
                 "type": "object",
                 "required": ["rel_type", "fields"],
@@ -4536,13 +5072,16 @@ fn tool_loop_tools_schema(
                     "evidence_locator": { "type": "string" },
                     "validate": { "type": "boolean" },
                     "quality_profile": { "type": "string", "enum": ["fast", "strict"] },
-                    "quality_plane": { "type": "string", "enum": ["meta", "data", "both"] }
+                    "quality_plane": { "type": "string", "enum": ["meta", "data", "both"] },
+                    "competency_questions": { "type": "array", "items": { "type": "object" } },
+                    "cq_fail_on_regression": { "type": "boolean" },
+                    "cq_fail_on_unsatisfied_after": { "type": "boolean" }
                 }
             }),
         },
         ToolSpecV1 {
             name: "propose_relations_proposals".to_string(),
-            description: "Generate an untrusted `proposals.json` (Evidence/Proposals schema) for adding *multiple* relation assertions between lists of entities.\n\nThis is the batch form of `propose_relation_proposals`. Use it when the user asks for multiple pairs (e.g. \"Jamison is a child of Alice and Bob\").".to_string(),
+            description: "Generate an untrusted `proposals.json` (Evidence/Proposals schema) for adding *multiple* relation assertions between lists of entities.\n\nThis is the batch form of `propose_relation_proposals`. Use it when the user asks for multiple pairs (e.g. \"Jamison is a child of Alice and Bob\"). Optional `competency_questions` let you attach CQ regression checks to the preview validation.".to_string(),
             args_schema: serde_json::json!({
                 "type": "object",
                 "required": ["rel_type", "source_names", "target_names"],
@@ -4565,68 +5104,27 @@ fn tool_loop_tools_schema(
                     "extra_fields": { "type": "object", "additionalProperties": { "type": "string" } },
                     "validate": { "type": "boolean" },
                     "quality_profile": { "type": "string", "enum": ["fast", "strict"] },
-                    "quality_plane": { "type": "string", "enum": ["meta", "data", "both"] }
+                    "quality_plane": { "type": "string", "enum": ["meta", "data", "both"] },
+                    "competency_questions": { "type": "array", "items": { "type": "object" } },
+                    "cq_fail_on_regression": { "type": "boolean" },
+                    "cq_fail_on_unsatisfied_after": { "type": "boolean" }
                 }
             }),
         },
-    ];
+    ]);
 
-    if let Some(store) = store {
-        let default_layer = store.default_layer.trim().to_ascii_lowercase();
-        let layer_hint = if default_layer == "accepted" {
-            "accepted"
-        } else if default_layer == "pathdb" {
-            "pathdb"
-        } else {
-            "pathdb"
-        };
-
+    if predictive_proposal_enabled {
         out.push(ToolSpecV1 {
-            name: "snapshots_list".to_string(),
-            description: format!(
-                "List snapshots available in the server's snapshot store (accepted plane and/or PathDB WAL). Useful when the user references short snapshot ids (e.g. \"80e4\") or asks for history.\n\nDefault layer for this server: {layer_hint}."
-            ),
+            name: "predictive_proposals".to_string(),
+            description: "Run the configured predictive proposal adapter to propose new evidence-plane facts/relations (untrusted).".to_string(),
             args_schema: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "layer": { "type": "string", "enum": ["accepted", "pathdb"] },
-                    "limit": { "type": "integer", "minimum": 1, "maximum": 500 }
-                }
-            }),
-        });
-
-        out.push(ToolSpecV1 {
-            name: "snapshot_diff".to_string(),
-            description: format!(
-                "Diff two snapshots in the server store. Accepts full ids (e.g. fnv1a64:...) or short prefixes (e.g. \"80e4\") or \"head\".\n\nDefault layer for this server: {layer_hint}."
-            ),
-            args_schema: serde_json::json!({
-                "type": "object",
-                "required": ["snapshot_a", "snapshot_b"],
-                "properties": {
-                    "snapshot_a": { "type": "string" },
-                    "snapshot_b": { "type": "string" },
-                    "layer": { "type": "string", "enum": ["accepted", "pathdb"] },
-                    "axi_relation": { "type": "string" },
-                    "limit": { "type": "integer", "minimum": 1, "maximum": 200 }
-                }
-            }),
-        });
-    }
-
-    if world_model_enabled {
-        out.push(ToolSpecV1 {
-            name: "world_model_propose".to_string(),
-            description: "Run the configured world model to propose new evidence-plane facts/relations (untrusted).".to_string(),
-            args_schema: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "goals": { "type": "array", "items": { "type": "string" } },
-                    "axi_module": { "type": "string", "description": "Optional canonical `.axi` module name to export and feed into the world model." },
-                    "require_canonical_axi": { "type": "boolean", "description": "If true, refuse to run unless a canonical module export is available." },
-                    "seed": { "type": "integer", "minimum": 0 },
-                    "max_new_proposals": { "type": "integer", "minimum": 0, "maximum": 5000 },
-                    "guardrail_profile": { "type": "string", "enum": ["off", "fast", "strict"] },
+                    "type": "object",
+                    "properties": {
+                        "goals": { "type": "array", "items": { "type": "string" } },
+                        "axi_module": { "type": "string", "description": "Optional canonical `.axi` module name to export and feed into the predictive proposal adapter." },
+                        "seed": { "type": "integer", "minimum": 0 },
+                        "max_new_proposals": { "type": "integer", "minimum": 0, "maximum": 5000 },
+                        "guardrail_profile": { "type": "string", "enum": ["off", "fast", "strict"] },
                     "guardrail_plane": { "type": "string", "enum": ["meta", "data", "both"] },
                     "guardrail_weights": { "type": "object" },
                     "task_costs": { "type": "array", "items": { "type": "object" } },
@@ -4636,17 +5134,16 @@ fn tool_loop_tools_schema(
             }),
         });
         out.push(ToolSpecV1 {
-            name: "world_model_plan".to_string(),
-            description: "Run an MPC-style world model plan (multi-step proposals + guardrail costs).".to_string(),
+            name: "proposal_rollout_plan".to_string(),
+            description: "Run a multi-step bounded proposal rollout (proposals + guardrail costs).".to_string(),
             args_schema: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "goals": { "type": "array", "items": { "type": "string" } },
-                    "axi_module": { "type": "string", "description": "Optional canonical `.axi` module name to export and feed into the world model." },
-                    "require_canonical_axi": { "type": "boolean", "description": "If true, refuse to run unless a canonical module export is available." },
-                    "seed": { "type": "integer", "minimum": 0 },
-                    "max_new_proposals": { "type": "integer", "minimum": 0, "maximum": 5000 },
-                    "horizon_steps": { "type": "integer", "minimum": 1, "maximum": 20 },
+                    "type": "object",
+                    "properties": {
+                        "goals": { "type": "array", "items": { "type": "string" } },
+                        "axi_module": { "type": "string", "description": "Optional canonical `.axi` module name to export and feed into the predictive proposal adapter." },
+                        "seed": { "type": "integer", "minimum": 0 },
+                        "max_new_proposals": { "type": "integer", "minimum": 0, "maximum": 5000 },
+                        "horizon_steps": { "type": "integer", "minimum": 1, "maximum": 20 },
                     "rollouts": { "type": "integer", "minimum": 1, "maximum": 10 },
                     "guardrail_profile": { "type": "string", "enum": ["off", "fast", "strict"] },
                     "guardrail_plane": { "type": "string", "enum": ["meta", "data", "both"] },
@@ -4662,13 +5159,15 @@ fn tool_loop_tools_schema(
     out
 }
 
+#[allow(clippy::too_many_arguments)]
 fn execute_tool_call(
     db: &PathDB,
     meta: Option<&MetaPlaneIndex>,
     default_contexts: &[crate::axql::AxqlContextSpec],
     snapshot_key: &str,
-    store: Option<&ToolLoopStoreContext>,
-    world_model: Option<&ToolLoopWorldModelContext>,
+    accepted_snapshot_id: Option<&AcceptedSnapshotId>,
+    accepted_axi_anchor: Option<&AcceptedAxiAnchor>,
+    predictive_proposal: Option<&ToolLoopPredictiveProposalContext>,
     embeddings: Option<&crate::embeddings::ResolvedEmbeddingsIndexV1>,
     ollama_embed_host: Option<&str>,
     query_cache: &mut crate::axql::AxqlPreparedQueryCache,
@@ -4677,16 +5176,14 @@ fn execute_tool_call(
 ) -> Result<serde_json::Value> {
     match call.name.as_str() {
         "db_summary" => tool_db_summary(db, &call.args),
-        "semantic_search" => {
-            tool_semantic_search(
-                db,
-                &call.args,
-                snapshot_key,
-                options,
-                embeddings,
-                ollama_embed_host,
-            )
-        }
+        "semantic_search" => tool_semantic_search(
+            db,
+            &call.args,
+            snapshot_key,
+            options,
+            embeddings,
+            ollama_embed_host,
+        ),
         "lookup_entity" => tool_lookup_entity(db, &call.args),
         "describe_entity" => describe_entity_v1(db, &call.args),
         "lookup_type" => tool_lookup_type(db, meta, &call.args),
@@ -4702,49 +5199,84 @@ fn execute_tool_call(
             query_cache,
             &call.args,
         ),
-        "axql_run" => tool_axql_run(
+        "axql_explore" => tool_axql_explore(
             db,
             meta,
             default_contexts,
             snapshot_key,
             query_cache,
             &call.args,
+        ),
+        "axql_run" => tool_axql_run(
+            db,
+            meta,
+            default_contexts,
+            snapshot_key,
+            accepted_axi_anchor,
+            query_cache,
+            &call.args,
             options,
         ),
+        name if crate::semantic_tools::is_semantic_tool(name) => {
+            crate::semantic_tools::invoke_semantic_tool(
+                name,
+                crate::semantic_tools::SemanticToolContext {
+                    db,
+                    meta,
+                    accepted_snapshot_id,
+                },
+                call.args.clone(),
+            )
+        }
+        name if crate::route_preview_tools::is_route_preview_tool(name) => {
+            crate::route_preview_tools::invoke_route_preview_tool(
+                name,
+                crate::route_preview_tools::RoutePreviewToolContext { db },
+                call.args.clone(),
+            )
+        }
+        name if crate::transport_preview_tools::is_transport_preview_tool(name) => {
+            crate::transport_preview_tools::invoke_transport_preview_tool(
+                name,
+                crate::transport_preview_tools::TransportPreviewToolContext,
+                call.args.clone(),
+            )
+        }
         "viz_render" => tool_viz_render(db, meta, &call.args),
         "quality_report" => tool_quality_report(db, &call.args),
         "propose_axi_patch" => tool_propose_axi_patch(&call.args),
         "draft_axi_from_proposals" => tool_draft_axi_from_proposals(&call.args),
-        "propose_relation_proposals" => tool_propose_relation_proposals(db, default_contexts, &call.args),
+        "propose_relation_proposals" => {
+            tool_propose_relation_proposals(db, default_contexts, &call.args)
+        }
         "propose_fact_proposals" => tool_propose_fact_proposals(db, default_contexts, &call.args),
-        "propose_relations_proposals" => tool_propose_relations_proposals(db, default_contexts, &call.args),
-        "world_model_propose" => tool_world_model_propose(db, world_model, &call.args),
-        "world_model_plan" => tool_world_model_plan(db, world_model, &call.args),
-        "snapshots_list" => tool_snapshots_list(store, &call.args),
-        "snapshot_diff" => tool_snapshot_diff(store, &call.args),
+        "propose_relations_proposals" => {
+            tool_propose_relations_proposals(db, default_contexts, &call.args)
+        }
+        "predictive_proposals" => tool_predictive_proposals(db, predictive_proposal, &call.args),
+        "proposal_rollout_plan" => tool_proposal_rollout_plan(db, predictive_proposal, &call.args),
         other => Err(anyhow!("unknown tool `{other}`")),
     }
 }
 
-fn tool_world_model_propose(
+fn tool_predictive_proposals(
     db: &PathDB,
-    ctx: Option<&ToolLoopWorldModelContext>,
+    ctx: Option<&ToolLoopPredictiveProposalContext>,
     args: &serde_json::Value,
 ) -> Result<serde_json::Value> {
     let Some(ctx) = ctx else {
-        return Err(anyhow!("world_model_propose is unavailable (world model disabled)"));
+        return Err(anyhow!(
+            "predictive_proposals is unavailable (predictive proposal adapter disabled)"
+        ));
     };
 
     #[derive(Deserialize, Default)]
     struct Args {
         #[serde(default)]
         goals: Vec<String>,
-        /// Optional canonical `.axi` module name to export and feed into the world model.
+        /// Optional canonical `.axi` module name to export and feed into the predictive proposal adapter.
         #[serde(default)]
         axi_module: Option<String>,
-        /// If true, refuse to run unless a canonical module export is available.
-        #[serde(default)]
-        require_canonical_axi: Option<bool>,
         #[serde(default)]
         seed: Option<u64>,
         #[serde(default)]
@@ -4754,9 +5286,9 @@ fn tool_world_model_propose(
         #[serde(default)]
         guardrail_plane: Option<String>,
         #[serde(default)]
-        guardrail_weights: Option<crate::world_model::GuardrailCostWeightsV1>,
+        guardrail_weights: Option<crate::predictive_proposals::GuardrailCostWeightsV1>,
         #[serde(default)]
-        task_costs: Vec<crate::world_model::WorldModelTaskCostV1>,
+        task_costs: Vec<crate::predictive_proposals::ProposalTaskCostV1>,
         #[serde(default)]
         horizon_steps: Option<usize>,
         #[serde(default)]
@@ -4764,7 +5296,7 @@ fn tool_world_model_propose(
     }
 
     let a: Args = serde_json::from_value(args.clone())
-        .map_err(|e| anyhow!("world_model_propose: invalid args: {e}"))?;
+        .map_err(|e| anyhow!("predictive_proposals: invalid args: {e}"))?;
 
     let guardrail_profile = a
         .guardrail_profile
@@ -4779,9 +5311,9 @@ fn tool_world_model_propose(
     let include_guardrail = a.include_guardrail.unwrap_or(true);
     let guardrail_weights = a
         .guardrail_weights
-        .unwrap_or_else(crate::world_model::GuardrailCostWeightsV1::defaults);
+        .unwrap_or_else(crate::predictive_proposals::GuardrailCostWeightsV1::defaults);
     let guardrail = if include_guardrail && guardrail_profile != "off" {
-        Some(crate::world_model::compute_guardrail_costs(
+        Some(crate::predictive_proposals::compute_guardrail_costs(
             db,
             &format!("llm_tool_loop:{}", ctx.snapshot_label),
             &guardrail_profile,
@@ -4792,72 +5324,26 @@ fn tool_world_model_propose(
         None
     };
 
-    let mut input = crate::world_model::WorldModelInputV1::default();
-    if guardrail.is_some() {
-        input.guardrail = guardrail.clone();
+    let mut input: crate::predictive_proposals::PredictiveProposalInputV1 = Err(anyhow!("exact canonical `.axi` bytes are required; PathDB cannot be reverse-exported into accepted meaning"))?;
+    if let Some(guardrail) = guardrail.clone() {
+        input.set_guardrail_layer(guardrail);
     }
     input.notes.push("source=llm_tool_loop".to_string());
-    let opts = crate::world_model_input::WorldModelAxiInputOptionsV1 {
-        module_name: a.axi_module.clone(),
-        require_canonical: a.require_canonical_axi.unwrap_or(false),
-    };
-    let exported = crate::world_model_input::export_pathdb_world_model_axi(db, &opts)?;
-    input.axi_digest_v1 = Some(exported.axi_digest_v1.clone());
-    input.axi_module_text = Some(exported.axi_text.clone());
-    input.axi_input_kind = Some(exported.kind.as_str().to_string());
-    input.axi_input_module = exported.selected_module_name.clone();
-    input.notes.push(format!("axi_input_kind={}", exported.kind.as_str()));
-    if let Some(m) = exported.selected_module_name.as_ref() {
-        input.notes.push(format!("axi_input_module={m}"));
-    }
-    if matches!(
-        exported.kind,
-        crate::world_model_input::WorldModelAxiInputKindV1::PathdbExportFallback
-    ) {
-        input.notes.push("warning: axi_input_kind=pathdb_export_fallback includes PathDBExportV1 internals (debug-only)".to_string());
-    }
-        let max_items = a
-            .max_new_proposals
-            .unwrap_or(0)
-            .saturating_mul(20)
-            .min(2000)
-            .max(1000);
-        let exclude_relations = if matches!(
-            exported.kind,
-            crate::world_model_input::WorldModelAxiInputKindV1::PathdbExportFallback
-        ) {
-            vec!["interned_string".to_string()]
-        } else {
-            Vec::new()
-        };
-        let export_opts = crate::world_model::JepaExportOptions {
-            instance_filter: None,
-            max_items,
-            mask_fields: 1,
-            seed: 1,
-            exclude_relations,
-        };
-        if let Ok(export) = crate::world_model::build_jepa_export_from_axi_text(
-            &exported.axi_text,
-            &export_opts,
-        )
-        {
-            input.export = Some(export);
-        }
-    input.snapshot = ctx.snapshot.clone();
 
     let max_keep = a.max_new_proposals.unwrap_or(0);
-    let mut options = crate::world_model::WorldModelOptionsV1::default();
-    options.max_new_proposals = max_keep;
-    options.seed = a.seed;
-    options.goals = a.goals;
-    options.task_costs = a.task_costs;
-    options.horizon_steps = a.horizon_steps;
+    let options = crate::predictive_proposals::PredictiveProposalOptionsV1 {
+        max_new_proposals: max_keep,
+        seed: a.seed,
+        goals: a.goals,
+        task_costs: a.task_costs,
+        horizon_steps: a.horizon_steps,
+        ..Default::default()
+    };
 
-    let req = crate::world_model::make_world_model_request(input.clone(), options);
-    let mut response = ctx.world_model.propose(&req)?;
+    let req = crate::predictive_proposals::make_predictive_proposal_request(input.clone(), options);
+    let mut response = ctx.predictive_proposal.propose(&req)?;
     if let Some(err) = response.error.take() {
-        return Err(anyhow!("world model error: {err}"));
+        return Err(anyhow!("predictive proposal adapter error: {err}"));
     }
 
     let guardrail_profile_label = if guardrail_profile == "off" {
@@ -4871,24 +5357,28 @@ fn tool_world_model_propose(
         Some(guardrail_plane.clone())
     };
 
-    let provenance = crate::world_model::WorldModelProvenance {
-        trace_id: response.trace_id.clone(),
-        backend: ctx.world_model.backend_label(),
-        model: ctx.world_model.model.clone(),
-        axi_digest_v1: input.axi_digest_v1.clone(),
-        guardrail_total_cost: guardrail.as_ref().map(|g| g.summary.total_cost),
-        guardrail_profile: guardrail_profile_label,
-        guardrail_plane: guardrail_plane_label,
-    };
+    let provenance = crate::predictive_proposals::build_predictive_proposal_provenance(
+        &response,
+        ctx.predictive_proposal.backend_label(),
+        ctx.predictive_proposal.model.clone(),
+        input.revision_digest_v2.clone(),
+        input.materialization_id(),
+        input.accepted_snapshot_id(),
+        guardrail.as_ref().map(|g| g.summary.total_cost),
+        guardrail_profile_label,
+        guardrail_plane_label,
+    )?;
 
-    let mut proposals =
-        crate::world_model::apply_world_model_provenance(response.proposals, &provenance);
+    let mut proposals = crate::predictive_proposals::apply_predictive_proposal_provenance(
+        response.proposals,
+        &provenance,
+    );
     if max_keep > 0 && proposals.proposals.len() > max_keep {
         proposals.proposals.truncate(max_keep);
     }
 
     Ok(serde_json::json!({
-        "version": "axiograph_world_model_tool_propose_v1",
+        "version": "axiograph_predictive_proposals_tool_v1",
         "trace_id": response.trace_id,
         "proposals_json": proposals,
         "guardrail": guardrail,
@@ -4896,25 +5386,24 @@ fn tool_world_model_propose(
     }))
 }
 
-fn tool_world_model_plan(
+fn tool_proposal_rollout_plan(
     db: &PathDB,
-    ctx: Option<&ToolLoopWorldModelContext>,
+    ctx: Option<&ToolLoopPredictiveProposalContext>,
     args: &serde_json::Value,
 ) -> Result<serde_json::Value> {
     let Some(ctx) = ctx else {
-        return Err(anyhow!("world_model_plan is unavailable (world model disabled)"));
+        return Err(anyhow!(
+            "proposal_rollout_plan is unavailable (predictive proposal adapter disabled)"
+        ));
     };
 
     #[derive(Deserialize, Default)]
     struct Args {
         #[serde(default)]
         goals: Vec<String>,
-        /// Optional canonical `.axi` module name to export and feed into the world model.
+        /// Optional canonical `.axi` module name to export and feed into the predictive proposal adapter.
         #[serde(default)]
         axi_module: Option<String>,
-        /// If true, refuse to run unless a canonical module export is available.
-        #[serde(default)]
-        require_canonical_axi: Option<bool>,
         #[serde(default)]
         seed: Option<u64>,
         #[serde(default)]
@@ -4928,17 +5417,17 @@ fn tool_world_model_plan(
         #[serde(default)]
         guardrail_plane: Option<String>,
         #[serde(default)]
-        guardrail_weights: Option<crate::world_model::GuardrailCostWeightsV1>,
+        guardrail_weights: Option<crate::predictive_proposals::GuardrailCostWeightsV1>,
         #[serde(default)]
-        task_costs: Vec<crate::world_model::WorldModelTaskCostV1>,
+        task_costs: Vec<crate::predictive_proposals::ProposalTaskCostV1>,
         #[serde(default)]
         include_guardrail: Option<bool>,
         #[serde(default)]
-        competency_questions: Vec<crate::world_model::CompetencyQuestionV1>,
+        competency_questions: Vec<crate::predictive_proposals::CompetencyQuestionV1>,
     }
 
     let a: Args = serde_json::from_value(args.clone())
-        .map_err(|e| anyhow!("world_model_plan: invalid args: {e}"))?;
+        .map_err(|e| anyhow!("proposal_rollout_plan: invalid args: {e}"))?;
 
     let guardrail_profile = a
         .guardrail_profile
@@ -4953,63 +5442,26 @@ fn tool_world_model_plan(
     let include_guardrail = a.include_guardrail.unwrap_or(true);
     let guardrail_weights = a
         .guardrail_weights
-        .unwrap_or_else(crate::world_model::GuardrailCostWeightsV1::defaults);
-    let horizon_steps = a.horizon_steps.unwrap_or(2).max(1);
-    let rollouts = a.rollouts.unwrap_or(2).max(1);
+        .unwrap_or_else(crate::predictive_proposals::GuardrailCostWeightsV1::defaults);
+    let horizon_steps = require_bounded_usize(
+        a.horizon_steps.unwrap_or(2),
+        1,
+        crate::predictive_proposals::MAX_PROPOSAL_ROLLOUT_HORIZON,
+        "proposal_rollout_plan.horizon_steps",
+    )?;
+    let rollouts = require_bounded_usize(
+        a.rollouts.unwrap_or(2),
+        1,
+        crate::predictive_proposals::MAX_PROPOSAL_ROLLOUTS,
+        "proposal_rollout_plan.rollouts",
+    )?;
     let max_new_proposals = a.max_new_proposals.unwrap_or(0);
 
-    let mut base_input = crate::world_model::WorldModelInputV1::default();
+    let mut base_input: crate::predictive_proposals::PredictiveProposalInputV1 =
+        Err(anyhow!("exact canonical `.axi` bytes are required; PathDB cannot be reverse-exported into accepted meaning"))?;
     base_input.notes.push("source=llm_tool_loop".to_string());
-    let opts = crate::world_model_input::WorldModelAxiInputOptionsV1 {
-        module_name: a.axi_module.clone(),
-        require_canonical: a.require_canonical_axi.unwrap_or(false),
-    };
-    let exported = crate::world_model_input::export_pathdb_world_model_axi(db, &opts)?;
-    base_input.axi_digest_v1 = Some(exported.axi_digest_v1.clone());
-    base_input.axi_module_text = Some(exported.axi_text.clone());
-    base_input.axi_input_kind = Some(exported.kind.as_str().to_string());
-    base_input.axi_input_module = exported.selected_module_name.clone();
-    base_input
-        .notes
-        .push(format!("axi_input_kind={}", exported.kind.as_str()));
-    if let Some(m) = exported.selected_module_name.as_ref() {
-        base_input.notes.push(format!("axi_input_module={m}"));
-    }
-    if matches!(
-        exported.kind,
-        crate::world_model_input::WorldModelAxiInputKindV1::PathdbExportFallback
-    ) {
-        base_input.notes.push("warning: axi_input_kind=pathdb_export_fallback includes PathDBExportV1 internals (debug-only)".to_string());
-    }
-        let max_items = max_new_proposals
-            .saturating_mul(20)
-            .min(2000)
-            .max(1000);
-        let exclude_relations = if matches!(
-            exported.kind,
-            crate::world_model_input::WorldModelAxiInputKindV1::PathdbExportFallback
-        ) {
-            vec!["interned_string".to_string()]
-        } else {
-            Vec::new()
-        };
-        let export_opts = crate::world_model::JepaExportOptions {
-            instance_filter: None,
-            max_items,
-            mask_fields: 1,
-            seed: 1,
-            exclude_relations,
-        };
-        if let Ok(export) = crate::world_model::build_jepa_export_from_axi_text(
-            &exported.axi_text,
-            &export_opts,
-        )
-        {
-            base_input.export = Some(export);
-        }
-    base_input.snapshot = ctx.snapshot.clone();
 
-    let plan_opts = crate::world_model::WorldModelPlanOptionsV1 {
+    let plan_opts = crate::predictive_proposals::BoundedProposalPlanOptionsV1 {
         horizon_steps,
         rollouts,
         max_new_proposals,
@@ -5025,7 +5477,12 @@ fn tool_world_model_plan(
         validation_plane: "both".to_string(),
     };
 
-    let report = crate::world_model::run_world_model_plan(db, &ctx.world_model, &base_input, &plan_opts)?;
+    let report = crate::predictive_proposals::run_proposal_rollout_plan(
+        db,
+        &ctx.predictive_proposal,
+        &base_input,
+        &plan_opts,
+    )?;
 
     let best = report
         .steps
@@ -5034,436 +5491,9 @@ fn tool_world_model_plan(
         .map(|s| s.proposals.clone());
 
     Ok(serde_json::json!({
-        "version": "axiograph_world_model_tool_plan_v1",
+        "version": "axiograph_proposal_rollout_tool_v1",
         "report": report,
         "proposals_json": best,
-    }))
-}
-
-fn tool_snapshots_list(store: Option<&ToolLoopStoreContext>, args: &serde_json::Value) -> Result<serde_json::Value> {
-    let Some(store) = store else {
-        return Err(anyhow!(
-            "snapshots_list requires a store-backed server (`axiograph db serve --dir ...`)"
-        ));
-    };
-
-    #[derive(Deserialize)]
-    struct Args {
-        #[serde(default)]
-        layer: Option<String>,
-        #[serde(default)]
-        limit: Option<usize>,
-    }
-    let a: Args =
-        serde_json::from_value(args.clone()).map_err(|e| anyhow!("snapshots_list: invalid args: {e}"))?;
-
-    let mut want_layer = a
-        .layer
-        .unwrap_or_else(|| store.default_layer.clone())
-        .trim()
-        .to_ascii_lowercase();
-    if !matches!(want_layer.as_str(), "accepted" | "pathdb") {
-        return Err(anyhow!(
-            "snapshots_list: unknown layer `{}` (expected accepted|pathdb)",
-            want_layer
-        ));
-    }
-    let limit = a.limit.unwrap_or(50).clamp(1, 500);
-
-    fn read_latest_messages(path: &std::path::Path) -> BTreeMap<String, String> {
-        let mut out: BTreeMap<String, String> = BTreeMap::new();
-        let Ok(text) = std::fs::read_to_string(path) else {
-            return out;
-        };
-        for line in text.lines() {
-            let line = line.trim();
-            if line.is_empty() {
-                continue;
-            }
-            if let Ok(ev) = serde_json::from_str::<crate::accepted_plane::AcceptedPlaneEventV1>(line) {
-                if let Some(msg) = ev.message {
-                    out.insert(ev.snapshot_id, msg);
-                }
-                continue;
-            }
-            if let Ok(ev) = serde_json::from_str::<crate::pathdb_wal::PathDbWalEventV1>(line) {
-                if let Some(msg) = ev.message {
-                    out.insert(ev.snapshot_id, msg);
-                }
-                continue;
-            }
-        }
-        out
-    }
-
-    #[derive(Debug, Clone, Serialize)]
-    struct SnapshotEntryV1 {
-        snapshot_id: String,
-        previous_snapshot_id: Option<String>,
-        created_at_unix_secs: u64,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        message: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        accepted_snapshot_id: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        modules_count: Option<usize>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        ops_count: Option<usize>,
-    }
-
-    let mut entries: Vec<SnapshotEntryV1> = Vec::new();
-    if want_layer == "accepted" {
-        let snapshots_dir = store.dir.join("snapshots");
-        let messages = read_latest_messages(&store.dir.join("accepted_plane.log.jsonl"));
-        let rd = std::fs::read_dir(&snapshots_dir).map_err(|e| {
-            anyhow!(
-                "snapshots_list: failed to read accepted snapshots dir `{}`: {e}",
-                snapshots_dir.display()
-            )
-        })?;
-        for entry in rd {
-            let Ok(entry) = entry else { continue };
-            let path = entry.path();
-            if path.extension().and_then(|x| x.to_str()) != Some("json") {
-                continue;
-            }
-            let Ok(text) = std::fs::read_to_string(&path) else {
-                continue;
-            };
-            let Ok(snap) = serde_json::from_str::<crate::accepted_plane::AcceptedPlaneSnapshotV1>(&text) else {
-                continue;
-            };
-            entries.push(SnapshotEntryV1 {
-                snapshot_id: snap.snapshot_id.clone(),
-                previous_snapshot_id: snap.previous_snapshot_id.clone(),
-                created_at_unix_secs: snap.created_at_unix_secs,
-                message: messages.get(&snap.snapshot_id).cloned(),
-                accepted_snapshot_id: None,
-                modules_count: Some(snap.modules.len()),
-                ops_count: None,
-            });
-        }
-    } else {
-        let wal_dir = store.dir.join("pathdb");
-        let snapshots_dir = wal_dir.join("snapshots");
-        let messages = read_latest_messages(&wal_dir.join("pathdb_wal.log.jsonl"));
-        let rd = std::fs::read_dir(&snapshots_dir).map_err(|e| {
-            anyhow!(
-                "snapshots_list: failed to read pathdb snapshots dir `{}`: {e}",
-                snapshots_dir.display()
-            )
-        })?;
-        for entry in rd {
-            let Ok(entry) = entry else { continue };
-            let path = entry.path();
-            if path.extension().and_then(|x| x.to_str()) != Some("json") {
-                continue;
-            }
-            let Ok(text) = std::fs::read_to_string(&path) else {
-                continue;
-            };
-            let Ok(snap) = serde_json::from_str::<crate::pathdb_wal::PathDbSnapshotV1>(&text) else {
-                continue;
-            };
-            entries.push(SnapshotEntryV1 {
-                snapshot_id: snap.snapshot_id.clone(),
-                previous_snapshot_id: snap.previous_snapshot_id.clone(),
-                created_at_unix_secs: snap.created_at_unix_secs,
-                message: messages.get(&snap.snapshot_id).cloned(),
-                accepted_snapshot_id: Some(snap.accepted_snapshot_id.clone()),
-                modules_count: None,
-                ops_count: Some(snap.ops.len()),
-            });
-        }
-    }
-
-    entries.sort_by(|a, b| b.created_at_unix_secs.cmp(&a.created_at_unix_secs));
-    if entries.len() > limit {
-        entries.truncate(limit);
-    }
-
-    Ok(serde_json::json!({
-        "version": "axiograph_tool_snapshots_list_v1",
-        "layer": want_layer,
-        "count": entries.len(),
-        "snapshots": entries,
-    }))
-}
-
-fn tool_snapshot_diff(store: Option<&ToolLoopStoreContext>, args: &serde_json::Value) -> Result<serde_json::Value> {
-    let Some(store) = store else {
-        return Err(anyhow!(
-            "snapshot_diff requires a store-backed server (`axiograph db serve --dir ...`)"
-        ));
-    };
-
-    #[derive(Deserialize)]
-    struct Args {
-        snapshot_a: String,
-        snapshot_b: String,
-        #[serde(default)]
-        layer: Option<String>,
-        #[serde(default)]
-        axi_relation: Option<String>,
-        #[serde(default)]
-        limit: Option<usize>,
-    }
-    let a: Args =
-        serde_json::from_value(args.clone()).map_err(|e| anyhow!("snapshot_diff: invalid args: {e}"))?;
-
-    let mut layer = a
-        .layer
-        .unwrap_or_else(|| store.default_layer.clone())
-        .trim()
-        .to_ascii_lowercase();
-    if !matches!(layer.as_str(), "accepted" | "pathdb") {
-        return Err(anyhow!(
-            "snapshot_diff: unknown layer `{}` (expected accepted|pathdb)",
-            layer
-        ));
-    }
-
-    let rel_filter = a.axi_relation.as_deref().map(|s| s.trim()).filter(|s| !s.is_empty());
-    let limit = a.limit.unwrap_or(20).clamp(1, 200);
-
-    fn write_temp_path(ext: &str) -> Result<PathBuf> {
-        let mut base = std::env::temp_dir();
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos();
-        let pid = std::process::id();
-        for i in 0..50u32 {
-            base.push(format!("axiograph_{pid}_{nanos}_{i}.{ext}"));
-            if !base.exists() {
-                return Ok(base);
-            }
-            base.pop();
-        }
-        Err(anyhow!("failed to allocate temp file name"))
-    }
-
-    struct LoadedStoreSnapshot {
-        snapshot_id: String,
-        accepted_snapshot_id: Option<String>,
-        pathdb_snapshot_id: Option<String>,
-        db: PathDB,
-    }
-
-    fn load_store_snapshot(dir: &std::path::Path, layer: &str, snapshot: &str) -> Result<LoadedStoreSnapshot> {
-        match layer {
-            "accepted" => {
-                let id = crate::accepted_plane::resolve_snapshot_id_for_cli(dir, snapshot)?;
-                let tmp = write_temp_path("axpd")?;
-                crate::accepted_plane::build_pathdb_from_snapshot(dir, &id, &tmp)?;
-                let bytes = std::fs::read(&tmp)?;
-                let _ = std::fs::remove_file(&tmp);
-                let db = PathDB::from_bytes(&bytes)?;
-                Ok(LoadedStoreSnapshot {
-                    snapshot_id: id.clone(),
-                    accepted_snapshot_id: Some(id),
-                    pathdb_snapshot_id: None,
-                    db,
-                })
-            }
-            "pathdb" => {
-                let snap = crate::pathdb_wal::read_pathdb_snapshot_for_cli(dir, snapshot)?;
-                let pathdb_id = snap.snapshot_id.clone();
-                let accepted_id = snap.accepted_snapshot_id.clone();
-                let tmp = write_temp_path("axpd")?;
-                crate::pathdb_wal::build_pathdb_from_pathdb_snapshot(dir, &pathdb_id, &tmp)?;
-                let bytes = std::fs::read(&tmp)?;
-                let _ = std::fs::remove_file(&tmp);
-                let db = PathDB::from_bytes(&bytes)?;
-                Ok(LoadedStoreSnapshot {
-                    snapshot_id: pathdb_id.clone(),
-                    accepted_snapshot_id: Some(accepted_id),
-                    pathdb_snapshot_id: Some(pathdb_id),
-                    db,
-                })
-            }
-            other => Err(anyhow!("snapshot_diff: unknown layer `{other}`")),
-        }
-    }
-
-    #[derive(Debug, Clone)]
-    struct FactInfo {
-        axi_relation: String,
-        entity_id: u32,
-        name: Option<String>,
-        axi_fact_id: String,
-    }
-
-    fn collect_fact_index(db: &PathDB, rel_filter: Option<&str>) -> Result<std::collections::HashMap<String, FactInfo>> {
-        let mut out: std::collections::HashMap<String, FactInfo> = std::collections::HashMap::new();
-        let n = db.entities.len() as u32;
-        for id in 0..n {
-            let Some(view) = db.get_entity(id) else { continue };
-            let Some(fact_id) = view.attrs.get(axiograph_pathdb::axi_meta::ATTR_AXI_FACT_ID) else { continue };
-            let Some(rel) = view.attrs.get(axiograph_pathdb::axi_meta::ATTR_AXI_RELATION) else { continue };
-            if let Some(want) = rel_filter {
-                if rel != want {
-                    continue;
-                }
-            }
-            out.insert(
-                fact_id.clone(),
-                FactInfo {
-                    axi_relation: rel.clone(),
-                    entity_id: id,
-                    name: view.attrs.get("name").cloned(),
-                    axi_fact_id: fact_id.clone(),
-                },
-            );
-        }
-        Ok(out)
-    }
-
-    fn fact_preview(db: &PathDB, info: &FactInfo) -> serde_json::Value {
-        let view = db.get_entity(info.entity_id);
-        let mut outgoing = Vec::new();
-        for rel in db.relations.outgoing_any(info.entity_id) {
-            let rel_name = db
-                .interner
-                .lookup(rel.rel_type)
-                .map(|s| s.to_string())
-                .unwrap_or_else(|| "?".to_string());
-            let target = db.get_entity(rel.target);
-            let target_name = target.as_ref().and_then(|v| v.attrs.get("name").cloned());
-            let target_type = target.as_ref().map(|v| v.entity_type.clone());
-            outgoing.push(serde_json::json!({
-                "rel": rel_name,
-                "to": {
-                    "id": rel.target,
-                    "type": target_type,
-                    "name": target_name,
-                },
-                "confidence": rel.confidence,
-            }));
-        }
-        outgoing.sort_by(|a, b| {
-            a.get("rel")
-                .and_then(|x| x.as_str())
-                .unwrap_or("")
-                .cmp(b.get("rel").and_then(|x| x.as_str()).unwrap_or(""))
-        });
-
-        serde_json::json!({
-            "axi_fact_id": info.axi_fact_id,
-            "axi_relation": info.axi_relation,
-            "name": info.name,
-            "entity_id": info.entity_id,
-            "outgoing": outgoing,
-            "attrs": view.map(|v| v.attrs),
-        })
-    }
-
-    let a_loaded = load_store_snapshot(&store.dir, &layer, &a.snapshot_a)?;
-    let b_loaded = load_store_snapshot(&store.dir, &layer, &a.snapshot_b)?;
-
-    let a_facts = collect_fact_index(&a_loaded.db, rel_filter)?;
-    let b_facts = collect_fact_index(&b_loaded.db, rel_filter)?;
-
-    let mut added: Vec<String> = Vec::new();
-    for k in b_facts.keys() {
-        if !a_facts.contains_key(k) {
-            added.push(k.clone());
-        }
-    }
-    let mut removed: Vec<String> = Vec::new();
-    for k in a_facts.keys() {
-        if !b_facts.contains_key(k) {
-            removed.push(k.clone());
-        }
-    }
-    added.sort();
-    removed.sort();
-
-    // Relation-level diffs.
-    #[derive(Default, Clone, Copy)]
-    struct C {
-        a: u64,
-        b: u64,
-        added: u64,
-        removed: u64,
-    }
-    let mut by_rel: BTreeMap<String, C> = BTreeMap::new();
-    for info in a_facts.values() {
-        by_rel.entry(info.axi_relation.clone()).or_default().a += 1;
-    }
-    for info in b_facts.values() {
-        by_rel.entry(info.axi_relation.clone()).or_default().b += 1;
-    }
-    for fid in &added {
-        if let Some(info) = b_facts.get(fid) {
-            by_rel.entry(info.axi_relation.clone()).or_default().added += 1;
-        }
-    }
-    for fid in &removed {
-        if let Some(info) = a_facts.get(fid) {
-            by_rel.entry(info.axi_relation.clone()).or_default().removed += 1;
-        }
-    }
-
-    #[derive(Serialize)]
-    struct ByRelRow {
-        axi_relation: String,
-        a: u64,
-        b: u64,
-        added: u64,
-        removed: u64,
-    }
-    let mut by_rel_rows: Vec<ByRelRow> = by_rel
-        .into_iter()
-        .map(|(k, v)| ByRelRow {
-            axi_relation: k,
-            a: v.a,
-            b: v.b,
-            added: v.added,
-            removed: v.removed,
-        })
-        .collect();
-    by_rel_rows.sort_by(|x, y| (y.added + y.removed).cmp(&(x.added + x.removed)));
-    if by_rel_rows.len() > 40 {
-        by_rel_rows.truncate(40);
-    }
-
-    let examples_added: Vec<serde_json::Value> = added
-        .iter()
-        .take(limit)
-        .filter_map(|fid| b_facts.get(fid).map(|info| fact_preview(&b_loaded.db, info)))
-        .collect();
-    let examples_removed: Vec<serde_json::Value> = removed
-        .iter()
-        .take(limit)
-        .filter_map(|fid| a_facts.get(fid).map(|info| fact_preview(&a_loaded.db, info)))
-        .collect();
-
-    Ok(serde_json::json!({
-        "version": "axiograph_tool_snapshot_diff_v1",
-        "layer": layer,
-        "axi_relation_filter": rel_filter,
-        "a": {
-            "snapshot_id": a_loaded.snapshot_id,
-            "accepted_snapshot_id": a_loaded.accepted_snapshot_id,
-            "pathdb_snapshot_id": a_loaded.pathdb_snapshot_id,
-            "facts": a_facts.len(),
-        },
-        "b": {
-            "snapshot_id": b_loaded.snapshot_id,
-            "accepted_snapshot_id": b_loaded.accepted_snapshot_id,
-            "pathdb_snapshot_id": b_loaded.pathdb_snapshot_id,
-            "facts": b_facts.len(),
-        },
-        "diff": {
-            "added": added.len(),
-            "removed": removed.len(),
-        },
-        "by_relation": by_rel_rows,
-        "examples": {
-            "added": examples_added,
-            "removed": examples_removed,
-        }
     }))
 }
 
@@ -5479,7 +5509,7 @@ fn tool_lookup_entity(db: &PathDB, args: &serde_json::Value) -> Result<serde_jso
     let a: Args = serde_json::from_value(args.clone())
         .map_err(|e| anyhow!("lookup_entity: invalid args: {e}"))?;
 
-    let limit = a.limit.unwrap_or(10).clamp(1, 50);
+    let limit = require_bounded_usize(a.limit.unwrap_or(10), 1, 50, "lookup_entity.limit")?;
     let name = a.name.trim();
     if name.is_empty() {
         return Err(anyhow!("lookup_entity: name must be non-empty"));
@@ -5562,14 +5592,13 @@ fn tool_lookup_entity(db: &PathDB, args: &serde_json::Value) -> Result<serde_jso
             continue;
         }
         if let Some(want) = want_type {
-            if view.entity_type != want {
-                if !db
+            if view.entity_type != want
+                && !db
                     .find_by_type(want)
                     .map(|bm| bm.contains(id))
                     .unwrap_or(false)
-                {
-                    continue;
-                }
+            {
+                continue;
             }
         }
         if seen.insert(id) {
@@ -5589,14 +5618,13 @@ fn tool_lookup_entity(db: &PathDB, args: &serde_json::Value) -> Result<serde_jso
             continue;
         };
         if let Some(want) = want_type {
-            if view.entity_type != want {
-                if !db
+            if view.entity_type != want
+                && !db
                     .find_by_type(want)
                     .map(|bm| bm.contains(id))
                     .unwrap_or(false)
-                {
-                    continue;
-                }
+            {
+                continue;
             }
         }
         if seen.insert(id) {
@@ -5611,7 +5639,10 @@ fn tool_lookup_entity(db: &PathDB, args: &serde_json::Value) -> Result<serde_jso
     }))
 }
 
-pub(crate) fn describe_entity_v1(db: &PathDB, args: &serde_json::Value) -> Result<serde_json::Value> {
+pub(crate) fn describe_entity_v1(
+    db: &PathDB,
+    args: &serde_json::Value,
+) -> Result<serde_json::Value> {
     #[derive(Deserialize)]
     struct Args {
         #[serde(default)]
@@ -5629,8 +5660,8 @@ pub(crate) fn describe_entity_v1(db: &PathDB, args: &serde_json::Value) -> Resul
         #[serde(default)]
         in_limit: Option<usize>,
     }
-    let a: Args =
-        serde_json::from_value(args.clone()).map_err(|e| anyhow!("describe_entity: invalid args: {e}"))?;
+    let a: Args = serde_json::from_value(args.clone())
+        .map_err(|e| anyhow!("describe_entity: invalid args: {e}"))?;
 
     fn resolve_entity_id_by_name(db: &PathDB, name: &str, want_type: Option<&str>) -> Result<u32> {
         let name = name.trim();
@@ -5707,7 +5738,11 @@ pub(crate) fn describe_entity_v1(db: &PathDB, args: &serde_json::Value) -> Resul
     let entity_id = if let Some(id) = a.id {
         id
     } else if let Some(name) = a.name.as_deref() {
-        let want_type = a.type_name.as_deref().map(|s| s.trim()).filter(|s| !s.is_empty());
+        let want_type = a
+            .type_name
+            .as_deref()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty());
         resolve_entity_id_by_name(db, name, want_type)?
     } else {
         return Err(anyhow!("describe_entity: expected `id` or `name`"));
@@ -5717,10 +5752,22 @@ pub(crate) fn describe_entity_v1(db: &PathDB, args: &serde_json::Value) -> Resul
         return Err(anyhow!("describe_entity: no entity with id {entity_id}"));
     };
 
-    let max_attrs = a.max_attrs.unwrap_or(40).min(200);
-    let max_rel_types = a.max_rel_types.unwrap_or(12).clamp(1, 50);
-    let out_limit = a.out_limit.unwrap_or(6).min(50);
-    let in_limit = a.in_limit.unwrap_or(6).min(50);
+    let max_attrs = require_bounded_usize(
+        a.max_attrs.unwrap_or(40),
+        0,
+        200,
+        "describe_entity.max_attrs",
+    )?;
+    let max_rel_types = require_bounded_usize(
+        a.max_rel_types.unwrap_or(12),
+        1,
+        50,
+        "describe_entity.max_rel_types",
+    )?;
+    let out_limit =
+        require_bounded_usize(a.out_limit.unwrap_or(6), 0, 50, "describe_entity.out_limit")?;
+    let in_limit =
+        require_bounded_usize(a.in_limit.unwrap_or(6), 0, 50, "describe_entity.in_limit")?;
 
     fn has_virtual_type(db: &PathDB, entity_id: u32, type_name: &str) -> bool {
         db.interner
@@ -5745,7 +5792,10 @@ pub(crate) fn describe_entity_v1(db: &PathDB, args: &serde_json::Value) -> Resul
     }
 
     let contexts = db
-        .follow_one(entity_id, axiograph_pathdb::axi_meta::REL_AXI_FACT_IN_CONTEXT)
+        .follow_one(
+            entity_id,
+            axiograph_pathdb::axi_meta::REL_AXI_FACT_IN_CONTEXT,
+        )
         .iter()
         .take(24)
         .map(|id| EntityViewV1::from_id(db, id))
@@ -5754,7 +5804,10 @@ pub(crate) fn describe_entity_v1(db: &PathDB, args: &serde_json::Value) -> Resul
     let mut equivalences = Vec::new();
     if let Some(eqs) = db.equivalences.get(&entity_id) {
         for (other, ty_id) in eqs.iter().take(24) {
-            let ty = db.interner.lookup(*ty_id).unwrap_or_else(|| "?".to_string());
+            let ty = db
+                .interner
+                .lookup(*ty_id)
+                .unwrap_or_else(|| "?".to_string());
             equivalences.push(serde_json::json!({
                 "other": EntityViewV1::from_id(db, *other),
                 "kind": ty
@@ -5781,11 +5834,18 @@ pub(crate) fn describe_entity_v1(db: &PathDB, args: &serde_json::Value) -> Resul
         per_rel: usize,
         dir: &str,
     ) -> Vec<serde_json::Value> {
-        let mut groups: std::collections::HashMap<String, Vec<(u32, f32)>> = std::collections::HashMap::new();
+        let mut groups: std::collections::HashMap<String, Vec<(u32, f32)>> =
+            std::collections::HashMap::new();
         for r in rels {
-            let label = db.interner.lookup(r.rel_type).unwrap_or_else(|| "?".to_string());
+            let label = db
+                .interner
+                .lookup(r.rel_type)
+                .unwrap_or_else(|| "?".to_string());
             let endpoint = if dir == "out" { r.target } else { r.source };
-            groups.entry(label).or_default().push((endpoint, r.confidence));
+            groups
+                .entry(label)
+                .or_default()
+                .push((endpoint, r.confidence));
         }
 
         let mut keys: Vec<String> = groups.keys().cloned().collect();
@@ -5817,20 +5877,8 @@ pub(crate) fn describe_entity_v1(db: &PathDB, args: &serde_json::Value) -> Resul
     let outgoing_raw = db.relations.outgoing_any(entity_id);
     let incoming_raw = db.relations.incoming_any(entity_id);
 
-    let outgoing = group(
-        db,
-        outgoing_raw.clone(),
-        max_rel_types,
-        out_limit,
-        "out",
-    );
-    let incoming = group(
-        db,
-        incoming_raw.clone(),
-        max_rel_types,
-        in_limit,
-        "in",
-    );
+    let outgoing = group(db, outgoing_raw.clone(), max_rel_types, out_limit, "out");
+    let incoming = group(db, incoming_raw.clone(), max_rel_types, in_limit, "in");
 
     fn parse_signature_field_order(signature: &str) -> Vec<String> {
         let Some(l) = signature.find('(') else {
@@ -5880,15 +5928,14 @@ pub(crate) fn describe_entity_v1(db: &PathDB, args: &serde_json::Value) -> Resul
         }
 
         let axi_relation = view.attrs.get(ATTR_AXI_RELATION).cloned();
-        let signature = view
-            .attrs
-            .get(ATTR_OVERLAY_RELATION_SIGNATURE)
-            .cloned();
+        let signature = view.attrs.get(ATTR_OVERLAY_RELATION_SIGNATURE).cloned();
         let constraints = view.attrs.get(ATTR_OVERLAY_CONSTRAINTS).cloned();
 
         let pretty = match kind {
             "fact" => {
-                let rel_name = axi_relation.clone().unwrap_or_else(|| view.entity_type.clone());
+                let rel_name = axi_relation
+                    .clone()
+                    .unwrap_or_else(|| view.entity_type.clone());
 
                 // Collect outgoing edges as "fields".
                 let mut field_values: BTreeMap<String, Vec<EntityViewV1>> = BTreeMap::new();
@@ -5980,7 +6027,11 @@ pub(crate) fn describe_entity_v1(db: &PathDB, args: &serde_json::Value) -> Resul
                 match (from, to) {
                     (Some(from), Some(to)) => {
                         if repr.trim().is_empty() {
-                            format!("PathWitness(from={}, to={})", entity_label(&from), entity_label(&to))
+                            format!(
+                                "PathWitness(from={}, to={})",
+                                entity_label(&from),
+                                entity_label(&to)
+                            )
                         } else {
                             format!(
                                 "PathWitness(from={}, to={}, repr={:?})",
@@ -6049,7 +6100,9 @@ pub(crate) fn describe_entity_v1(db: &PathDB, args: &serde_json::Value) -> Resul
                     .iter()
                     .next()
                     .map(|id| EntityViewV1::from_id(db, id));
-                let rel = axi_relation.clone().unwrap_or_else(|| view.entity_type.clone());
+                let rel = axi_relation
+                    .clone()
+                    .unwrap_or_else(|| view.entity_type.clone());
                 match (from, to) {
                     (Some(from), Some(to)) => format!(
                         "Morphism({rel}: {} -> {})",
@@ -6127,8 +6180,8 @@ fn tool_lookup_type(
         #[serde(rename = "type")]
         type_name: String,
     }
-    let a: Args =
-        serde_json::from_value(args.clone()).map_err(|e| anyhow!("lookup_type: invalid args: {e}"))?;
+    let a: Args = serde_json::from_value(args.clone())
+        .map_err(|e| anyhow!("lookup_type: invalid args: {e}"))?;
 
     let type_name = a.type_name.trim();
     if type_name.is_empty() {
@@ -6183,21 +6236,28 @@ fn tool_lookup_type(
     }))
 }
 
-fn tool_lookup_relation(meta: Option<&MetaPlaneIndex>, args: &serde_json::Value) -> Result<serde_json::Value> {
+fn tool_lookup_relation(
+    meta: Option<&MetaPlaneIndex>,
+    args: &serde_json::Value,
+) -> Result<serde_json::Value> {
     #[derive(Deserialize)]
     struct Args {
         relation: String,
         #[serde(default)]
         schema: Option<String>,
     }
-    let a: Args =
-        serde_json::from_value(args.clone()).map_err(|e| anyhow!("lookup_relation: invalid args: {e}"))?;
+    let a: Args = serde_json::from_value(args.clone())
+        .map_err(|e| anyhow!("lookup_relation: invalid args: {e}"))?;
 
     let rel = a.relation.trim();
     if rel.is_empty() {
         return Err(anyhow!("lookup_relation: relation must be non-empty"));
     }
-    let schema_hint = a.schema.as_deref().map(|s| s.trim()).filter(|s| !s.is_empty());
+    let schema_hint = a
+        .schema
+        .as_deref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty());
 
     let Some(meta) = meta else {
         return Err(anyhow!(
@@ -6208,7 +6268,11 @@ fn tool_lookup_relation(meta: Option<&MetaPlaneIndex>, args: &serde_json::Value)
     fn infer_endpoint_fields_from_decl(
         rel_decl: &axiograph_pathdb::axi_semantics::RelationDecl,
     ) -> (String, String) {
-        let names: Vec<&str> = rel_decl.fields.iter().map(|f| f.field_name.as_str()).collect();
+        let names: Vec<&str> = rel_decl
+            .fields
+            .iter()
+            .map(|f| f.field_name.as_str())
+            .collect();
         if names.contains(&"from") && names.contains(&"to") {
             return ("from".to_string(), "to".to_string());
         }
@@ -6230,7 +6294,9 @@ fn tool_lookup_relation(meta: Option<&MetaPlaneIndex>, args: &serde_json::Value)
         ("from".to_string(), "to".to_string())
     }
 
-    if let Some(resolved) = crate::relation_resolution::resolve_schema_relation(meta, schema_hint, rel) {
+    if let Some(resolved) =
+        crate::relation_resolution::resolve_schema_relation(meta, schema_hint, rel)
+    {
         let mut fields = resolved.rel_decl.fields.clone();
         fields.sort_by_key(|f| f.field_index);
         let (src_field, dst_field) = infer_endpoint_fields_from_decl(resolved.rel_decl);
@@ -6246,7 +6312,9 @@ fn tool_lookup_relation(meta: Option<&MetaPlaneIndex>, args: &serde_json::Value)
             .iter()
             .map(|c| match c {
                 axiograph_pathdb::axi_semantics::ConstraintDecl::Functional {
-                    src_field, dst_field, ..
+                    src_field,
+                    dst_field,
+                    ..
                 } => format!("functional({src_field} -> {dst_field})"),
                 axiograph_pathdb::axi_semantics::ConstraintDecl::AtMost {
                     src_field,
@@ -6266,11 +6334,19 @@ fn tool_lookup_relation(meta: Option<&MetaPlaneIndex>, args: &serde_json::Value)
                 axiograph_pathdb::axi_semantics::ConstraintDecl::Typing { rule, .. } => {
                     format!("typing({rule})")
                 }
-                axiograph_pathdb::axi_semantics::ConstraintDecl::SymmetricWhereIn { field, values, .. } => {
+                axiograph_pathdb::axi_semantics::ConstraintDecl::SymmetricWhereIn {
+                    field,
+                    values,
+                    ..
+                } => {
                     format!("symmetric_where_in({field} in {{{}}})", values.join(", "))
                 }
-                axiograph_pathdb::axi_semantics::ConstraintDecl::Symmetric { .. } => "symmetric".to_string(),
-                axiograph_pathdb::axi_semantics::ConstraintDecl::Transitive { .. } => "transitive".to_string(),
+                axiograph_pathdb::axi_semantics::ConstraintDecl::Symmetric { .. } => {
+                    "symmetric".to_string()
+                }
+                axiograph_pathdb::axi_semantics::ConstraintDecl::Transitive { .. } => {
+                    "transitive".to_string()
+                }
                 axiograph_pathdb::axi_semantics::ConstraintDecl::Key { fields, .. } => {
                     format!("key({})", fields.join(", "))
                 }
@@ -6287,7 +6363,6 @@ fn tool_lookup_relation(meta: Option<&MetaPlaneIndex>, args: &serde_json::Value)
             "match_kind": "resolved",
             "schema": resolved.schema_name,
             "relation": resolved.rel_name,
-            "alias_used": resolved.alias_used,
             "orientation": format!("{:?}", resolved.orientation),
             "fields": fields.iter().map(|f| serde_json::json!({
                 "name": f.field_name.clone(),
@@ -6319,10 +6394,12 @@ fn tool_lookup_relation(meta: Option<&MetaPlaneIndex>, args: &serde_json::Value)
     matches.sort_by(|a, b| {
         let aschema = a.get("schema").and_then(|v| v.as_str()).unwrap_or("");
         let bschema = b.get("schema").and_then(|v| v.as_str()).unwrap_or("");
-        aschema.cmp(bschema)
-            .then_with(|| a.get("relation").and_then(|v| v.as_str()).unwrap_or("").cmp(
-                b.get("relation").and_then(|v| v.as_str()).unwrap_or("")
-            ))
+        aschema.cmp(bschema).then_with(|| {
+            a.get("relation")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .cmp(b.get("relation").and_then(|v| v.as_str()).unwrap_or(""))
+        })
     });
 
     Ok(serde_json::json!({
@@ -6352,10 +6429,22 @@ fn tool_lookup_rewrite_rule(
     let a: Args = serde_json::from_value(args.clone())
         .map_err(|e| anyhow!("lookup_rewrite_rule: invalid args: {e}"))?;
 
-    let schema_filter = a.schema.as_deref().map(|s| s.trim()).filter(|s| !s.is_empty());
-    let theory_filter = a.theory.as_deref().map(|s| s.trim()).filter(|s| !s.is_empty());
-    let rule_filter = a.rule.as_deref().map(|s| s.trim()).filter(|s| !s.is_empty());
-    let limit = a.limit.unwrap_or(20).clamp(1, 50);
+    let schema_filter = a
+        .schema
+        .as_deref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty());
+    let theory_filter = a
+        .theory
+        .as_deref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty());
+    let rule_filter = a
+        .rule
+        .as_deref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty());
+    let limit = require_bounded_usize(a.limit.unwrap_or(20), 1, 50, "lookup_rewrite_rule.limit")?;
 
     let Some(meta) = meta else {
         return Err(anyhow!(
@@ -6453,12 +6542,23 @@ fn tool_db_summary(db: &PathDB, args: &serde_json::Value) -> Result<serde_json::
         #[serde(default)]
         max_relation_samples: Option<usize>,
     }
-    let a: Args =
-        serde_json::from_value(args.clone()).map_err(|e| anyhow!("db_summary: invalid args: {e}"))?;
+    let a: Args = serde_json::from_value(args.clone())
+        .map_err(|e| anyhow!("db_summary: invalid args: {e}"))?;
 
-    let max_types = a.max_types.unwrap_or(12).clamp(1, 50);
-    let max_relations = a.max_relations.unwrap_or(12).clamp(1, 50);
-    let max_relation_samples = a.max_relation_samples.unwrap_or(4).clamp(0, 10);
+    let max_types =
+        require_bounded_usize(a.max_types.unwrap_or(12), 1, 50, "db_summary.max_types")?;
+    let max_relations = require_bounded_usize(
+        a.max_relations.unwrap_or(12),
+        1,
+        50,
+        "db_summary.max_relations",
+    )?;
+    let max_relation_samples = require_bounded_usize(
+        a.max_relation_samples.unwrap_or(4),
+        0,
+        10,
+        "db_summary.max_relation_samples",
+    )?;
 
     let name_key_id = db.interner.id_of("name");
     let context_type_id = db.interner.id_of("Context");
@@ -6506,10 +6606,8 @@ fn tool_db_summary(db: &PathDB, args: &serde_json::Value) -> Result<serde_json::
         }
 
         // Sample a few context/world nodes for UI scoping hints.
-        if contexts.len() < 12 {
-            if context_type_id.is_some_and(|tid| tid == type_id) {
-                contexts.push(EntityViewV1::from_id(db, entity_id));
-            }
+        if contexts.len() < 12 && context_type_id.is_some_and(|tid| tid == type_id) {
+            contexts.push(EntityViewV1::from_id(db, entity_id));
         }
     }
 
@@ -6571,8 +6669,10 @@ fn tool_db_summary(db: &PathDB, args: &serde_json::Value) -> Result<serde_json::
 
     let mut rel_counts: std::collections::HashMap<axiograph_pathdb::StrId, usize> =
         std::collections::HashMap::new();
-    let mut rel_samples: std::collections::HashMap<axiograph_pathdb::StrId, Vec<serde_json::Value>> =
-        std::collections::HashMap::new();
+    let mut rel_samples: std::collections::HashMap<
+        axiograph_pathdb::StrId,
+        Vec<serde_json::Value>,
+    > = std::collections::HashMap::new();
     for rel_id in 0..db.relations.len() as u32 {
         let Some(rel) = db.relations.get_relation(rel_id) else {
             continue;
@@ -6581,7 +6681,7 @@ fn tool_db_summary(db: &PathDB, args: &serde_json::Value) -> Result<serde_json::
         if max_relation_samples == 0 {
             continue;
         }
-        let entry = rel_samples.entry(rel.rel_type).or_insert_with(Vec::new);
+        let entry = rel_samples.entry(rel.rel_type).or_default();
         if entry.len() >= max_relation_samples {
             continue;
         }
@@ -6624,25 +6724,29 @@ fn tool_db_summary(db: &PathDB, args: &serde_json::Value) -> Result<serde_json::
 }
 
 // ============================================================================
-// Deterministic retrieval (token-hash embeddings + HNSW ANN index)
+// Deterministic retrieval (token-hash embeddings + exact in-memory index)
 // ============================================================================
 
 const TOKEN_HASH_DIM: usize = 128;
 
-fn token_hash_fnv1a64(s: &str) -> u64 {
-    let mut h: u64 = 14695981039346656037;
-    for b in s.as_bytes() {
-        h ^= *b as u64;
-        h = h.wrapping_mul(1099511628211);
-    }
-    h
+fn token_hash_v2(s: &str) -> Result<u64> {
+    let identity = axiograph_kernel::object_blob_digest_v2(s.as_bytes());
+    let hex = identity
+        .rsplit(':')
+        .next()
+        .ok_or_else(|| anyhow!("AXIOGRAPH-ID wire value has no digest suffix"))?;
+    let prefix = hex
+        .get(..16)
+        .ok_or_else(|| anyhow!("AXIOGRAPH-ID digest suffix is shorter than 16 hex digits"))?;
+    u64::from_str_radix(prefix, 16)
+        .map_err(|error| anyhow!("AXIOGRAPH-ID digest prefix is not hexadecimal: {error}"))
 }
 
-fn token_hash_embed_text(text: &str) -> [f32; TOKEN_HASH_DIM] {
+fn token_hash_embed_text(text: &str) -> Result<[f32; TOKEN_HASH_DIM]> {
     let tokens = axiograph_pathdb::tokenize_fts_query(text);
     let mut v = [0.0f32; TOKEN_HASH_DIM];
     for t in tokens {
-        let h = token_hash_fnv1a64(&t);
+        let h = token_hash_v2(&t)?;
         let idx = (h % (TOKEN_HASH_DIM as u64)) as usize;
         let sign = if ((h >> 32) & 1) == 0 { 1.0 } else { -1.0 };
         v[idx] += sign;
@@ -6658,7 +6762,7 @@ fn token_hash_embed_text(text: &str) -> [f32; TOKEN_HASH_DIM] {
             *x *= inv;
         }
     }
-    v
+    Ok(v)
 }
 
 fn token_hash_dot(a: &[f32; TOKEN_HASH_DIM], b: &[f32; TOKEN_HASH_DIM]) -> f32 {
@@ -6669,33 +6773,35 @@ fn token_hash_dot(a: &[f32; TOKEN_HASH_DIM], b: &[f32; TOKEN_HASH_DIM]) -> f32 {
     s
 }
 
-struct TokenHashAnnSubIndex {
+struct TokenHashExactSubIndex {
     // Snapshot-local ids (PathDB entity ids).
     ids: Vec<u32>,
     // Embedding vectors aligned with `ids`.
     vectors: Vec<[f32; TOKEN_HASH_DIM]>,
-    // ANN structure (search-only after build).
-    hnsw: hnsw_rs::prelude::Hnsw<'static, f32, hnsw_rs::prelude::DistL2>,
 }
 
-struct TokenHashAnnIndex {
-    entities: TokenHashAnnSubIndex,
-    docchunks: Option<TokenHashAnnSubIndex>,
+struct TokenHashExactIndex {
+    entities: TokenHashExactSubIndex,
+    docchunks: Option<TokenHashExactSubIndex>,
 }
 
-static TOKEN_HASH_ANN_CACHE: std::sync::OnceLock<
-    std::sync::Mutex<std::collections::HashMap<String, std::sync::Arc<std::sync::Mutex<TokenHashAnnIndex>>>>,
+static TOKEN_HASH_EXACT_CACHE: std::sync::OnceLock<
+    std::sync::Mutex<
+        std::collections::HashMap<String, std::sync::Arc<std::sync::Mutex<TokenHashExactIndex>>>,
+    >,
 > = std::sync::OnceLock::new();
 
-fn token_hash_ann_cache() -> &'static std::sync::Mutex<
-    std::collections::HashMap<String, std::sync::Arc<std::sync::Mutex<TokenHashAnnIndex>>>,
+fn token_hash_exact_cache() -> &'static std::sync::Mutex<
+    std::collections::HashMap<String, std::sync::Arc<std::sync::Mutex<TokenHashExactIndex>>>,
 > {
-    TOKEN_HASH_ANN_CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+    TOKEN_HASH_EXACT_CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
 }
 
 fn build_entity_graph_text_for_token_hash(db: &PathDB, id: u32) -> Option<String> {
     let view = db.get_entity(id)?;
-    if view.entity_type.starts_with("AxiMeta") || view.entity_type == "DocChunk" || view.entity_type == "Document"
+    if view.entity_type.starts_with("AxiMeta")
+        || view.entity_type == "DocChunk"
+        || view.entity_type == "Document"
     {
         return None;
     }
@@ -6746,49 +6852,21 @@ fn build_docchunk_text_for_token_hash(db: &PathDB, id: u32) -> Option<String> {
     Some(combined)
 }
 
-fn build_hnsw_index(
-    ids: Vec<u32>,
-    vectors: Vec<[f32; TOKEN_HASH_DIM]>,
-) -> Result<TokenHashAnnSubIndex> {
-    if ids.is_empty() {
-        return Err(anyhow!("no points to index"));
-    }
-    // HNSW params (conservative defaults):
-    // - `m`: max connections per layer
-    // - `ef_construction`: construction search width
-    let m: usize = 16;
-    let ef_construction: usize = 200;
-
-    let nb_elem = ids.len();
-    let max_layer = 16.min((nb_elem as f32).ln().trunc() as usize).max(1);
-
-    let hnsw = hnsw_rs::prelude::Hnsw::<f32, hnsw_rs::prelude::DistL2>::new(
-        m,
-        nb_elem,
-        max_layer,
-        ef_construction,
-        hnsw_rs::prelude::DistL2 {},
-    );
-
-    for (i, v) in vectors.iter().enumerate() {
-        hnsw.insert((&v[..], i));
-    }
-
-    Ok(TokenHashAnnSubIndex { ids, vectors, hnsw })
+fn build_exact_index(ids: Vec<u32>, vectors: Vec<[f32; TOKEN_HASH_DIM]>) -> TokenHashExactSubIndex {
+    debug_assert_eq!(ids.len(), vectors.len());
+    TokenHashExactSubIndex { ids, vectors }
 }
 
-fn get_or_build_token_hash_ann_index(
+fn get_or_build_token_hash_exact_index(
     snapshot_key: &str,
     db: &PathDB,
-) -> Result<std::sync::Arc<std::sync::Mutex<TokenHashAnnIndex>>> {
-    // Fast path: cached.
-    if let Ok(cache) = token_hash_ann_cache().lock() {
-        if let Some(v) = cache.get(snapshot_key).cloned() {
-            return Ok(v);
+) -> Result<std::sync::Arc<std::sync::Mutex<TokenHashExactIndex>>> {
+    if let Ok(cache) = token_hash_exact_cache().lock() {
+        if let Some(value) = cache.get(snapshot_key).cloned() {
+            return Ok(value);
         }
     }
 
-    // Build a fresh index (outside the cache lock).
     let mut entity_ids = Vec::new();
     let mut entity_vecs = Vec::new();
     for id in 0..(db.entities.len() as u32) {
@@ -6796,38 +6874,36 @@ fn get_or_build_token_hash_ann_index(
             continue;
         };
         entity_ids.push(id);
-        entity_vecs.push(token_hash_embed_text(&text));
+        entity_vecs.push(token_hash_embed_text(&text)?);
     }
-
-    let entities = build_hnsw_index(entity_ids, entity_vecs)?;
+    let entities = build_exact_index(entity_ids, entity_vecs);
 
     let docchunks = if let Some(chunks) = db.find_by_type("DocChunk") {
         let mut ids = Vec::new();
-        let mut vecs = Vec::new();
+        let mut vectors = Vec::new();
         for id in chunks.iter() {
             let Some(text) = build_docchunk_text_for_token_hash(db, id) else {
                 continue;
             };
             ids.push(id);
-            vecs.push(token_hash_embed_text(&text));
+            vectors.push(token_hash_embed_text(&text)?);
         }
-        Some(build_hnsw_index(ids, vecs)?)
+        (!ids.is_empty()).then(|| build_exact_index(ids, vectors))
     } else {
         None
     };
 
-    let built = std::sync::Arc::new(std::sync::Mutex::new(TokenHashAnnIndex { entities, docchunks }));
-
-    // Store in cache (best-effort). Keep the cache bounded to avoid unbounded memory growth.
-    if let Ok(mut cache) = token_hash_ann_cache().lock() {
+    let built = std::sync::Arc::new(std::sync::Mutex::new(TokenHashExactIndex {
+        entities,
+        docchunks,
+    }));
+    if let Ok(mut cache) = token_hash_exact_cache().lock() {
         cache.insert(snapshot_key.to_string(), built.clone());
         const MAX_ENTRIES: usize = 4;
         if cache.len() > MAX_ENTRIES {
-            // Simple eviction: drop everything except the current key.
-            cache.retain(|k, _| k == snapshot_key);
+            cache.retain(|key, _| key == snapshot_key);
         }
     }
-
     Ok(built)
 }
 
@@ -6855,96 +6931,52 @@ fn tool_semantic_search(
         return Err(anyhow!("semantic_search: query must be non-empty"));
     }
 
-    let entity_limit = a.entity_limit.unwrap_or(12).clamp(1, 50);
-    let chunk_limit = a.chunk_limit.unwrap_or(options.max_doc_chunks).clamp(1, 50);
+    let entity_limit = require_bounded_usize(
+        a.entity_limit.unwrap_or(12),
+        1,
+        50,
+        "semantic_search.entity_limit",
+    )?;
+    let chunk_limit = require_bounded_usize(
+        a.chunk_limit.unwrap_or(options.max_doc_chunks),
+        1,
+        50,
+        "semantic_search.chunk_limit",
+    )?;
 
     // Deterministic token-hash retrieval (always-on).
-    let qv = token_hash_embed_text(query);
+    let qv = token_hash_embed_text(query)?;
 
     let mut det_entity_scores: Vec<(f32, u32)> = Vec::new();
     let mut det_chunk_scores: Vec<(f32, u32)> = Vec::new();
 
-    match get_or_build_token_hash_ann_index(snapshot_key, db) {
-        Ok(ann) => {
-            let ann = ann
-                .lock()
-                .map_err(|_| anyhow!("semantic_search: ann index lock poisoned"))?;
+    let exact = get_or_build_token_hash_exact_index(snapshot_key, db)?;
+    let exact = exact
+        .lock()
+        .map_err(|_| anyhow!("semantic_search: exact index lock poisoned"))?;
 
-            // Entities.
-            let k = (entity_limit.saturating_mul(4)).clamp(1, 200);
-            let ef_search = 64;
-            let q = qv.to_vec();
-            let neigh = ann.entities.hnsw.search(&q, k, ef_search);
-            for n in neigh {
-                let idx = n.d_id;
-                if idx >= ann.entities.ids.len() {
-                    continue;
-                }
-                let id = ann.entities.ids[idx];
-                let sim = token_hash_dot(&qv, &ann.entities.vectors[idx]);
-                det_entity_scores.push((sim, id));
-            }
-            det_entity_scores.sort_by(|(sa, ia), (sb, ib)| sb.total_cmp(sa).then_with(|| ia.cmp(ib)));
-            det_entity_scores.truncate(entity_limit);
+    for (index, id) in exact.entities.ids.iter().copied().enumerate() {
+        let similarity = token_hash_dot(&qv, &exact.entities.vectors[index]);
+        det_entity_scores.push((similarity, id));
+    }
+    det_entity_scores.sort_by(|(left_score, left_id), (right_score, right_id)| {
+        right_score
+            .total_cmp(left_score)
+            .then_with(|| left_id.cmp(right_id))
+    });
+    det_entity_scores.truncate(entity_limit);
 
-            // DocChunks.
-            if let Some(chunks) = ann.docchunks.as_ref() {
-                let k = (chunk_limit.saturating_mul(4)).clamp(1, 200);
-                let ef_search = 64;
-                let q = qv.to_vec();
-                let neigh = chunks.hnsw.search(&q, k, ef_search);
-                for n in neigh {
-                    let idx = n.d_id;
-                    if idx >= chunks.ids.len() {
-                        continue;
-                    }
-                    let id = chunks.ids[idx];
-                    let sim = token_hash_dot(&qv, &chunks.vectors[idx]);
-                    det_chunk_scores.push((sim, id));
-                }
-                det_chunk_scores.sort_by(|(sa, ia), (sb, ib)| {
-                    sb.total_cmp(sa).then_with(|| ia.cmp(ib))
-                });
-                det_chunk_scores.truncate(chunk_limit);
-            }
+    if let Some(chunks) = exact.docchunks.as_ref() {
+        for (index, id) in chunks.ids.iter().copied().enumerate() {
+            let similarity = token_hash_dot(&qv, &chunks.vectors[index]);
+            det_chunk_scores.push((similarity, id));
         }
-        Err(e) => {
-            // Fallback: exact scan over token-candidates (slower, but avoids hard-failures).
-            let _ = e;
-
-            // Entities fallback (token index candidate set).
-            let mut entity_candidates = RoaringBitmap::new();
-            for key in ["name", "search_text", "description", "comment", "iri"] {
-                entity_candidates |= db.entities_with_attr_fts_any(key, query);
-            }
-            for id in entity_candidates.iter() {
-                let Some(text) = build_entity_graph_text_for_token_hash(db, id) else {
-                    continue;
-                };
-                let ev = token_hash_embed_text(&text);
-                det_entity_scores.push((token_hash_dot(&qv, &ev), id));
-            }
-            det_entity_scores.sort_by(|(sa, ia), (sb, ib)| sb.total_cmp(sa).then_with(|| ia.cmp(ib)));
-            det_entity_scores.truncate(entity_limit);
-
-            // DocChunks fallback (token index candidate set).
-            if let Some(chunks) = db.find_by_type("DocChunk") {
-                let mut candidates = db.entities_with_attr_fts_any("text", query)
-                    | db.entities_with_attr_fts_any("search_text", query);
-                candidates &= chunks.clone();
-                for id in candidates.iter() {
-                    let Some(text) = build_docchunk_text_for_token_hash(db, id) else {
-                        continue;
-                    };
-                    let ev = token_hash_embed_text(&text);
-                    det_chunk_scores.push((token_hash_dot(&qv, &ev), id));
-                }
-                det_chunk_scores.sort_by(|(sa, ia), (sb, ib)| {
-                    sb.total_cmp(sa).then_with(|| ia.cmp(ib))
-                });
-                det_chunk_scores.truncate(chunk_limit);
-            }
-        }
+        det_chunk_scores.sort_by(|(left_score, left_id), (right_score, right_id)| {
+            right_score
+                .total_cmp(left_score)
+                .then_with(|| left_id.cmp(right_id))
+        });
+        det_chunk_scores.truncate(chunk_limit);
     }
 
     // Optional: model embedding retrieval (requires snapshot-scoped embeddings).
@@ -6956,40 +6988,40 @@ fn tool_semantic_search(
         if let Err(e) = idx.assert_in_db(db) {
             notes.push(format!("embeddings skipped: {e}"));
         } else {
-        fn normalize_vec(v: &mut [f32]) {
-            let mut norm2 = 0.0f32;
-            for x in v.iter() {
-                norm2 += x * x;
+            fn normalize_vec(v: &mut [f32]) {
+                let mut norm2 = 0.0f32;
+                for x in v.iter() {
+                    norm2 += x * x;
+                }
+                if norm2 <= 0.0 {
+                    return;
+                }
+                let inv = 1.0f32 / norm2.sqrt();
+                for x in v.iter_mut() {
+                    *x *= inv;
+                }
             }
-            if norm2 <= 0.0 {
-                return;
-            }
-            let inv = 1.0f32 / norm2.sqrt();
-            for x in v.iter_mut() {
-                *x *= inv;
-            }
-        }
 
-        fn dot_vec(a: &[f32], b: &[f32]) -> f32 {
-            let mut s = 0.0f32;
-            let n = a.len().min(b.len());
-            for i in 0..n {
-                s += a[i] * b[i];
+            fn dot_vec(a: &[f32], b: &[f32]) -> f32 {
+                let mut s = 0.0f32;
+                let n = a.len().min(b.len());
+                for i in 0..n {
+                    s += a[i] * b[i];
+                }
+                s
             }
-            s
-        }
 
-        let timeout = llm_timeout(None)?;
+            let timeout = llm_timeout(None)?;
 
-        // Entities.
-        if let Some(t) = idx.entities.as_ref() {
-            match t.backend.as_str() {
-                "ollama" => {
-                    if let Some(host) = ollama_embed_host {
-                        #[cfg(feature = "llm-ollama")]
-                        {
-                            let q = vec![query.to_string()];
-                            match ollama_embed_texts_with_timeout(host, &t.model, &q, timeout) {
+            // Entities.
+            if let Some(t) = idx.entities.as_ref() {
+                match t.backend.as_str() {
+                    "ollama" => {
+                        if let Some(host) = ollama_embed_host {
+                            #[cfg(feature = "llm-ollama")]
+                            {
+                                let q = vec![query.to_string()];
+                                match ollama_embed_texts_with_timeout(host, &t.model, &q, timeout) {
                                 Ok(mut qv) if qv.len() == 1 => {
                                     let mut qv = qv.remove(0);
                                     normalize_vec(&mut qv);
@@ -7021,27 +7053,28 @@ fn tool_semantic_search(
                                 ),
                                 Err(e) => notes.push(format!("embeddings skipped: {e}")),
                             }
-                        }
-                        #[cfg(not(feature = "llm-ollama"))]
-                        {
-                            let _ = host;
+                            }
+                            #[cfg(not(feature = "llm-ollama"))]
+                            {
+                                let _ = host;
+                                notes.push(
+                                    "embeddings unavailable (compiled without `llm-ollama`)"
+                                        .to_string(),
+                                );
+                            }
+                        } else {
                             notes.push(
-                                "embeddings unavailable (compiled without `llm-ollama`)".to_string(),
+                                "embeddings skipped: ollama host not configured for this tool-loop"
+                                    .to_string(),
                             );
                         }
-                    } else {
-                        notes.push(
-                            "embeddings skipped: ollama host not configured for this tool-loop"
-                                .to_string(),
-                        );
                     }
-                }
-                "openai" => {
-                    #[cfg(feature = "llm-openai")]
-                    {
-                        let base_url = default_openai_base_url();
-                        let q = vec![query.to_string()];
-                        match openai_embed_texts_with_timeout(&base_url, &t.model, &q, timeout) {
+                    "openai" => {
+                        #[cfg(feature = "llm-openai")]
+                        {
+                            let base_url = default_openai_base_url();
+                            let q = vec![query.to_string()];
+                            match openai_embed_texts_with_timeout(&base_url, &t.model, &q, timeout) {
                             Ok(mut qv) if qv.len() == 1 => {
                                 let mut qv = qv.remove(0);
                                 normalize_vec(&mut qv);
@@ -7073,30 +7106,28 @@ fn tool_semantic_search(
                             ),
                             Err(e) => notes.push(format!("embeddings skipped: {e}")),
                         }
-                    }
-                    #[cfg(not(feature = "llm-openai"))]
-                    {
-                        notes.push(
-                            "embeddings unavailable (compiled without `llm-openai`)".to_string(),
-                        );
-                    }
-                }
-                other => notes.push(format!(
-                    "embeddings skipped: backend {} (entities)",
-                    other
-                )),
-            }
-        }
-
-        // DocChunks.
-        if let Some(t) = idx.docchunks.as_ref() {
-            match t.backend.as_str() {
-                "ollama" => {
-                    if let Some(host) = ollama_embed_host {
-                        #[cfg(feature = "llm-ollama")]
+                        }
+                        #[cfg(not(feature = "llm-openai"))]
                         {
-                            let q = vec![query.to_string()];
-                            match ollama_embed_texts_with_timeout(host, &t.model, &q, timeout) {
+                            notes.push(
+                                "embeddings unavailable (compiled without `llm-openai`)"
+                                    .to_string(),
+                            );
+                        }
+                    }
+                    other => notes.push(format!("embeddings skipped: backend {other} (entities)")),
+                }
+            }
+
+            // DocChunks.
+            if let Some(t) = idx.docchunks.as_ref() {
+                match t.backend.as_str() {
+                    "ollama" => {
+                        if let Some(host) = ollama_embed_host {
+                            #[cfg(feature = "llm-ollama")]
+                            {
+                                let q = vec![query.to_string()];
+                                match ollama_embed_texts_with_timeout(host, &t.model, &q, timeout) {
                                 Ok(mut qv) if qv.len() == 1 => {
                                     let mut qv = qv.remove(0);
                                     normalize_vec(&mut qv);
@@ -7128,27 +7159,28 @@ fn tool_semantic_search(
                                 ),
                                 Err(e) => notes.push(format!("embeddings skipped: {e}")),
                             }
-                        }
-                        #[cfg(not(feature = "llm-ollama"))]
-                        {
-                            let _ = host;
+                            }
+                            #[cfg(not(feature = "llm-ollama"))]
+                            {
+                                let _ = host;
+                                notes.push(
+                                    "embeddings unavailable (compiled without `llm-ollama`)"
+                                        .to_string(),
+                                );
+                            }
+                        } else {
                             notes.push(
-                                "embeddings unavailable (compiled without `llm-ollama`)".to_string(),
+                                "embeddings skipped: ollama host not configured for this tool-loop"
+                                    .to_string(),
                             );
                         }
-                    } else {
-                        notes.push(
-                            "embeddings skipped: ollama host not configured for this tool-loop"
-                                .to_string(),
-                        );
                     }
-                }
-                "openai" => {
-                    #[cfg(feature = "llm-openai")]
-                    {
-                        let base_url = default_openai_base_url();
-                        let q = vec![query.to_string()];
-                        match openai_embed_texts_with_timeout(&base_url, &t.model, &q, timeout) {
+                    "openai" => {
+                        #[cfg(feature = "llm-openai")]
+                        {
+                            let base_url = default_openai_base_url();
+                            let q = vec![query.to_string()];
+                            match openai_embed_texts_with_timeout(&base_url, &t.model, &q, timeout) {
                             Ok(mut qv) if qv.len() == 1 => {
                                 let mut qv = qv.remove(0);
                                 normalize_vec(&mut qv);
@@ -7180,20 +7212,18 @@ fn tool_semantic_search(
                             ),
                             Err(e) => notes.push(format!("embeddings skipped: {e}")),
                         }
+                        }
+                        #[cfg(not(feature = "llm-openai"))]
+                        {
+                            notes.push(
+                                "embeddings unavailable (compiled without `llm-openai`)"
+                                    .to_string(),
+                            );
+                        }
                     }
-                    #[cfg(not(feature = "llm-openai"))]
-                    {
-                        notes.push(
-                            "embeddings unavailable (compiled without `llm-openai`)".to_string(),
-                        );
-                    }
+                    other => notes.push(format!("embeddings skipped: backend {other} (docchunks)")),
                 }
-                other => notes.push(format!(
-                    "embeddings skipped: backend {} (docchunks)",
-                    other
-                )),
             }
-        }
         }
     }
 
@@ -7264,8 +7294,7 @@ fn tool_semantic_search(
 
     let mut chunk_hits: Vec<serde_json::Value> = Vec::new();
     for (sim, id, tok, emb) in chunk_ranked.into_iter().take(chunk_limit) {
-        let chunk_id =
-            db_entity_attr_string(db, id, "chunk_id").unwrap_or_else(|| id.to_string());
+        let chunk_id = db_entity_attr_string(db, id, "chunk_id").unwrap_or_else(|| id.to_string());
         let doc = db_entity_attr_string(db, id, "document_id").unwrap_or_default();
         let span = db_entity_attr_string(db, id, "span_id").unwrap_or_default();
         let text = db_entity_attr_string(db, id, "text").unwrap_or_default();
@@ -7302,21 +7331,28 @@ fn tool_fts_chunks(
         #[serde(default)]
         limit: Option<usize>,
     }
-    let a: Args =
-        serde_json::from_value(args.clone()).map_err(|e| anyhow!("fts_chunks: invalid args: {e}"))?;
+    let a: Args = serde_json::from_value(args.clone())
+        .map_err(|e| anyhow!("fts_chunks: invalid args: {e}"))?;
 
-    let limit = a.limit.unwrap_or(options.max_doc_chunks).clamp(1, 50);
+    let limit = require_bounded_usize(
+        a.limit.unwrap_or(options.max_doc_chunks),
+        1,
+        50,
+        "fts_chunks.limit",
+    )?;
     let query = a.query.trim();
     if query.is_empty() {
         return Err(anyhow!("fts_chunks: query must be non-empty"));
     }
 
     let Some(chunks) = db.find_by_type("DocChunk") else {
-        return Ok(serde_json::json!({ "hits": [], "note": "no DocChunk loaded (answer from the graph via db_summary / describe_entity / axql_run)" }));
+        return Ok(
+            serde_json::json!({ "hits": [], "note": "no DocChunk loaded (answer from the graph via db_summary / describe_entity / axql_run)" }),
+        );
     };
 
-    let mut candidates =
-        db.entities_with_attr_fts_any("text", query) | db.entities_with_attr_fts_any("search_text", query);
+    let mut candidates = db.entities_with_attr_fts_any("text", query)
+        | db.entities_with_attr_fts_any("search_text", query);
     candidates &= chunks.clone();
 
     let mut out = Vec::new();
@@ -7355,7 +7391,12 @@ fn tool_docchunk_get(
     let a: Args = serde_json::from_value(args.clone())
         .map_err(|e| anyhow!("docchunk_get: invalid args: {e}"))?;
 
-    let max_chars = a.max_chars.unwrap_or(2_000).clamp(32, 8_000);
+    let max_chars = require_bounded_usize(
+        a.max_chars.unwrap_or(2_000),
+        MIN_LLM_TOOL_DOC_CHARS,
+        MAX_LLM_TOOL_DOC_CHARS,
+        "docchunk_get.max_chars",
+    )?;
 
     let resolve_by_id = |id: u32| -> Result<u32> {
         let Some(view) = db.get_entity(id) else {
@@ -7386,7 +7427,9 @@ fn tool_docchunk_get(
             return Err(anyhow!("docchunk_get: db has no `chunk_id` attribute"));
         };
         let Some(value_id) = db.interner.id_of(chunk_id) else {
-            return Err(anyhow!("docchunk_get: no DocChunk with chunk_id={chunk_id:?}"));
+            return Err(anyhow!(
+                "docchunk_get: no DocChunk with chunk_id={chunk_id:?}"
+            ));
         };
 
         let mut ids = db.entities.entities_with_attr_value(key_id, value_id);
@@ -7394,7 +7437,9 @@ fn tool_docchunk_get(
             ids &= bm.clone();
         }
         if ids.is_empty() {
-            return Err(anyhow!("docchunk_get: no DocChunk with chunk_id={chunk_id:?}"));
+            return Err(anyhow!(
+                "docchunk_get: no DocChunk with chunk_id={chunk_id:?}"
+            ));
         }
         ids.iter().next().unwrap_or(0)
     } else {
@@ -7437,70 +7482,115 @@ fn tool_axql_elaborate(
     query_cache: &mut crate::axql::AxqlPreparedQueryCache,
     args: &serde_json::Value,
 ) -> Result<serde_json::Value> {
-    let mut query = parse_query_from_tool_args(args, "axql_elaborate")?;
-    if query.contexts.is_empty() && !default_contexts.is_empty() {
-        query.contexts = default_contexts.to_vec();
-    }
-
     // We run the full prepare pipeline so we can return a plan (join order,
     // index hints, etc). This is untrusted tooling output, not a certificate.
-    let key = crate::axql::axql_query_cache_key(snapshot_key, &query);
-    let prepared = if let Some(p) = query_cache.get_mut(&key) {
-        p
-    } else {
-        let p = crate::axql::prepare_axql_query_with_meta(db, &query, meta)?;
-        query_cache.insert(key.clone(), p);
-        query_cache
-            .get_mut(&key)
-            .expect("query cache insert")
-    };
+    let prepared = prepare_tool_loop_query_ir(
+        db,
+        meta,
+        default_contexts,
+        snapshot_key,
+        query_cache,
+        args,
+        "axql_elaborate",
+        None,
+    )?;
 
     let report = prepared.elaboration_report();
     let inferred_types: BTreeMap<String, Vec<String>> = report.inferred_types.clone();
     let plan = prepared.explain_plan_lines();
+    let trust = prepared.trust_contract_with_meta(meta);
+
     Ok(serde_json::json!({
         "elaborated": prepared.elaborated_query_text(),
         "inferred_types": inferred_types,
         "notes": report.notes.clone(),
-        "plan": plan
+        "typed_holes": report.typed_holes.clone(),
+        "exploration_suggestions": report.exploration_suggestions.clone(),
+        "plan": plan,
+        "trust": trust
     }))
 }
 
-fn tool_axql_run(
+fn tool_axql_explore(
     db: &PathDB,
     meta: Option<&MetaPlaneIndex>,
     default_contexts: &[crate::axql::AxqlContextSpec],
     snapshot_key: &str,
     query_cache: &mut crate::axql::AxqlPreparedQueryCache,
     args: &serde_json::Value,
-    options: ToolLoopOptions,
 ) -> Result<serde_json::Value> {
-    let mut query = parse_query_from_tool_args(args, "axql_run")?;
-    if query.contexts.is_empty() && !default_contexts.is_empty() {
-        query.contexts = default_contexts.to_vec();
+    #[derive(Debug, Deserialize)]
+    struct ExploreArgs {
+        #[serde(default)]
+        variable: Option<String>,
     }
 
-    // Safety: cap row count.
-    let cap = options.max_rows.clamp(1, 200);
-    query.limit = query.limit.min(cap).max(1);
+    let focus = serde_json::from_value::<ExploreArgs>(args.clone())
+        .ok()
+        .and_then(|parsed| parsed.variable)
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+
+    let prepared = prepare_tool_loop_query_ir(
+        db,
+        meta,
+        default_contexts,
+        snapshot_key,
+        query_cache,
+        args,
+        "axql_explore",
+        None,
+    )?;
+    let elaborated = prepared.elaborated_query_text();
+    let elaborated_query_ir_v1 = prepared.elaborated_query_ir_v1()?;
+    let trust = prepared.trust_contract_with_meta(meta);
+    let exploration = prepared.exploration_view(focus.as_deref());
+
+    Ok(serde_json::json!({
+        "elaborated": elaborated,
+        "elaborated_query_ir_v1": elaborated_query_ir_v1,
+        "focus_variable": focus,
+        "exploration": exploration,
+        "trust": trust
+    }))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn tool_axql_run(
+    db: &PathDB,
+    meta: Option<&MetaPlaneIndex>,
+    default_contexts: &[crate::axql::AxqlContextSpec],
+    snapshot_key: &str,
+    _accepted_axi_anchor: Option<&AcceptedAxiAnchor>,
+    query_cache: &mut crate::axql::AxqlPreparedQueryCache,
+    args: &serde_json::Value,
+    options: ToolLoopOptions,
+) -> Result<serde_json::Value> {
+    // `run_tool_loop_with_meta` validates this operator-owned bound once.
+    let cap = options.max_rows;
 
     // Always run the full prepare pipeline (meta-plane typecheck/elaboration +
     // plan) so the REPL/UI can show what was inferred and how the engine ran.
-    let key = crate::axql::axql_query_cache_key(snapshot_key, &query);
-    let prepared = if let Some(p) = query_cache.get_mut(&key) {
-        p
-    } else {
-        let p = crate::axql::prepare_axql_query_with_meta(db, &query, meta)?;
-        query_cache.insert(key.clone(), p);
-        query_cache.get_mut(&key).expect("query cache insert")
-    };
+    let mut prepared = prepare_tool_loop_query_ir(
+        db,
+        meta,
+        default_contexts,
+        snapshot_key,
+        query_cache,
+        args,
+        "axql_run",
+        Some(cap),
+    )?;
 
+    let query = prepared.query_ir_v1().to_axql_text()?;
     let elaborated = prepared.elaborated_query_text();
     let report = prepared.elaboration_report().clone();
     let inferred_types: BTreeMap<String, Vec<String>> = report.inferred_types.clone();
     let notes = report.notes.clone();
+    let typed_holes = report.typed_holes.clone();
+    let exploration_suggestions = report.exploration_suggestions.clone();
     let plan = prepared.explain_plan_lines();
-
+    let trust = prepared.trust_contract_with_meta(meta);
     let result = prepared.execute(db, meta)?;
     let mut preview = PluginResultsV1::from_axql_result(db, &result);
     if preview.rows.len() > cap {
@@ -7508,14 +7598,18 @@ fn tool_axql_run(
         preview.truncated = true;
     }
 
-    Ok(serde_json::json!({
-        "query": crate::nlq::render_axql_query(&query),
+    let mut out = serde_json::json!({
+        "query": query,
         "elaborated": elaborated,
         "inferred_types": inferred_types,
         "notes": notes,
+        "typed_holes": typed_holes,
+        "exploration_suggestions": exploration_suggestions,
         "plan": plan,
+        "trust": trust,
         "results": preview
-    }))
+    });
+    Ok(out)
 }
 
 fn tool_viz_render(
@@ -7535,8 +7629,8 @@ fn tool_viz_render(
         #[serde(default)]
         max_edges: Option<usize>,
     }
-    let a: Args =
-        serde_json::from_value(args.clone()).map_err(|e| anyhow!("viz_render: invalid args: {e}"))?;
+    let a: Args = serde_json::from_value(args.clone())
+        .map_err(|e| anyhow!("viz_render: invalid args: {e}"))?;
 
     let focus = a.focus_name.trim();
     if focus.is_empty() {
@@ -7547,8 +7641,11 @@ fn tool_viz_render(
         return Ok(serde_json::json!({ "error": format!("no entity named `{focus}`") }));
     };
 
-    let hops = a.hops.unwrap_or(2).min(6);
-    let plane = a.plane.unwrap_or_else(|| "both".to_string()).to_ascii_lowercase();
+    let hops = require_bounded_usize(a.hops.unwrap_or(2), 0, 6, "viz_render.hops")?;
+    let plane = a
+        .plane
+        .unwrap_or_else(|| "both".to_string())
+        .to_ascii_lowercase();
     let (include_meta_plane, include_data_plane) = match plane.as_str() {
         "data" => (false, true),
         "meta" => (true, false),
@@ -7560,8 +7657,18 @@ fn tool_viz_render(
         }
     };
 
-    let max_nodes = a.max_nodes.unwrap_or(320).clamp(10, 5_000);
-    let max_edges = a.max_edges.unwrap_or(8_000).clamp(10, 50_000);
+    let max_nodes = require_bounded_usize(
+        a.max_nodes.unwrap_or(320),
+        10,
+        5_000,
+        "viz_render.max_nodes",
+    )?;
+    let max_edges = require_bounded_usize(
+        a.max_edges.unwrap_or(8_000),
+        10,
+        50_000,
+        "viz_render.max_edges",
+    )?;
 
     let options = crate::viz::VizOptions {
         focus_ids: vec![focus_id],
@@ -7581,9 +7688,13 @@ fn tool_viz_render(
 
     let out_dir = repo_root().join("build/llm_agent");
     std::fs::create_dir_all(&out_dir)?;
-    let filename = format!("viz_{}_{}.html", sanitize_filename(focus), axiograph_dsl::digest::axi_digest_v1(focus));
+    let filename = format!(
+        "viz_{}_{}.html",
+        sanitize_filename(focus),
+        axiograph_kernel::revision_digest_v2(focus)
+    );
     let out_path = out_dir.join(filename);
-    std::fs::write(&out_path, html)?;
+    crate::security::write_output_bounded(&out_path, html, "CLI output")?;
 
     Ok(serde_json::json!({
         "wrote": out_path.display().to_string(),
@@ -7635,28 +7746,40 @@ fn tool_propose_axi_patch(args: &serde_json::Value) -> Result<serde_json::Value>
 
     let proposals_path = a.proposals_path.trim();
     if proposals_path.is_empty() {
-        return Err(anyhow!("propose_axi_patch: proposals_path must be non-empty"));
+        return Err(anyhow!(
+            "propose_axi_patch: proposals_path must be non-empty"
+        ));
     }
 
     let path = PathBuf::from(proposals_path);
-    let text = std::fs::read_to_string(&path)
-        .map_err(|e| anyhow!("propose_axi_patch: failed to read {}: {e}", path.display()))?;
-    let file: axiograph_ingest_docs::ProposalsFileV1 = serde_json::from_str(&text)
-        .map_err(|e| anyhow!("propose_axi_patch: invalid proposals.json: {e}"))?;
+    let text = crate::security::read_utf8_file_bounded(
+        &path,
+        crate::security::MAX_TEXT_INPUT_BYTES,
+        "CLI input",
+    )
+    .map_err(|e| anyhow!("propose_axi_patch: failed to read {}: {e}", path.display()))?;
+    let file: axiograph_ingest_docs::ProposalsFileV1 = crate::security::parse_json_bounded(
+        text.as_bytes(),
+        crate::security::MAX_TEXT_INPUT_BYTES,
+        "propose_axi_patch proposals",
+    )
+    .map_err(|e| anyhow!("propose_axi_patch: invalid proposals.json: {e}"))?;
 
     let opts = crate::schema_discovery::DraftAxiModuleOptions {
         module_name: a.module_name.unwrap_or_else(|| "DraftModule".to_string()),
         schema_name: a.schema_name.unwrap_or_else(|| "DraftSchema".to_string()),
-        instance_name: a.instance_name.unwrap_or_else(|| "DraftInstance".to_string()),
+        instance_name: a
+            .instance_name
+            .unwrap_or_else(|| "DraftInstance".to_string()),
         infer_constraints: a.infer_constraints.unwrap_or(true),
     };
     let axi = crate::schema_discovery::draft_axi_module_from_proposals(&file, &opts)?;
-    let digest = axiograph_dsl::digest::axi_digest_v1(&axi);
+    let digest = axiograph_kernel::revision_digest_v2(&axi);
 
     let out_dir = repo_root().join("build/llm_agent");
     std::fs::create_dir_all(&out_dir)?;
     let out_path = out_dir.join(format!("draft_{digest}.axi"));
-    std::fs::write(&out_path, &axi)?;
+    crate::security::write_output_bounded(&out_path, &axi, "CLI output")?;
 
     Ok(serde_json::json!({
         "wrote": out_path.display().to_string(),
@@ -7683,17 +7806,22 @@ fn tool_draft_axi_from_proposals(args: &serde_json::Value) -> Result<serde_json:
     let a: Args = serde_json::from_value(args.clone())
         .map_err(|e| anyhow!("draft_axi_from_proposals: invalid args: {e}"))?;
 
-    let proposals: axiograph_ingest_docs::ProposalsFileV1 = serde_json::from_value(a.proposals_json)
-        .map_err(|e| anyhow!("draft_axi_from_proposals: invalid proposals_json: {e}"))?;
+    let proposals: axiograph_ingest_docs::ProposalsFileV1 =
+        serde_json::from_value(a.proposals_json)
+            .map_err(|e| anyhow!("draft_axi_from_proposals: invalid proposals_json: {e}"))?;
 
     let opts = crate::schema_discovery::DraftAxiModuleOptions {
         module_name: a.module_name.unwrap_or_else(|| "DraftModule".to_string()),
         schema_name: a.schema_name.unwrap_or_else(|| "DraftSchema".to_string()),
-        instance_name: a.instance_name.unwrap_or_else(|| "DraftInstance".to_string()),
+        instance_name: a
+            .instance_name
+            .unwrap_or_else(|| "DraftInstance".to_string()),
         infer_constraints: a.infer_constraints.unwrap_or(true),
     };
     let axi_text = crate::schema_discovery::draft_axi_module_from_proposals(&proposals, &opts)?;
-    let digest = axiograph_dsl::digest::axi_digest_v1(&axi_text);
+    let digest = axiograph_kernel::revision_digest_v2(&axi_text);
+    let typed_authoring =
+        crate::typed_authoring::draft_typed_authoring_summary_from_axi_text(&axi_text);
 
     Ok(serde_json::json!({
         "version": "axiograph_discover_draft_axi_v1",
@@ -7702,6 +7830,7 @@ fn tool_draft_axi_from_proposals(args: &serde_json::Value) -> Result<serde_json:
         "schema_name": opts.schema_name,
         "instance_name": opts.instance_name,
         "axi_text": axi_text,
+        "typed_authoring": typed_authoring,
     }))
 }
 
@@ -7752,6 +7881,12 @@ fn tool_propose_relation_proposals(
         quality_profile: Option<String>,
         #[serde(default)]
         quality_plane: Option<String>,
+        #[serde(default)]
+        competency_questions: Vec<crate::predictive_proposals::CompetencyQuestionV1>,
+        #[serde(default)]
+        cq_fail_on_regression: Option<bool>,
+        #[serde(default)]
+        cq_fail_on_unsatisfied_after: Option<bool>,
     }
     let a: Args = serde_json::from_value(args.clone())
         .map_err(|e| anyhow!("propose_relation_proposals: invalid args: {e}"))?;
@@ -7782,12 +7917,21 @@ fn tool_propose_relation_proposals(
     let validation = if validate {
         let profile = a.quality_profile.unwrap_or_else(|| "fast".to_string());
         let plane = a.quality_plane.unwrap_or_else(|| "both".to_string());
-        Some(crate::proposals_validate::validate_proposals_v1(
-            db,
-            &out.proposals,
-            &profile,
-            &plane,
-        )?)
+        Some(
+            crate::proposals_validate::validate_proposals_with_options_v1(
+                db,
+                &out.proposals,
+                &crate::proposals_validate::ProposalsValidationOptionsV1 {
+                    quality_profile: profile,
+                    quality_plane: plane,
+                    competency_questions: a.competency_questions,
+                    competency_gate: crate::proposals_validate::CompetencyGatePolicyV1 {
+                        fail_on_regression: a.cq_fail_on_regression.unwrap_or(false),
+                        fail_on_unsatisfied_after: a.cq_fail_on_unsatisfied_after.unwrap_or(false),
+                    },
+                },
+            )?,
+        )
     } else {
         None
     };
@@ -7825,6 +7969,12 @@ fn tool_propose_fact_proposals(
         quality_profile: Option<String>,
         #[serde(default)]
         quality_plane: Option<String>,
+        #[serde(default)]
+        competency_questions: Vec<crate::predictive_proposals::CompetencyQuestionV1>,
+        #[serde(default)]
+        cq_fail_on_regression: Option<bool>,
+        #[serde(default)]
+        cq_fail_on_unsatisfied_after: Option<bool>,
     }
     let a: Args = serde_json::from_value(args.clone())
         .map_err(|e| anyhow!("propose_fact_proposals: invalid args: {e}"))?;
@@ -7847,12 +7997,21 @@ fn tool_propose_fact_proposals(
     let validation = if validate {
         let profile = a.quality_profile.unwrap_or_else(|| "fast".to_string());
         let plane = a.quality_plane.unwrap_or_else(|| "both".to_string());
-        Some(crate::proposals_validate::validate_proposals_v1(
-            db,
-            &out.proposals,
-            &profile,
-            &plane,
-        )?)
+        Some(
+            crate::proposals_validate::validate_proposals_with_options_v1(
+                db,
+                &out.proposals,
+                &crate::proposals_validate::ProposalsValidationOptionsV1 {
+                    quality_profile: profile,
+                    quality_plane: plane,
+                    competency_questions: a.competency_questions,
+                    competency_gate: crate::proposals_validate::CompetencyGatePolicyV1 {
+                        fail_on_regression: a.cq_fail_on_regression.unwrap_or(false),
+                        fail_on_unsatisfied_after: a.cq_fail_on_unsatisfied_after.unwrap_or(false),
+                    },
+                },
+            )?,
+        )
     } else {
         None
     };
@@ -7907,6 +8066,12 @@ fn tool_propose_relations_proposals(
         quality_profile: Option<String>,
         #[serde(default)]
         quality_plane: Option<String>,
+        #[serde(default)]
+        competency_questions: Vec<crate::predictive_proposals::CompetencyQuestionV1>,
+        #[serde(default)]
+        cq_fail_on_regression: Option<bool>,
+        #[serde(default)]
+        cq_fail_on_unsatisfied_after: Option<bool>,
     }
     let a: Args = serde_json::from_value(args.clone())
         .map_err(|e| anyhow!("propose_relations_proposals: invalid args: {e}"))?;
@@ -7938,12 +8103,21 @@ fn tool_propose_relations_proposals(
     let validation = if validate {
         let profile = a.quality_profile.unwrap_or_else(|| "fast".to_string());
         let plane = a.quality_plane.unwrap_or_else(|| "both".to_string());
-        Some(crate::proposals_validate::validate_proposals_v1(
-            db,
-            &out.proposals,
-            &profile,
-            &plane,
-        )?)
+        Some(
+            crate::proposals_validate::validate_proposals_with_options_v1(
+                db,
+                &out.proposals,
+                &crate::proposals_validate::ProposalsValidationOptionsV1 {
+                    quality_profile: profile,
+                    quality_plane: plane,
+                    competency_questions: a.competency_questions,
+                    competency_gate: crate::proposals_validate::CompetencyGatePolicyV1 {
+                        fail_on_regression: a.cq_fail_on_regression.unwrap_or(false),
+                        fail_on_unsatisfied_after: a.cq_fail_on_unsatisfied_after.unwrap_or(false),
+                    },
+                },
+            )?,
+        )
     } else {
         None
     };
@@ -7956,11 +8130,9 @@ fn tool_propose_relations_proposals(
     }))
 }
 
-fn parse_query_from_tool_args(args: &serde_json::Value, tool: &str) -> Result<crate::axql::AxqlQuery> {
+fn parse_query_from_tool_args(args: &serde_json::Value, tool: &str) -> Result<QueryIrV1> {
     #[derive(Deserialize)]
     struct Args {
-        #[serde(default)]
-        axql: Option<String>,
         #[serde(default)]
         query_ir_v1: Option<QueryIrV1>,
         #[serde(default)]
@@ -7969,19 +8141,54 @@ fn parse_query_from_tool_args(args: &serde_json::Value, tool: &str) -> Result<cr
     let a: Args =
         serde_json::from_value(args.clone()).map_err(|e| anyhow!("{tool}: invalid args: {e}"))?;
 
-    let mut q = if let Some(ir) = a.query_ir_v1 {
-        ir.to_axql_query()?
-    } else if let Some(axql) = a.axql {
-        let normalized = normalize_axql_candidate(&axql);
-        crate::axql::parse_axql_query(&normalized)?
+    let mut query_ir = if let Some(ir) = a.query_ir_v1 {
+        ir
     } else {
-        return Err(anyhow!("{tool}: expected `query_ir_v1` or `axql`"));
+        return Err(anyhow!("{tool}: expected `query_ir_v1`"));
     };
 
     if let Some(limit) = a.limit {
-        q.limit = limit;
+        query_ir.limit = Some(limit);
     }
-    Ok(q)
+    Ok(query_ir)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn prepare_tool_loop_query_ir(
+    db: &PathDB,
+    meta: Option<&MetaPlaneIndex>,
+    default_contexts: &[crate::axql::AxqlContextSpec],
+    snapshot_key: &str,
+    query_cache: &mut crate::axql::AxqlPreparedQueryCache,
+    args: &serde_json::Value,
+    tool: &str,
+    limit_cap: Option<usize>,
+) -> Result<crate::query_ir::CompiledFiniteQuery> {
+    fn default_query_contexts_ir(
+        default_contexts: &[crate::axql::AxqlContextSpec],
+    ) -> Vec<crate::query_ir::QueryContextIrV1> {
+        default_contexts
+            .iter()
+            .map(|ctx| match ctx {
+                crate::axql::AxqlContextSpec::EntityId(id) => {
+                    crate::query_ir::QueryContextIrV1::EntityId(*id)
+                }
+                crate::axql::AxqlContextSpec::Name(name) => {
+                    crate::query_ir::QueryContextIrV1::Name(name.clone())
+                }
+            })
+            .collect()
+    }
+
+    let mut query_ir = parse_query_from_tool_args(args, tool)?;
+    if query_ir.contexts.is_empty() && !default_contexts.is_empty() {
+        query_ir.contexts = default_query_contexts_ir(default_contexts);
+    }
+    if let Some(limit_cap) = limit_cap {
+        let requested_limit = query_ir.limit.unwrap_or(20);
+        query_ir.limit = Some(requested_limit.min(limit_cap).max(1));
+    }
+    query_ir.compile_with_meta_cached(db, meta, snapshot_key, query_cache)
 }
 
 fn db_entity_attr_string(db: &PathDB, entity_id: u32, key: &str) -> Option<String> {
@@ -8037,8 +8244,7 @@ fn extract_identifier_like_terms(question: &str, max_terms: usize) -> Vec<String
     }
 
     for c in question.chars() {
-        let ok = c.is_ascii_alphanumeric()
-            || matches!(c, '_' | '.' | ':' | '/' | '-' | '~');
+        let ok = c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | ':' | '/' | '-' | '~');
         if ok {
             cur.push(c);
         } else if !cur.is_empty() {
@@ -8085,7 +8291,10 @@ fn truncate_json_for_prompt(
             if depth >= limits.max_depth {
                 let mut out = Map::new();
                 out.insert("_truncated".to_string(), Value::Bool(true));
-                out.insert("_note".to_string(), Value::String("depth limit".to_string()));
+                out.insert(
+                    "_note".to_string(),
+                    Value::String("depth limit".to_string()),
+                );
                 return Value::Object(out);
             }
 
@@ -8126,7 +8335,10 @@ fn truncate_json_for_prompt(
                     break;
                 }
                 if let Some(v) = m.get(k) {
-                    out.insert(k.to_string(), truncate_json_for_prompt(v, depth + 1, limits));
+                    out.insert(
+                        k.to_string(),
+                        truncate_json_for_prompt(v, depth + 1, limits),
+                    );
                     kept.insert(k.to_string());
                 }
             }
@@ -8142,7 +8354,10 @@ fn truncate_json_for_prompt(
                         continue;
                     }
                     if let Some(v) = m.get(k) {
-                        out.insert(k.to_string(), truncate_json_for_prompt(v, depth + 1, limits));
+                        out.insert(
+                            k.to_string(),
+                            truncate_json_for_prompt(v, depth + 1, limits),
+                        );
                     }
                 }
             }
@@ -8205,6 +8420,7 @@ fn repo_root() -> PathBuf {
 }
 
 impl LlmState {
+    #[allow(clippy::too_many_arguments)]
     fn tool_loop_step(
         &self,
         db: &PathDB,
@@ -8346,7 +8562,8 @@ fn mock_tool_loop_step(
 
             // Best-effort: if the utterance looks like “X is a child/son/daughter of Y”,
             // interpret it as Parent(child=X, parent=Y).
-            let looks_like_child_of = q_lc.contains(" child ") || q_lc.contains(" son ") || q_lc.contains(" daughter ");
+            let looks_like_child_of =
+                q_lc.contains(" child ") || q_lc.contains(" son ") || q_lc.contains(" daughter ");
             let has_of = q_lc.split_whitespace().any(|t| t == "of");
             if !looks_like_child_of || !has_of {
                 return None;
@@ -8356,12 +8573,18 @@ fn mock_tool_loop_step(
             if tokens.len() < 4 {
                 return None;
             }
-            let child = tokens.get(1)?.trim().trim_matches(|c: char| !c.is_alphanumeric());
+            let child = tokens
+                .get(1)?
+                .trim()
+                .trim_matches(|c: char| !c.is_alphanumeric());
             if child.is_empty() {
                 return None;
             }
             let of_pos = tokens.iter().rposition(|t| t.eq_ignore_ascii_case("of"))?;
-            let parent = tokens.get(of_pos + 1)?.trim().trim_matches(|c: char| !c.is_alphanumeric());
+            let parent = tokens
+                .get(of_pos + 1)?
+                .trim()
+                .trim_matches(|c: char| !c.is_alphanumeric());
             if parent.is_empty() {
                 return None;
             }
@@ -8416,16 +8639,15 @@ fn mock_tool_loop_step(
                 #[serde(default)]
                 query: Option<String>,
             }
-            let payload: ResultsPayload = serde_json::from_value(last.result.clone()).unwrap_or(
-                ResultsPayload {
+            let payload: ResultsPayload =
+                serde_json::from_value(last.result.clone()).unwrap_or(ResultsPayload {
                     results: PluginResultsV1 {
                         vars: Vec::new(),
                         rows: Vec::new(),
                         truncated: false,
                     },
                     query: None,
-                },
-            );
+                });
 
             let mut lines = Vec::new();
             if payload.results.rows.is_empty() {
@@ -8435,10 +8657,7 @@ fn mock_tool_loop_step(
                 for (i, row) in payload.results.rows.iter().enumerate().take(6) {
                     let mut parts = Vec::new();
                     for (k, v) in row {
-                        let label = v
-                            .name
-                            .clone()
-                            .unwrap_or_else(|| v.id.to_string());
+                        let label = v.name.clone().unwrap_or_else(|| v.id.to_string());
                         parts.push(format!("{k}={label}"));
                     }
                     lines.push(format!("row {i}: {}", parts.join(", ")));
@@ -8491,7 +8710,7 @@ You MUST return a single JSON object with one of these shapes:
 
 Examples:
 - {"tool_call":{"name":"describe_entity","args":{"name":"Alice","max_rel_types":12,"out_limit":6,"in_limit":6}}}
-- {"tool_calls":[{"name":"lookup_relation","args":{"relation":"Parent"}},{"name":"axql_run","args":{"query_ir_v1":{"version":1,"select":["?x"],"where":[{"kind":"edge","left":"name(\"Alice\")","rel":"Parent","right":"?x"}],"limit":10}}}]}
+- {"tool_calls":[{"name":"lookup_relation","args":{"relation":"Parent"}},{"name":"axql_run","args":{"query_ir_v1":{"version":1,"select_vars":["?x"],"where_atoms":[{"kind":"edge","left":"name(\"Alice\")","rel":"Parent","right":"?x"}],"limit":10}}}]}
 - {"final_answer":{"answer":"Alice is connected to Bob via Parent(...)","public_rationale":"looked up Alice, inspected neighbors, and ran a small AxQL query","citations":[],"queries":[],"notes":[]}}
 
 Rules:
@@ -8501,15 +8720,17 @@ Rules:
 - For broad/overview questions (e.g. “explain the facts”, “what is in the snapshot”), start with `db_summary`.
 - For fuzzy/semantic lookup (“what does this mean”, “find related”, “where is X mentioned”), use `semantic_search` and then follow up with `describe_entity` / `axql_run`.
 - For doc evidence, use `fts_chunks` or `semantic_search` and then `docchunk_get` to fetch a specific chunk body.
-- If the user asks to compare snapshots (“A vs B”, “what changed between snapshots”), use `snapshots_list` to resolve ids if needed, then use `snapshot_diff` (do not claim you lack a diff tool if it is available).
+- For ontology engineering questions about rule applicability, implementation coverage, bounded-context alignment, executable behavior cases, semantic slices, merge/rebase planning, resolver steps, or engineering next actions, use `semantic_business_rule`, `semantic_coverage`, `semantic_context_report`, `semantic_behavior_case`, `semantic_slice_build`, `semantic_slice_diff`, `semantic_merge_plan`, `semantic_rebase_plan`, `semantic_resolver_steps`, or `semantic_agent_report`.
+- For competency questions / CQ authoring, prefer `semantic_competency_questions` with question-first `.cq` text (`ask`, `about`, `given`, `expect`). Use `expect: exists Schema.Rel(role=value, ...)` or `expect: instance of Schema.Type` when you want an executable lowering. Do not ask users to author lowered AxQL just to express ontology coverage intent.
 - For explicit *witness* artifacts (type-theory-ish structure):
   - `PathWitness` nodes encode a derivation/path (typically via edges `from`/`to` plus attrs like `repr`).
   - `Homotopy` nodes encode “two derivations / two paths with the same meaning” (often `from`/`to` plus `lhs`/`rhs` pointing at `PathWitness` nodes).
   Use these when the user asks about equivalence, commuting diagrams, “why”, or alternative derivations.
 - For schema mappings / migrations, look for `Morphism` nodes (usually `from`/`to`) and related homotopies (commuting diagrams).
 - For AxQL execution, prefer the typed JSON IR:
-  - When calling `axql_elaborate` or `axql_run`, pass `query_ir_v1` (NOT raw `axql` text).
-  - If you generated a query, call `axql_elaborate` first to validate it and to see inferred types, then call `axql_run`.
+  - When calling `axql_elaborate`, `axql_explore`, or `axql_run`, pass `query_ir_v1` (NOT raw `axql` text).
+  - If the query is partial, ambiguous, or you need to ask “what can go here next?”, call `axql_explore`.
+  - If you generated a query and want validation plus inferred types, call `axql_elaborate` first; then call `axql_run` only when execution is actually needed.
 - For requests that would *change* the graph (add/update facts/relationships), do NOT claim the DB changed. Instead, generate a reviewable `proposals.json` overlay:
   - Prefer `propose_fact_proposals` when the relation is n-ary (more than 2 fields) or when direction is ambiguous.
   - Use `propose_relation_proposals` for simple two-endpoint assertions when you are confident about direction.
@@ -8519,7 +8740,7 @@ Rules:
 - If you are unsure how a relation is typed, or which fields are endpoints, use `lookup_relation` first.
 - When generating relation proposals, be careful about *direction*:
   - `propose_relation_proposals` maps `source_name` → the relation's source-ish field (`from`/`source`/`child`/`lhs`) and `target_name` → (`to`/`target`/`parent`/`rhs`).
-  - If the user’s phrasing is inverse (“Bob is a parent of Jamison”), set `source_field`/`target_field` explicitly (e.g. `source_field="parent"`, `target_field="child"` for `Parent(child,parent)`), or use an alias like `parent_of`.
+  - If the user’s phrasing is inverse (“Bob is a parent of Jamison”), still use the canonical relation name and set `source_field`/`target_field` explicitly (e.g. `source_field="parent"`, `target_field="child"` for `Parent(child,parent)`). Do not invent relation aliases.
 - When multiple schemas share the same type/relation name, prefer schema-qualified names (e.g. `Fam.Parent`, `Census.Person`) or set `schema_hint` in proposal tools.
 - When interpreting a “fact node” (an entity with attr `axi_relation`), treat it as a *typed record* with field edges (e.g. `Parent(child=..., parent=..., ctx=..., time=...)`). Use `lookup_relation` (meta-plane signature + constraints) when unsure about endpoints or required fields.
 - If the user wants canonical `.axi` output for a set of proposals, call `draft_axi_from_proposals` (deterministic draft; still untrusted until promoted and checked).
@@ -8530,6 +8751,7 @@ Rules:
 
 Return JSON only (no markdown)."#;
 
+#[allow(clippy::too_many_arguments)]
 fn render_tool_loop_user_prompt(
     db: &PathDB,
     question: &str,
@@ -8541,7 +8763,8 @@ fn render_tool_loop_user_prompt(
     ollama_embed_host: Option<&str>,
     options: ToolLoopOptions,
 ) -> Result<String> {
-    let grounding = render_doc_grounding(db, question, options.max_doc_chunks, options.max_doc_chars);
+    let grounding =
+        render_doc_grounding(db, question, options.max_doc_chunks, options.max_doc_chars);
     let db_summary = if transcript.is_empty() {
         tool_db_summary(
             db,
@@ -8670,6 +8893,7 @@ Return ONLY the JSON object."#,
 }
 
 #[cfg(feature = "llm-ollama")]
+#[allow(clippy::too_many_arguments)]
 fn ollama_tool_loop_step(
     host: &str,
     model: &str,
@@ -8749,6 +8973,7 @@ fn ollama_tool_loop_step(
 }
 
 #[cfg(feature = "llm-openai")]
+#[allow(clippy::too_many_arguments)]
 fn openai_tool_loop_step(
     base_url: &str,
     model: &str,
@@ -8882,6 +9107,7 @@ fn openai_tool_loop_step(
 }
 
 #[cfg(feature = "llm-anthropic")]
+#[allow(clippy::too_many_arguments)]
 fn anthropic_tool_loop_step(
     base_url: &str,
     model: &str,
@@ -8969,16 +9195,40 @@ fn parse_tool_loop_response_json(
     content: &str,
     options: ToolLoopOptions,
 ) -> Result<ToolLoopModelResponseV1> {
-    // Be permissive: many local models are inconsistent about the exact wrapper
-    // shape. We accept:
+    let options = options.validate()?;
+    // Strict tool_specs_v1 response contract. The model must return exactly one
+    // current wrapper:
     // - { "tool_call": { "name": "...", "args": {...} } }
+    // - { "tool_calls": [{ "name": "...", "args": {...} }, ...] }
     // - { "final_answer": { ... } }
     // - { "error": "..." }
-    // - { "tool": "...", "args": {...} }          (common variant)
-    // - { "name": "...", "args": {...} }          (common variant)
-    // - { "axql": "..." } / { "query_ir_v1": {...} }  (treated as `axql_run`)
-    // - { "answer": "..." } (treated as final answer)
+    //
+    // Bare `answer`, top-level `tool`/`name`, and bare `query_ir_v1` payloads
+    // are intentionally rejected so every agent/MCP path uses the same typed
+    // tool surface.
     let v: serde_json::Value = parse_llm_json_object(content)?;
+    let obj = v
+        .as_object()
+        .ok_or_else(|| anyhow!("tool-loop response must be a JSON object"))?;
+    let wrapper_count = ["error", "final_answer", "tool_call", "tool_calls"]
+        .iter()
+        .filter(|key| obj.contains_key(**key))
+        .count();
+    if wrapper_count != 1 {
+        return Err(anyhow!(
+            "tool-loop response must contain exactly one of `tool_call`, `tool_calls`, `final_answer`, or `error`"
+        ));
+    }
+    for key in obj.keys() {
+        if !matches!(
+            key.as_str(),
+            "error" | "final_answer" | "tool_call" | "tool_calls"
+        ) {
+            return Err(anyhow!(
+                "tool-loop response contains unsupported top-level field `{key}`; expected `tool_call`, `tool_calls`, `final_answer`, or `error`"
+            ));
+        }
+    }
 
     if let Some(err) = v.get("error").and_then(|x| x.as_str()) {
         return Ok(ToolLoopModelResponseV1 {
@@ -8988,222 +9238,78 @@ fn parse_tool_loop_response_json(
             error: Some(err.to_string()),
         });
     }
+    if v.get("error").is_some() {
+        return Err(anyhow!("tool-loop `error` must be a string"));
+    }
 
     if let Some(final_v) = v.get("final_answer") {
-        if let Ok(final_answer) = serde_json::from_value::<ToolLoopFinalV1>(final_v.clone()) {
-            return Ok(ToolLoopModelResponseV1 {
-                tool_call: None,
-                tool_calls: None,
-                final_answer: Some(final_answer),
-                error: None,
-            });
-        }
-    }
-
-    // Top-level `answer` (no wrapper).
-    if v.get("answer").is_some() && v.get("final_answer").is_none() {
-        if let Ok(final_answer) = serde_json::from_value::<ToolLoopFinalV1>(v.clone()) {
-            return Ok(ToolLoopModelResponseV1 {
-                tool_call: None,
-                tool_calls: None,
-                final_answer: Some(final_answer),
-                error: None,
-            });
-        }
-        if let Some(answer) = v.get("answer").and_then(|x| x.as_str()) {
-            return Ok(ToolLoopModelResponseV1 {
-                tool_call: None,
-                tool_calls: None,
-                final_answer: Some(ToolLoopFinalV1 {
-                    answer: answer.to_string(),
-                    public_rationale: None,
-                    citations: Vec::new(),
-                    queries: Vec::new(),
-                    notes: vec!["note: model returned top-level `answer`".to_string()],
-                }),
-                error: None,
-            });
-        }
-    }
-
-    fn maybe_convert_axql_args_to_query_ir(args: &mut serde_json::Value) {
-        let Some(obj) = args.as_object_mut() else {
-            return;
-        };
-        if obj.contains_key("query_ir_v1") {
-            // Canonicalize: if the model provided both, prefer the typed form.
-            obj.remove("axql");
-            return;
-        }
-        let Some(axql) = obj.get("axql").and_then(|v| v.as_str()) else {
-            return;
-        };
-        let normalized = normalize_axql_candidate(axql);
-        if let Ok(parsed) = crate::axql::parse_axql_query(&normalized) {
-            let ir = QueryIrV1::from_axql_query(&parsed);
-            if let Ok(ir_json) = serde_json::to_value(&ir) {
-                obj.insert("query_ir_v1".to_string(), ir_json);
-                // Keep the tool-loop canonically typed: once we have `query_ir_v1`,
-                // drop raw AxQL to avoid “two sources of truth” in transcripts.
-                obj.remove("axql");
-            }
-        } else {
-            // Still normalize in-place to apply our "common mistakes" rewrites.
-            obj.insert("axql".to_string(), serde_json::Value::String(normalized));
-        }
+        let final_answer = serde_json::from_value::<ToolLoopFinalV1>(final_v.clone())
+            .map_err(|e| anyhow!("invalid tool-loop `final_answer`: {e}"))?;
+        return Ok(ToolLoopModelResponseV1 {
+            tool_call: None,
+            tool_calls: None,
+            final_answer: Some(final_answer),
+            error: None,
+        });
     }
 
     fn parse_one_tool_call(
         call_v: &serde_json::Value,
         options: ToolLoopOptions,
-    ) -> Result<Option<ToolCallV1>> {
-        // Primary form: { "name": "...", "args": {...} }
-        if let Ok(mut call) = serde_json::from_value::<ToolCallV1>(call_v.clone()) {
-            if call.name == "axql_run" || call.name == "axql_elaborate" {
-                maybe_convert_axql_args_to_query_ir(&mut call.args);
-            }
-            return Ok(Some(call));
-        }
-
-        // Common variant: { "tool": "...", "args": {...} }
-        let Some(name) = call_v
-            .get("name")
-            .or_else(|| call_v.get("tool"))
-            .and_then(|x| x.as_str())
-        else {
-            return Ok(None);
-        };
-        let mut args = call_v
-            .get("args")
-            .cloned()
-            .unwrap_or_else(|| serde_json::json!({}));
-        if name == "axql_run" || name == "axql_elaborate" {
-            maybe_convert_axql_args_to_query_ir(&mut args);
-        }
-        if name == "axql_run" {
+    ) -> Result<ToolCallV1> {
+        let mut call = serde_json::from_value::<ToolCallV1>(call_v.clone())
+            .map_err(|e| anyhow!("invalid tool-loop tool call: {e}"))?;
+        if call.name == "axql_run" {
             // Ensure we always apply the tool-loop row limit safety valve.
-            if let Some(obj) = args.as_object_mut() {
+            if let Some(obj) = call.args.as_object_mut() {
                 obj.entry("limit".to_string())
-                    .or_insert_with(|| serde_json::json!(options.max_rows.clamp(1, 200)));
+                    .or_insert_with(|| serde_json::json!(options.max_rows));
             }
         }
-        Ok(Some(ToolCallV1 {
-            name: name.to_string(),
-            args,
-        }))
+        Ok(call)
     }
 
     // Batched tool calls: {"tool_calls":[{...}, ...]}
     if let Some(calls_v) = v.get("tool_calls").and_then(|x| x.as_array()) {
+        if calls_v.is_empty() {
+            return Err(anyhow!("tool-loop `tool_calls` must not be empty"));
+        }
+        if calls_v.len() > options.max_steps {
+            return Err(anyhow!(
+                "tool-loop `tool_calls` count {} exceeds remaining configured step bound {}",
+                calls_v.len(),
+                options.max_steps
+            ));
+        }
         let mut calls: Vec<ToolCallV1> = Vec::new();
         for c in calls_v {
-            if let Some(call) = parse_one_tool_call(c, options)? {
-                calls.push(call);
-            }
+            calls.push(parse_one_tool_call(c, options)?);
         }
-        if !calls.is_empty() {
-            return Ok(ToolLoopModelResponseV1 {
-                tool_call: None,
-                tool_calls: Some(calls),
-                final_answer: None,
-                error: None,
-            });
-        }
+        return Ok(ToolLoopModelResponseV1 {
+            tool_call: None,
+            tool_calls: Some(calls),
+            final_answer: None,
+            error: None,
+        });
+    }
+    if v.get("tool_calls").is_some() {
+        return Err(anyhow!("tool-loop `tool_calls` must be an array"));
     }
 
     // Primary wrapper shape.
     if let Some(call_v) = v.get("tool_call") {
-        if let Ok(call) = serde_json::from_value::<ToolCallV1>(call_v.clone()) {
-            let mut call = call;
-            if call.name == "axql_run" || call.name == "axql_elaborate" {
-                maybe_convert_axql_args_to_query_ir(&mut call.args);
-            }
-            return Ok(ToolLoopModelResponseV1 {
-                tool_call: Some(call),
-                tool_calls: None,
-                final_answer: None,
-                error: None,
-            });
-        }
-        // Nested variant: {"tool_call":{"tool":"axql_run","args":{...}}}
-        if let Some(name) = call_v
-            .get("name")
-            .or_else(|| call_v.get("tool"))
-            .and_then(|x| x.as_str())
-        {
-            let mut args = call_v.get("args").cloned().unwrap_or_else(|| serde_json::json!({}));
-            if name == "axql_run" || name == "axql_elaborate" {
-                maybe_convert_axql_args_to_query_ir(&mut args);
-            }
-            return Ok(ToolLoopModelResponseV1 {
-                tool_call: Some(ToolCallV1 {
-                    name: name.to_string(),
-                    args,
-                }),
-                tool_calls: None,
-                final_answer: None,
-                error: None,
-            });
-        }
-    }
-
-    // Common variant: {"tool":"axql_run","args":{...}} or {"name":"axql_run","args":{...}}
-    if let Some(name) = v
-        .get("name")
-        .or_else(|| v.get("tool"))
-        .and_then(|x| x.as_str())
-    {
-        let mut args = v.get("args").cloned().unwrap_or_else(|| serde_json::json!({}));
-        if name == "axql_run" || name == "axql_elaborate" {
-            maybe_convert_axql_args_to_query_ir(&mut args);
-        }
+        let call = parse_one_tool_call(call_v, options)?;
         return Ok(ToolLoopModelResponseV1 {
-            tool_call: Some(ToolCallV1 {
-                name: name.to_string(),
-                args,
-            }),
+            tool_call: Some(call),
             tool_calls: None,
             final_answer: None,
             error: None,
         });
     }
 
-    // Fallback: treat an `axql`/`query_ir_v1` payload as an `axql_run` tool call.
-    if v.get("axql").is_some() || v.get("query_ir_v1").is_some() {
-        let mut args = serde_json::Map::new();
-        if let Some(axql) = v.get("axql").and_then(|x| x.as_str()) {
-            args.insert("axql".to_string(), serde_json::Value::String(axql.to_string()));
-        }
-        if let Some(ir) = v.get("query_ir_v1").cloned() {
-            args.insert("query_ir_v1".to_string(), ir);
-        }
-        let mut args_v = serde_json::Value::Object(args);
-        maybe_convert_axql_args_to_query_ir(&mut args_v);
-        if let Some(obj) = args_v.as_object_mut() {
-            obj.insert(
-                "limit".to_string(),
-                serde_json::json!(options.max_rows.clamp(1, 200)),
-            );
-        }
-        return Ok(ToolLoopModelResponseV1 {
-            tool_call: Some(ToolCallV1 {
-                name: "axql_run".to_string(),
-                args: args_v,
-            }),
-            tool_calls: None,
-            final_answer: None,
-            error: None,
-        });
-    }
-
-    // Last resort: treat this as "no decision". We'll fall back to a
-    // deterministic summary based on the tool transcript so far.
-    Ok(ToolLoopModelResponseV1 {
-        tool_call: None,
-        tool_calls: None,
-        final_answer: None,
-        error: None,
-    })
+    Err(anyhow!(
+        "tool-loop response did not match the current tool_specs_v1 contract"
+    ))
 }
 
 const PLUGIN_PROTOCOL_V2: &str = "axiograph_llm_plugin_v2";
@@ -9251,7 +9357,7 @@ enum PluginTaskV2 {
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum QueryPayloadV1 {
-    Axql { axql: String },
+    QueryIrV1 { query_ir_v1: QueryIrV1 },
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -9281,7 +9387,8 @@ struct SchemaContextV1 {
 
 impl SchemaContextV1 {
     fn from_db(db: &PathDB) -> Self {
-        let mut type_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        let mut type_counts: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
         for entity_id in 0..db.entities.len() as u32 {
             let Some(type_id) = db.entities.get_type(entity_id) else {
                 continue;
@@ -9297,7 +9404,8 @@ impl SchemaContextV1 {
             *type_counts.entry(name).or_insert(0) += 1;
         }
 
-        let mut relation_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        let mut relation_counts: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
         for rel_id in 0..db.relations.len() as u32 {
             let Some(rel) = db.relations.get_relation(rel_id) else {
                 continue;
@@ -9324,7 +9432,10 @@ impl SchemaContextV1 {
         let contexts = sample_names(db, "Context", 16);
         let times = sample_names(db, "Time", 16);
 
-        fn top_by_count(mut m: std::collections::HashMap<String, usize>, max: usize) -> Vec<String> {
+        fn top_by_count(
+            mut m: std::collections::HashMap<String, usize>,
+            max: usize,
+        ) -> Vec<String> {
             let mut v: Vec<(usize, String)> = m.drain().map(|(k, c)| (c, k)).collect();
             v.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
             v.into_iter().take(max).map(|(_, k)| k).collect()
@@ -9379,8 +9490,14 @@ impl SchemaContextV1 {
         schema_names.sort();
         out.schemas = schema_names.into_iter().take(32).collect();
 
-        fn infer_endpoint_fields_from_decl(rel_decl: &axiograph_pathdb::axi_semantics::RelationDecl) -> (String, String) {
-            let names: Vec<&str> = rel_decl.fields.iter().map(|f| f.field_name.as_str()).collect();
+        fn infer_endpoint_fields_from_decl(
+            rel_decl: &axiograph_pathdb::axi_semantics::RelationDecl,
+        ) -> (String, String) {
+            let names: Vec<&str> = rel_decl
+                .fields
+                .iter()
+                .map(|f| f.field_name.as_str())
+                .collect();
             if names.contains(&"from") && names.contains(&"to") {
                 return ("from".to_string(), "to".to_string());
             }
@@ -9408,7 +9525,9 @@ impl SchemaContextV1 {
                 use axiograph_pathdb::axi_semantics::ConstraintDecl as C;
                 match c {
                     C::Functional {
-                        src_field, dst_field, ..
+                        src_field,
+                        dst_field,
+                        ..
                     } => parts.push(format!("functional({src_field} -> {dst_field})")),
                     C::AtMost {
                         src_field,
@@ -9432,7 +9551,7 @@ impl SchemaContextV1 {
                     )),
                     C::Symmetric { .. } => parts.push("symmetric".to_string()),
                     C::Transitive { .. } => parts.push("transitive".to_string()),
-                    C::Key { fields, .. } => parts.push(format!("key({})", fields.join(", "))), 
+                    C::Key { fields, .. } => parts.push(format!("key({})", fields.join(", "))),
                     C::NamedBlock { name, .. } => parts.push(format!("named_block({name})")),
                     C::Unknown { text, .. } => parts.push(format!("unknown({text})")),
                 }
@@ -9445,42 +9564,47 @@ impl SchemaContextV1 {
 
         // Rank relation signatures by observed fact-node count, so the prompt
         // stays compact even on large graphs while still covering "common" facts.
-        let mut ranked: Vec<(usize, String, &axiograph_pathdb::axi_semantics::SchemaIndex, &axiograph_pathdb::axi_semantics::RelationDecl)> =
-            Vec::new();
+        let mut ranked: Vec<(
+            usize,
+            String,
+            &axiograph_pathdb::axi_semantics::SchemaIndex,
+            &axiograph_pathdb::axi_semantics::RelationDecl,
+        )> = Vec::new();
         for (schema_name, schema) in &meta.schemas {
             for rel in schema.relation_decls.values() {
                 let count = db.find_by_type(&rel.name).map(|bm| bm.len()).unwrap_or(0) as usize;
                 ranked.push((count, schema_name.clone(), schema, rel));
             }
         }
-        ranked.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)).then_with(|| a.3.name.cmp(&b.3.name)));
+        ranked.sort_by(|a, b| {
+            b.0.cmp(&a.0)
+                .then_with(|| a.1.cmp(&b.1))
+                .then_with(|| a.3.name.cmp(&b.3.name))
+        });
 
         for (_count, schema_name, schema, rel) in ranked.into_iter().take(120) {
-                let mut fields = rel.fields.clone();
-                fields.sort_by_key(|f| f.field_index);
-                let fields_text = fields
-                    .iter()
-                    .map(|f| format!("{}: {}", f.field_name, f.field_type))
-                    .collect::<Vec<_>>()
-                    .join(", ");
+            let mut fields = rel.fields.clone();
+            fields.sort_by_key(|f| f.field_index);
+            let fields_text = fields
+                .iter()
+                .map(|f| format!("{}: {}", f.field_name, f.field_type))
+                .collect::<Vec<_>>()
+                .join(", ");
 
-                let (src_field, dst_field) = infer_endpoint_fields_from_decl(rel);
-                sigs.push(format!(
+            let (src_field, dst_field) = infer_endpoint_fields_from_decl(rel);
+            sigs.push(format!(
                     "{schema_name}.{}({fields_text})  (source_field={src_field}, target_field={dst_field})",
                     rel.name
                 ));
 
-                if let Some(cs) = schema.constraints_by_relation.get(&rel.name) {
-                    if !cs.is_empty() {
-                        let rendered = render_constraints(cs);
-                        if !rendered.trim().is_empty() {
-                            constraint_lines.push(format!(
-                                "{schema_name}.{}: {rendered}",
-                                rel.name
-                            ));
-                        }
+            if let Some(cs) = schema.constraints_by_relation.get(&rel.name) {
+                if !cs.is_empty() {
+                    let rendered = render_constraints(cs);
+                    if !rendered.trim().is_empty() {
+                        constraint_lines.push(format!("{schema_name}.{}: {rendered}", rel.name));
                     }
                 }
+            }
         }
 
         out.relation_signatures = sigs.into_iter().take(80).collect();
@@ -9573,8 +9697,6 @@ impl EntityViewV1 {
 #[derive(Debug, Clone, Deserialize)]
 struct PluginResponseV1 {
     #[serde(default)]
-    axql: Option<String>,
-    #[serde(default)]
     query_ir_v1: Option<QueryIrV1>,
     #[serde(default)]
     answer: Option<String>,
@@ -9588,29 +9710,12 @@ fn run_plugin_v3(
     request: &PluginRequestV2,
 ) -> Result<ToolLoopModelResponseV1> {
     let payload = serde_json::to_vec(request)?;
-
-    let mut child = Command::new(program)
-        .args(args)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| anyhow!("failed to start llm plugin `{}`: {e}", program.display()))?;
-
-    {
-        let Some(mut stdin) = child.stdin.take() else {
-            return Err(anyhow!("failed to open stdin for llm plugin"));
-        };
-        use std::io::Write;
-        stdin.write_all(&payload)?;
-    }
-
-    let timeout = llm_timeout(None)?;
-    let out = wait_with_output_timeout(
-        child,
-        timeout,
-        &format!("llm plugin `{}`", program.display()),
-    )?;
+    let timeout = llm_timeout(None)?.ok_or_else(|| anyhow!("LLM timeout is required"))?;
+    let limits = crate::security::ProcessLimits::plugin(timeout)?;
+    let context = format!("llm plugin `{}`", program.display());
+    let mut command = Command::new(program);
+    command.args(args);
+    let out = crate::security::run_command_bounded(command, &payload, limits, &context)?;
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
         return Err(anyhow!(
@@ -9628,7 +9733,12 @@ fn run_plugin_v3(
         )
     })?;
     let stdout = stdout.trim();
-    serde_json::from_str(stdout).map_err(|e| {
+    crate::security::parse_json_bounded(
+        stdout.as_bytes(),
+        axiograph_security::DEFAULT_PLUGIN_STDOUT_BYTES,
+        "LLM plugin response",
+    )
+    .map_err(|e| {
         let preview = stdout.chars().take(300).collect::<String>();
         anyhow!(
             "llm plugin `{}` returned invalid JSON: {e}; stdout starts with: {preview:?}",
@@ -9643,29 +9753,12 @@ fn run_plugin(
     request: &PluginRequestV1,
 ) -> Result<PluginResponseV1> {
     let payload = serde_json::to_vec(request)?;
-
-    let mut child = Command::new(program)
-        .args(args)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| anyhow!("failed to start llm plugin `{}`: {e}", program.display()))?;
-
-    {
-        let Some(mut stdin) = child.stdin.take() else {
-            return Err(anyhow!("failed to open stdin for llm plugin"));
-        };
-        use std::io::Write;
-        stdin.write_all(&payload)?;
-    }
-
-    let timeout = llm_timeout(None)?;
-    let out = wait_with_output_timeout(
-        child,
-        timeout,
-        &format!("llm plugin `{}`", program.display()),
-    )?;
+    let timeout = llm_timeout(None)?.ok_or_else(|| anyhow!("LLM timeout is required"))?;
+    let limits = crate::security::ProcessLimits::plugin(timeout)?;
+    let context = format!("llm plugin `{}`", program.display());
+    let mut command = Command::new(program);
+    command.args(args);
+    let out = crate::security::run_command_bounded(command, &payload, limits, &context)?;
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
         return Err(anyhow!(
@@ -9683,7 +9776,12 @@ fn run_plugin(
         )
     })?;
     let stdout = stdout.trim();
-    serde_json::from_str(stdout).map_err(|e| {
+    crate::security::parse_json_bounded(
+        stdout.as_bytes(),
+        axiograph_security::DEFAULT_PLUGIN_STDOUT_BYTES,
+        "LLM plugin response",
+    )
+    .map_err(|e| {
         let preview = stdout.chars().take(300).collect::<String>();
         anyhow!(
             "llm plugin `{}` returned invalid JSON: {e}; stdout starts with: {preview:?}",

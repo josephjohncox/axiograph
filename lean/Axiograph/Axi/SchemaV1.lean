@@ -2,16 +2,17 @@ import Std
 import Std.Internal.Parsec
 
 /-!
-# `.axi` dialect: `axi_schema_v1`
+# Canonical `.axi` schema/theory/instance surface backing `axi_v1`
 
-This module defines the **schema-oriented** `.axi` surface syntax used by the
-canonical corpus:
+This module defines the canonical `.axi` schema/theory/instance surface used by
+the corpus and the Lean-side checker:
 
 - `examples/economics/EconomicFlows.axi`
 - `examples/ontology/SchemaEvolution.axi`
 
-During the migration we keep dialects explicit and versioned so we can support
-multiple syntaxes without a flag day.
+The module name stays `SchemaV1` because it is the concrete AST behind
+`axi_v1`, but contributors should think in terms of one canonical `.axi`
+surface rather than multiple end-user dialects.
 
 ## Design goals
 
@@ -34,9 +35,47 @@ abbrev Name : Type := String
 -- AST
 -- =============================================================================
 
+inductive RefinementPredicateV1 where
+  | equals (value : Name)
+  | memberOf (values : Array Name)
+  | cardinality (min max : Nat)
+  | key (roles : Array Name)
+  | enum (values : Array Name)
+  | predicate (name : Name) (args : Array Name)
+deriving Repr, DecidableEq
+
+inductive TypeExprV1 where
+  | object (name : Name)
+  | relationObject (relation : Name)
+  | indexed (base : TypeExprV1) (overRoles : Array Name)
+  | refined (base : TypeExprV1) (predicates : Array RefinementPredicateV1)
+deriving Repr, DecidableEq
+
+def TypeExprV1.referencedName : TypeExprV1 → Name
+  | .object name => name
+  | .relationObject relation => relation
+  | .indexed base _ => base.referencedName
+  | .refined base _ => base.referencedName
+
+def TypeExprV1.relationObjectName? : TypeExprV1 → Option Name
+  | .object _ => none
+  | .relationObject relation => some relation
+  | .indexed base _ => base.relationObjectName?
+  | .refined base _ => base.relationObjectName?
+
+inductive RoleKindV1 where
+  | data
+  | context
+  | world
+  | temporal
+  | parameter
+  | evidence
+deriving Repr, DecidableEq
+
 structure FieldDeclV1 where
   field : Name
-  ty : Name
+  ty : TypeExprV1
+  kind : RoleKindV1 := .data
 deriving Repr, DecidableEq
 
 structure RelationDeclV1 where
@@ -44,10 +83,26 @@ structure RelationDeclV1 where
   fields : Array FieldDeclV1
 deriving Repr, DecidableEq
 
+inductive GeneratorKindV1 where
+  | aspect
+  | function
+deriving Repr, DecidableEq
+
+structure GeneratorDeclV1 where
+  name : Name
+  source : Name
+  target : Name
+  kind : GeneratorKindV1
+  reversible : Bool := false
+deriving Repr, DecidableEq
+
 structure SubtypeDeclV1 where
   sub : Name
   sup : Name
-  /-- Optional explicit inclusion morphism name (legacy syntax). -/
+  /-- Optional explicit inclusion morphism name.
+
+  Preserved for now because some lowering paths still carry it, but it is not
+  part of the preferred canonical authoring style. -/
   inclusion : Option Name
 deriving Repr, DecidableEq
 
@@ -56,6 +111,7 @@ structure SchemaV1Schema where
   objects : Array Name
   subtypes : Array SubtypeDeclV1
   relations : Array RelationDeclV1
+  generators : Array GeneratorDeclV1
 deriving Repr, DecidableEq
 
 /-!
@@ -170,7 +226,7 @@ deriving Repr, DecidableEq
 
 inductive SetItemV1 where
   | ident (name : Name)
-  | tuple (fields : Array (Name × Name))
+  | tuple (label : Option Name) (fields : Array (Name × Name))
 deriving Repr, DecidableEq
 
 structure SetLiteralV1 where
@@ -190,6 +246,7 @@ deriving Repr, DecidableEq
 
 structure SchemaV1Module where
   moduleName : Name
+  imports : Array Name
   schemas : Array SchemaV1Schema
   theories : Array SchemaV1Theory
   instances : Array SchemaV1Instance
@@ -212,12 +269,13 @@ inductive Section where
 deriving Repr, DecidableEq
 
 structure ParseState where
-  moduleAst : SchemaV1Module
-  currentSection : Section
+moduleAst : SchemaV1Module
+currentSection : Section
+moduleHeaderLine : Option Nat
 deriving Repr
 
 def emptyModule : SchemaV1Module :=
-  { moduleName := "Unnamed", schemas := #[], theories := #[], instances := #[] }
+{ moduleName := "Unnamed", imports := #[], schemas := #[], theories := #[], instances := #[] }
 
 def failAt {α : Type} (line : Nat) (message : String) : Except ParseError α :=
   throw { line, message }
@@ -311,6 +369,12 @@ def identifier : LineParser Name := do
   let rest ← many (satisfy isIdentContinue)
   pure <| String.ofList (first :: rest.toList)
 
+def valueAtom : LineParser Name := do
+  let chars ← many1 (satisfy (fun c =>
+    !c.isWhitespace && c != ',' && c != '(' && c != ')' && c != '{' &&
+      c != '}' && c != '=' && c != ':'))
+  pure <| String.ofList chars.toList
+
 def natLiteral : LineParser Nat := do
   let digits ← many1 (satisfy Char.isDigit)
   let s := String.ofList digits.toList
@@ -388,46 +452,102 @@ def parseSubtypeDecl (rest : String) : Except String SubtypeDeclV1 := do
   | .ok v => pure v
   | .error msg => throw msg
 
-def parseRelationDecl (line : String) : Except String RelationDeclV1 := do
-  let comma : LineParser Unit := do
-    ws
-    skipChar ','
-    ws
+def commaParser : LineParser Unit := do
+  ws
+  skipChar ','
+  ws
 
+def pipeParser : LineParser Unit := do
+  ws
+  skipChar '|'
+  ws
+
+def semicolonParser : LineParser Unit := do
+  ws
+  skipChar ';'
+  ws
+
+partial def refinementPredicateParser : LineParser RefinementPredicateV1 :=
+  (attempt do
+    skipString "eq("
+    let value ← identifier
+    skipChar ')'
+    pure (.equals value)) <|>
+  (attempt do
+    skipString "in("
+    let values ← sepBy1 identifier pipeParser
+    skipChar ')'
+    pure (.memberOf values)) <|>
+  (attempt do
+    skipString "enum("
+    let values ← sepBy1 identifier pipeParser
+    skipChar ')'
+    pure (.enum values)) <|>
+  (attempt do
+    skipString "key("
+    let roles ← sepBy1 identifier pipeParser
+    skipChar ')'
+    pure (.key roles)) <|>
+  (attempt do
+    skipString "cardinality("
+    let min ← natLiteral
+    pipeParser
+    let max ← natLiteral
+    skipChar ')'
+    if min ≤ max then pure (.cardinality min max)
+    else fail "cardinality minimum exceeds maximum") <|>
+  (attempt do
+    skipString "predicate("
+    let names ← sepBy1 identifier pipeParser
+    skipChar ')'
+    match names[0]? with
+    | none => fail "predicate must name a supported predicate"
+    | some name => pure (.predicate name (names.extract 1 names.size)))
+
+partial def typeExprParser : LineParser TypeExprV1 :=
+  (attempt do
+    skipString "relation("
+    let relation ← identifier
+    skipChar ')'
+    pure (.relationObject relation)) <|>
+  (attempt do
+    skipString "indexed("
+    let base ← typeExprParser
+    semicolonParser
+    let roles ← sepBy1 identifier pipeParser
+    skipChar ')'
+    pure (.indexed base roles)) <|>
+  (attempt do
+    skipString "refined("
+    let base ← typeExprParser
+    semicolonParser
+    let predicates ← sepBy1 refinementPredicateParser semicolonParser
+    skipChar ')'
+    pure (.refined base predicates)) <|>
+  (.object <$> identifier)
+
+def roleKindParser : LineParser RoleKindV1 := do
+  skipChar '@'
+  let annotation ← identifier
+  match annotation with
+  | "data" => pure .data
+  | "context" => pure .context
+  | "world" => pure .world
+  | "temporal" => pure .temporal
+  | "parameter" => pure .parameter
+  | "evidence" => pure .evidence
+  | _ => fail s!"unknown role annotation @{annotation}"
+
+def parseRelationDecl (line : String) : Except String RelationDeclV1 := do
   let fieldDecl : LineParser FieldDeclV1 := do
     ws
     let field ← identifier
     ws
     skipChar ':'
     ws
-    let ty ← identifier
-    pure { field, ty }
-
-  /-
-  Optional relation annotations.
-
-  The canonical Rust parser supports legacy-ish surface forms like:
-
-  ```
-  relation Parent(child: Person, parent: Person) @context Context @temporal Time
-  ```
-
-  For now, we preserve this behavior by **expanding** a small set of
-  annotations into explicit fields:
-
-  - `@context Context` ⇒ adds a `ctx : Context` field (unless already present)
-  - `@temporal Time`   ⇒ adds a `time : Time` field (unless already present)
-
-  This keeps Rust/Lean parsing in lockstep while we continue to evolve the
-  formal semantics (Lean) for contexts/worlds and time.
-  -/
-  let annotation : LineParser (Name × Name) := do
-    ws1
-    skipChar '@'
-    let ann ← identifier
-    ws1
-    let ty ← identifier
-    pure (ann, ty)
+    let ty ← typeExprParser
+    let kind ← (attempt (ws1 *> roleKindParser)) <|> pure .data
+    pure { field, ty, kind }
 
   let p : LineParser RelationDeclV1 := do
     ws
@@ -436,31 +556,35 @@ def parseRelationDecl (line : String) : Except String RelationDeclV1 := do
     let name ← identifier
     ws
     skipChar '('
-    let fields ← sepBy1 fieldDecl comma
+    let fields ← sepBy1 fieldDecl commaParser
     ws
     skipChar ')'
-    let annotations ← many annotation
-
-    let expandedFields :=
-      annotations.foldl (init := fields) (fun acc (ann, ty) =>
-        match ann with
-        | "context" =>
-            if acc.any (fun f => f.field == "ctx") then
-              acc
-            else
-              acc.push { field := "ctx", ty := ty }
-        | "temporal" =>
-            if acc.any (fun f => f.field == "time") then
-              acc
-            else
-              acc.push { field := "time", ty := ty }
-        | _ => acc)
-
-    pure { name, fields := expandedFields }
+    pure { name, fields }
 
   match runLineParser p line with
   | .ok v => pure v
-  | .error msg => throw msg
+  | .error _ => throw "relation expects exactly `relation Name(role: Type @kind, ...)`; relation-level axis shorthands are not canonical"
+
+def parseGeneratorDecl (line : String) : Except String GeneratorDeclV1 := do
+  let p : LineParser GeneratorDeclV1 := do
+    ws
+    let kind ←
+      (skipString "aspect" *> pure GeneratorKindV1.aspect) <|>
+      (skipString "function" *> pure GeneratorKindV1.function)
+    ws1
+    let name ← identifier
+    ws
+    skipChar ':'
+    ws
+    let source ← identifier
+    ws
+    skipString "->"
+    ws
+    let target ← identifier
+    let reversible ←
+      (attempt do ws1; skipString "@reversible"; pure true) <|> pure false
+    pure { name, source, target, kind, reversible }
+  runLineParser p line
 
 -- =============================================================================
 -- Theory section parsers
@@ -494,7 +618,7 @@ def parseConstraint (rest : String) : Except String ConstraintV1 := do
     match runLineParser p trimmed with
     | .ok v => return v
     | .error _msg =>
-        -- Some (older) `.axi` sources use more declarative forms like:
+        -- Some non-canonical `.axi` sources use more declarative forms like:
         --
         --   `constraint functional Rel(field0, field1, ...)`
         --   `constraint functional Rel(field0, ...) -> Rel.someOutput`
@@ -748,6 +872,9 @@ def isTopLevelKeyword (trimmed : String) : Bool :=
     || startsWith trimmed "theory "
     || startsWith trimmed "instance "
     || startsWith trimmed "module "
+    || startsWith trimmed "import "
+    || startsWith trimmed "aspect "
+    || startsWith trimmed "function "
     || startsWith trimmed "constraint "
     || startsWith trimmed "equation "
     || startsWith trimmed "rewrite "
@@ -1095,20 +1222,33 @@ def parseSetLiteral (text : String) : Except String SetLiteralV1 := do
     ws
     skipChar '='
     ws
-    let value ← identifier
+    let value ← valueAtom
     pure (key, value)
 
-  let tupleItem : LineParser SetItemV1 := do
+  let tupleBody : LineParser (Array (Name × Name)) := do
     skipChar '('
     let fields ← sepBy1 tupleField comma
     ((attempt comma) <|> pure ())
     ws
     skipChar ')'
-    pure (.tuple fields)
+    pure fields
+
+  let labeledTupleItem : LineParser SetItemV1 := do
+    let label ← identifier
+    ws
+    skipChar ':'
+    ws
+    let fields ← tupleBody
+    pure (.tuple (some label) fields)
+
+  let tupleItem : LineParser SetItemV1 := do
+    let fields ← tupleBody
+    pure (.tuple none fields)
 
   let setItem : LineParser SetItemV1 :=
-    (attempt tupleItem) <|> do
-      let name ← identifier
+    (attempt labeledTupleItem) <|> (attempt tupleItem) <|>
+    (attempt do let value ← natLiteral; pure (.ident (toString value))) <|> do
+      let name ← valueAtom
       pure (.ident name)
 
   let p : LineParser SetLiteralV1 := do
@@ -1131,7 +1271,11 @@ def parseSetLiteral (text : String) : Except String SetLiteralV1 := do
 
 partial def parseSchemaV1 (text : String) : Except ParseError SchemaV1Module := do
   let lines : Array String := text.splitOn "\n" |>.toArray
-  let mut state : ParseState := { moduleAst := emptyModule, currentSection := .none }
+  let mut state : ParseState := {
+    moduleAst := emptyModule
+    currentSection := .none
+    moduleHeaderLine := none
+  }
   let mut i : Nat := 0
 
   while _h : i < lines.size do
@@ -1146,9 +1290,33 @@ partial def parseSchemaV1 (text : String) : Except ParseError SchemaV1Module := 
     -- Section headers
     -- ----------------------------------------------------------------------
     if let some name := stripPrefix? line "module " then
-      let moduleName := name.trim
-      let moduleName := if moduleName.isEmpty then "Unnamed" else moduleName
-      state := { state with moduleAst := { state.moduleAst with moduleName } }
+      let moduleName ←
+        match runLineParser identifier name.trim with
+        | .ok value => pure value
+        | .error _ => return (← failAt lineNo "module header expects exactly `module <Name>`")
+      match state.moduleHeaderLine with
+      | some firstLine =>
+          return (← failAt lineNo s!"canonical .axi input requires exactly one module header; first header was on line {firstLine}")
+      | none =>
+          state := {
+            state with
+            moduleAst := { state.moduleAst with moduleName }
+            moduleHeaderLine := some lineNo
+            currentSection := .none
+          }
+      i := i + 1
+      continue
+
+    if let some importText := stripPrefix? line "import " then
+      if state.moduleHeaderLine.isNone || state.currentSection != .none then
+        return (← failAt lineNo "imports must follow the module header and precede all sections")
+      let importName ←
+        match runLineParser identifier importText.trim with
+        | .ok value => pure value
+        | .error _ => return (← failAt lineNo "import expects exactly `import <Module>`")
+      if state.moduleAst.imports.contains importName then
+        return (← failAt lineNo s!"duplicate import `{importName}`")
+      state := { state with moduleAst := { state.moduleAst with imports := state.moduleAst.imports.push importName } }
       i := i + 1
       continue
 
@@ -1156,10 +1324,11 @@ partial def parseSchemaV1 (text : String) : Except ParseError SchemaV1Module := 
       let schemaName := trimTrailingColon rest
       if schemaName.isEmpty then
         return (← failAt lineNo "schema name missing")
-      let schema : SchemaV1Schema := { name := schemaName, objects := #[], subtypes := #[], relations := #[] }
+      let schema : SchemaV1Schema := { name := schemaName, objects := #[], subtypes := #[], relations := #[], generators := #[] }
       let newIndex := state.moduleAst.schemas.size
       state :=
-        { moduleAst := { state.moduleAst with schemas := state.moduleAst.schemas.push schema }
+        { state with
+          moduleAst := { state.moduleAst with schemas := state.moduleAst.schemas.push schema }
           currentSection := .schema newIndex }
       i := i + 1
       continue
@@ -1172,7 +1341,8 @@ partial def parseSchemaV1 (text : String) : Except ParseError SchemaV1Module := 
       let theory : SchemaV1Theory := { name, schema, constraints := #[], equations := #[], rewriteRules := #[] }
       let newIndex := state.moduleAst.theories.size
       state :=
-        { moduleAst := { state.moduleAst with theories := state.moduleAst.theories.push theory }
+        { state with
+          moduleAst := { state.moduleAst with theories := state.moduleAst.theories.push theory }
           currentSection := .theory newIndex }
       i := i + 1
       continue
@@ -1185,7 +1355,8 @@ partial def parseSchemaV1 (text : String) : Except ParseError SchemaV1Module := 
       let instanceAst : SchemaV1Instance := { name, schema, assignments := #[] }
       let newIndex := state.moduleAst.instances.size
       state :=
-        { moduleAst := { state.moduleAst with instances := state.moduleAst.instances.push instanceAst }
+        { state with
+          moduleAst := { state.moduleAst with instances := state.moduleAst.instances.push instanceAst }
           currentSection := .instance newIndex }
       i := i + 1
       continue
@@ -1238,6 +1409,19 @@ partial def parseSchemaV1 (text : String) : Except ParseError SchemaV1Module := 
             | return (← failAt lineNo "internal error: schema index out of bounds")
           state := { state with moduleAst := { state.moduleAst with schemas } }
           i := nextIndex
+          continue
+
+        if startsWith line "aspect " || startsWith line "function " then
+          let generator ←
+            match parseGeneratorDecl line with
+            | .ok value => pure value
+            | .error msg => return (← failAt lineNo msg)
+          let some schemas :=
+            updateAt? state.moduleAst.schemas schemaIndex (fun s =>
+              { s with generators := s.generators.push generator })
+            | return (← failAt lineNo "internal error: schema index out of bounds")
+          state := { state with moduleAst := { state.moduleAst with schemas } }
+          i := i + 1
           continue
 
         return (← failAt lineNo s!"unrecognized schema line: {line}")
@@ -1334,6 +1518,8 @@ partial def parseSchemaV1 (text : String) : Except ParseError SchemaV1Module := 
         | none =>
             return (← failAt lineNo s!"unrecognized instance line: {line}")
 
+  if state.moduleHeaderLine.isNone then
+    return (← failAt 1 "canonical .axi input requires exactly one explicit `module <Name>` header")
   pure state.moduleAst
 
 end Axiograph.Axi.SchemaV1

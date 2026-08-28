@@ -1,4 +1,4 @@
-//! Schema migration semantics scaffolding (Δ/Σ/Π).
+//! Schema migration semantics and witness payloads (Δ/Σ/Π).
 //!
 //! This module holds **shared, serializable** data structures that are used by:
 //!
@@ -13,19 +13,26 @@ use serde::{Deserialize, Serialize};
 
 pub type Name = String;
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MigrationFunctorKindV1 {
+    DeltaF,
+    SigmaF,
+    PiF,
+}
+
 // =============================================================================
 // Minimal categorical schema/instance IR (for Δ_F/Σ_F)
 // =============================================================================
 
 /// A minimal schema IR for migration semantics.
 ///
-/// This is intentionally **not** the legacy `.axi` AST: migration needs a
+/// This is intentionally **not** the surface `.axi` AST: migration needs a
 /// category-shaped core (objects + arrows + functions), while the canonical
 /// `axi_schema_v1` surface syntax is relation-oriented.
 ///
-/// Long-term plan: express relations as objects + projection arrows so the
-/// migration operators work uniformly. For now, we keep this IR small and
-/// explicit.
+/// `SchemaV1` is migration-only IR. Rich relation-as-object/projection-arrow
+/// semantics live in the compiled kernel/category IR.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SchemaV1 {
     pub name: Name,
@@ -153,8 +160,7 @@ impl SchemaMorphismV1 {
             for intermediate_arrow in &mapping.target_path {
                 let Some(after_path) = after.arrow_image(intermediate_arrow.as_str()) else {
                     return Err(anyhow!(
-                        "cannot compose: missing arrow mapping for intermediate arrow `{}`",
-                        intermediate_arrow
+                        "cannot compose: missing arrow mapping for intermediate arrow `{intermediate_arrow}`"
                     ));
                 };
                 composed_path.extend(after_path.iter().cloned());
@@ -174,21 +180,24 @@ impl SchemaMorphismV1 {
     }
 }
 
-/// Proof payload for Δ_F (v1 scaffold).
+/// Proof payload for the supported Δ_F v1 witness.
 ///
 /// A future Lean checker can validate this by recomputing Δ_F
 /// from `(morphism, source_schema, target_instance)` and comparing the result.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DeltaFMigrationProofV1 {
+    pub operator: MigrationFunctorKindV1,
     pub morphism: SchemaMorphismV1,
     pub source_schema: SchemaV1,
     pub target_instance: InstanceV1,
     pub pulled_back_instance: InstanceV1,
 }
 
-/// Proof payload for Σ_F (placeholder).
+/// Runtime witness payload for Σ_F. This is not a Lean-certified proof unless a
+/// separate verifier accepts the emitted certificate fragment.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SigmaFMigrationProofV1 {
+    pub operator: MigrationFunctorKindV1,
     pub morphism: SchemaMorphismV1,
     pub source_instance: InstanceV1,
     pub migrated_instance: InstanceV1,

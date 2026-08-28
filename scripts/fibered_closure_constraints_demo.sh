@@ -36,12 +36,12 @@ if [ ! -x "$AXIOGRAPH" ]; then
   exit 2
 fi
 
-INPUT_AXI="$ROOT_DIR/examples/demo_data/FiberedClosureConstraints.axi"
+INPUT_AXI="$ROOT_DIR/examples/runtime_theory/FiberedClosureConstraints.axi"
 
 echo ""
 echo "-- A) Validate canonical .axi"
-INPUT_BAD_AXI="$ROOT_DIR/examples/demo_data/FiberedTransitivityNoParam.axi"
-INPUT_PARAM_AXI="$ROOT_DIR/examples/demo_data/FiberedTransitivityParam.axi"
+INPUT_BAD_AXI="$ROOT_DIR/examples/runtime_theory/FiberedTransitivityNoParam.axi"
+INPUT_PARAM_AXI="$ROOT_DIR/examples/runtime_theory/FiberedTransitivityParam.axi"
 
 echo "Validating:"
 echo "  - $INPUT_BAD_AXI"
@@ -78,11 +78,11 @@ echo "wrote $CERT_FULL"
 make verify-lean-cert AXI="$INPUT_AXI" CERT="$CERT_FULL"
 
 echo ""
-echo "-- E) Render typed-overlay viz (HTML)"
-VIZ="$OUT_DIR/fibered_closure_constraints.html"
+echo "-- E) Render typed-overlay viz (JSON graph)"
+VIZ="$OUT_DIR/fibered_closure_constraints.json"
 "$AXIOGRAPH" tools viz "$INPUT_AXI" \
   --out "$VIZ" \
-  --format html \
+  --format json \
   --plane both \
   --typed-overlay \
   --all \

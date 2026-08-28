@@ -19,18 +19,18 @@ use clap::Subcommand;
 use roaring::RoaringBitmap;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, VecDeque};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use axiograph_pathdb::axi_meta::ATTR_AXI_RELATION;
 use axiograph_pathdb::PathDB;
 
 #[derive(Subcommand)]
 pub enum AnalyzeCommands {
-    /// Network analysis over a `.axpd` snapshot or imported `.axi` module.
+    /// Network analysis over an exact canonical `.axi` module.
     ///
     /// Output is a JSON or text report intended for ontology engineering.
     Network {
-        /// Input `.axpd` or `.axi`.
+        /// Input canonical `.axi` module.
         input: PathBuf,
 
         /// Output report path (defaults to stdout).
@@ -85,7 +85,7 @@ pub enum AnalyzeCommands {
         top: usize,
     },
 
-    /// Measure “semantic drift” between two contexts/worlds inside a snapshot.
+    /// Measure semantic drift between two contexts/worlds in a canonical module.
     ///
     /// This is untrusted tooling intended for ontology engineering loops:
     /// - “what changed between accepted vs evidence?”
@@ -99,7 +99,7 @@ pub enum AnalyzeCommands {
     /// - We apply add-α smoothing to avoid infinite KL when a relation appears in
     ///   one context but not the other.
     ContextDrift {
-        /// Input `.axpd` or `.axi`.
+        /// Input canonical `.axi` module.
         input: PathBuf,
 
         /// Context A (entity id or name).
@@ -150,7 +150,7 @@ pub fn cmd_analyze(command: AnalyzeCommands) -> Result<()> {
             top,
         } => cmd_analyze_network(
             &input,
-            out.as_ref(),
+            out.as_deref(),
             &format,
             &plane,
             include_equivalences,
@@ -178,7 +178,7 @@ pub fn cmd_analyze(command: AnalyzeCommands) -> Result<()> {
             &ctx_b,
             &metric,
             alpha,
-            out.as_ref(),
+            out.as_deref(),
             &format,
             top,
         ),
@@ -376,13 +376,14 @@ fn should_include_node(db: &PathDB, id: u32, plane: &str, skip_facts: bool) -> b
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn cmd_analyze_context_drift(
-    input: &PathBuf,
+    input: &Path,
     ctx_a_token: &str,
     ctx_b_token: &str,
     metric: &str,
     alpha: f64,
-    out: Option<&PathBuf>,
+    out: Option<&Path>,
     format: &str,
     top: usize,
 ) -> Result<()> {
@@ -477,7 +478,7 @@ fn cmd_analyze_context_drift(
         "json" => {
             let json = serde_json::to_string_pretty(&report)?;
             if let Some(path) = out {
-                std::fs::write(path, json)?;
+                crate::security::write_output_bounded(path, json, "CLI output")?;
                 println!("wrote {}", path.display());
             } else {
                 println!("{json}");
@@ -518,7 +519,7 @@ fn cmd_analyze_context_drift(
                 }
             }
             if let Some(path) = out {
-                std::fs::write(path, s)?;
+                crate::security::write_output_bounded(path, s, "CLI output")?;
                 println!("wrote {}", path.display());
             } else {
                 print!("{s}");
@@ -717,8 +718,8 @@ fn weak_components_union_find(node_mask: &[bool], edges: &[(u32, u32)]) -> Vec<u
     let mut root_to_dense: BTreeMap<usize, usize> = BTreeMap::new();
     let mut next_dense: usize = 0;
     let mut out: Vec<usize> = Vec::new();
-    for id in 0..n {
-        if !node_mask[id] {
+    for (id, &included) in node_mask.iter().enumerate() {
+        if !included {
             continue;
         }
         let root = find(&mut parent, id);
@@ -911,12 +912,11 @@ fn top_by_score(db: &PathDB, node_mask: &[bool], scores: &[f64], top: usize) -> 
 
 fn pagerank(node_mask: &[bool], out_adj: &[Vec<u32>], iters: usize, damping: f64) -> Vec<f64> {
     let n = node_mask.len();
-    let mut nodes: Vec<usize> = Vec::new();
-    for i in 0..n {
-        if node_mask[i] {
-            nodes.push(i);
-        }
-    }
+    let nodes = node_mask
+        .iter()
+        .enumerate()
+        .filter_map(|(i, &included)| included.then_some(i))
+        .collect::<Vec<_>>();
     let m = nodes.len();
     if m == 0 {
         return vec![0.0; n];
@@ -995,12 +995,11 @@ fn approximate_betweenness(
 ) -> Vec<f64> {
     // Brandes algorithm sampled over a subset of sources (unweighted, undirected).
     let n = node_mask.len();
-    let mut nodes: Vec<usize> = Vec::new();
-    for i in 0..n {
-        if node_mask[i] {
-            nodes.push(i);
-        }
-    }
+    let nodes = node_mask
+        .iter()
+        .enumerate()
+        .filter_map(|(i, &included)| included.then_some(i))
+        .collect::<Vec<_>>();
     let m = nodes.len();
     if m == 0 {
         return vec![0.0; n];
@@ -1065,8 +1064,8 @@ fn approximate_betweenness(
     }
 
     // Normalize by number of sources.
-    for i in 0..n {
-        cb[i] /= k.max(1) as f64;
+    for score in &mut cb {
+        *score /= k.max(1) as f64;
     }
 
     cb
@@ -1094,12 +1093,11 @@ fn louvain_one_level(node_mask: &[bool], adj: &[Vec<u32>]) -> Vec<usize> {
     // A small, deterministic Louvain "first level" pass for unweighted, undirected graphs.
     // This is a pragmatic tooling heuristic, not a certified algorithm.
     let n = node_mask.len();
-    let mut nodes: Vec<usize> = Vec::new();
-    for i in 0..n {
-        if node_mask[i] {
-            nodes.push(i);
-        }
-    }
+    let nodes = node_mask
+        .iter()
+        .enumerate()
+        .filter_map(|(i, &included)| included.then_some(i))
+        .collect::<Vec<_>>();
     if nodes.is_empty() {
         return vec![usize::MAX; n];
     }
@@ -1189,9 +1187,10 @@ fn louvain_one_level(node_mask: &[bool], adj: &[Vec<u32>]) -> Vec<usize> {
     community
 }
 
+#[allow(clippy::too_many_arguments)]
 fn cmd_analyze_network(
-    input: &PathBuf,
-    out: Option<&PathBuf>,
+    input: &Path,
+    out: Option<&Path>,
     format: &str,
     plane: &str,
     include_equivalences: bool,
@@ -1229,7 +1228,7 @@ fn cmd_analyze_network(
 
     match out {
         Some(path) => {
-            std::fs::write(path, rendered)?;
+            crate::security::write_output_bounded(path, rendered, "CLI output")?;
             println!("wrote {}", path.display());
         }
         None => {
@@ -1240,6 +1239,7 @@ fn cmd_analyze_network(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn analyze_network_report(
     db: &PathDB,
     input: &str,
@@ -1318,11 +1318,10 @@ pub fn analyze_network_report(
         if communities {
             let comm = louvain_one_level(&edge_list.node_mask, &undirected_adj);
             let mut sizes: HashMap<usize, usize> = HashMap::new();
-            for i in 0..comm.len() {
+            for (i, &cid) in comm.iter().enumerate() {
                 if !edge_list.node_mask[i] {
                     continue;
                 }
-                let cid = comm[i];
                 if cid == usize::MAX {
                     continue;
                 }

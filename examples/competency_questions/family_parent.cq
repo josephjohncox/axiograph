@@ -1,0 +1,7 @@
+version competency_question_bundle_v1
+
+question family_parent_for_carol:
+  ask: Which accepted parent is recorded for Carol in the CensusData context?
+  expect: exists Fam.Parent(child=Carol, parent=?p, ctx=CensusData, time=T2020)
+  min_rows: 1
+  weight: 1.0

@@ -1,4 +1,7 @@
 // @ts-nocheck
+
+import { kindDisplayLabel } from "../util/labels";
+
 export function renderNodeList(ctx: any, filter: string) {
   const {
     graph,
@@ -20,11 +23,12 @@ export function renderNodeList(ctx: any, filter: string) {
   for (const n of graph.nodes) {
     if (!isNodeVisible(n)) continue;
     const disp = nodeDisplayName(n);
-    const hay = `${n.id} ${n.entity_type} ${n.kind || ""} ${disp}`.toLowerCase();
-    if (f && !hay.includes(f)) continue;
     const kind = n.kind || "entity";
+    const kindLabel = kindDisplayLabel(kind);
     const entityType = effectiveTypeLabel(n);
-    items.push({ node: n, disp, kind, entityType });
+    const hay = `${n.id} ${n.entity_type} ${kind} ${kindLabel} ${entityType} ${disp}`.toLowerCase();
+    if (f && !hay.includes(f)) continue;
+    items.push({ node: n, disp, kind, kindLabel, entityType });
   }
 
   if (!items.length) {
@@ -87,7 +91,7 @@ export function renderNodeList(ctx: any, filter: string) {
         div.dataset.id = String(n.id);
         if (isHighlighted) div.classList.add("highlighted");
         if (selectedId != null && selectedId === n.id) div.classList.add("selected");
-        div.innerHTML = `<div><strong>${escapeHtml(item.entityType)}</strong> <span class="muted">#${n.id} • ${escapeHtml(item.kind)}</span></div>`
+        div.innerHTML = `<div><strong>${escapeHtml(item.entityType)}</strong> <span class="muted">#${n.id} • ${escapeHtml(item.kindLabel)}</span></div>`
           + (item.disp ? `<div>${isHighlighted ? "★ " : ""}${escapeHtml(item.disp)}</div>` : `<div class="muted">(no name)</div>`);
         div.addEventListener("click", (ev) => selectNode(n.id, ev.shiftKey));
         viewport.appendChild(div);
@@ -127,7 +131,7 @@ export function renderNodeList(ctx: any, filter: string) {
     details.open = !!f || g.nodes.length <= 20;
 
     const summary = document.createElement("summary");
-    summary.innerHTML = `<strong>${escapeHtml(g.entityType)}</strong><span class="muted">${escapeHtml(g.kind)} • ${g.nodes.length}</span>`;
+    summary.innerHTML = `<strong>${escapeHtml(g.entityType)}</strong><span class="muted">${escapeHtml(kindDisplayLabel(g.kind))} • ${g.nodes.length}</span>`;
     details.appendChild(summary);
 
     for (const n of g.nodes) {
@@ -138,7 +142,7 @@ export function renderNodeList(ctx: any, filter: string) {
       const isHighlighted = ui.highlightIds && ui.highlightIds.has(n.id);
       if (isHighlighted) div.classList.add("highlighted");
       if (selectedId != null && selectedId === n.id) div.classList.add("selected");
-      div.innerHTML = `<div><strong>${escapeHtml(effectiveTypeLabel(n))}</strong> <span class="muted">#${n.id} • ${escapeHtml(n.kind || "entity")}</span></div>`
+      div.innerHTML = `<div><strong>${escapeHtml(effectiveTypeLabel(n))}</strong> <span class="muted">#${n.id} • ${escapeHtml(kindDisplayLabel(n.kind || "entity"))}</span></div>`
         + (disp ? `<div>${isHighlighted ? "★ " : ""}${escapeHtml(disp)}</div>` : `<div class="muted">(no name)</div>`);
       div.addEventListener("click", (ev) => selectNode(n.id, ev.shiftKey));
       details.appendChild(div);

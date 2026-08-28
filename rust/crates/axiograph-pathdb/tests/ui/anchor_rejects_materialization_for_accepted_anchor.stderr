@@ -1,0 +1,13 @@
+error[E0308]: mismatched types
+ --> tests/ui/anchor_rejects_materialization_for_accepted_anchor.rs:5:9
+  |
+4 |     let _ = AcceptedAxiAnchor::new(
+  |             ---------------------- arguments to this function are incorrect
+5 |         MaterializationIdV2::from_canonical_fields(&[b"materialization:42"]),
+  |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `AcceptedSnapshotId`, found `MaterializationIdV2`
+  |
+note: associated function defined here
+ --> src/runtime_handle.rs
+  |
+  |     pub fn new(accepted_snapshot_id: AcceptedSnapshotId, axi_digest: AxiDigest) -> Self {
+  |            ^^^

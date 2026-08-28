@@ -33,7 +33,7 @@ constraint transitive Accessible on (from, to)
 constraint key Accessible(ctx, time, from, to)
 ```
 
-But without additional structure, a “transitive closure compatibility” certificate cannot decide:
+But without additional structure, a supported transitive-closure certificate cannot decide:
 **what `ctx` and `time` should an inferred `(from,to)` live in?**
 
 ## 2) See the failure (expected)
@@ -41,13 +41,13 @@ But without additional structure, a “transitive closure compatibility” certi
 The repo includes a minimal module that is well‑typed but should **fail** the
 `axi_constraints_ok_v1` gate for exactly this reason:
 
-- `examples/demo_data/FiberedTransitivityNoParam.axi`
+- `examples/runtime_theory/FiberedTransitivityNoParam.axi`
 
 Run:
 
 ```bash
-./bin/axiograph check validate examples/demo_data/FiberedTransitivityNoParam.axi
-./bin/axiograph cert constraints examples/demo_data/FiberedTransitivityNoParam.axi
+./bin/axiograph check validate examples/runtime_theory/FiberedTransitivityNoParam.axi
+./bin/axiograph cert constraints examples/runtime_theory/FiberedTransitivityNoParam.axi
 ```
 
 You should see an error like:
@@ -74,7 +74,7 @@ constraint transitive Accessible on (from, to) param (ctx, time)
 
 The repo includes the fixed version:
 
-- `examples/demo_data/FiberedTransitivityParam.axi`
+- `examples/runtime_theory/FiberedTransitivityParam.axi`
 
 Run:
 
@@ -82,10 +82,10 @@ Run:
 OUT=build/fibered_transitivity_param_demo
 mkdir -p "$OUT"
 
-./bin/axiograph check validate examples/demo_data/FiberedTransitivityParam.axi
-./bin/axiograph cert constraints examples/demo_data/FiberedTransitivityParam.axi --out "$OUT/axi_constraints_ok_v1.json"
+./bin/axiograph check validate examples/runtime_theory/FiberedTransitivityParam.axi
+./bin/axiograph cert constraints examples/runtime_theory/FiberedTransitivityParam.axi --out "$OUT/axi_constraints_ok_v1.json"
 
-make verify-lean-cert AXI=examples/demo_data/FiberedTransitivityParam.axi CERT="$OUT/axi_constraints_ok_v1.json"
+make verify-lean-cert AXI=examples/runtime_theory/FiberedTransitivityParam.axi CERT="$OUT/axi_constraints_ok_v1.json"
 ```
 
 ## 4) Full end-to-end demo (script)
@@ -119,4 +119,3 @@ not in a single global “module OK” scan.
 See:
 - `docs/explanation/CONSTRAINT_SEMANTICS.md`
 - `docs/reference/CERTIFICATES.md`
-

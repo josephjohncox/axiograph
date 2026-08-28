@@ -1,9 +1,8 @@
 //! Import canonical `.axi` modules into PathDB (for REPL/querying).
 //!
-//! PathDB snapshots (`PathDBExportV1`) already round-trip via `axi_export`.
-//! This module handles the *other* common case: a canonical `axi_schema_v1`
-//! module (schema/theory/instance) that users want to load into PathDB so they
-//! can explore/query it interactively.
+//! This module derives an in-memory query index from a canonical
+//! `axi_schema_v1` module. Durable PathDB state uses authenticated SQLite
+//! `.axpd` materializations; PathDB never exports accepted `.axi` authority.
 //!
 //! ## Mapping (schema_v1 → PathDB)
 //!
@@ -14,6 +13,9 @@
 //! - For each tuple field `f = v`, we add an edge: `tuple -f-> v`.
 //! - We also add a **derived binary edge** for convenient traversal when a
 //!   relation has clear endpoints (e.g. exactly 2 fields, or `from/to`).
+//! - Explicit aspect/function interpretations with object-type endpoints become
+//!   labeled execution edges. Relation-object generator endpoints remain in the
+//!   canonical kernel model and reject at this derived PathDB boundary.
 //!
 //! This supports “higher-kind”/HoTT-ish encodings where proofs, equivalences,
 //! and homotopies are themselves first-class objects referenced by relation
@@ -26,14 +28,27 @@ use std::collections::{HashMap, HashSet};
 use ahash::AHashMap;
 use anyhow::{anyhow, Result};
 
-use axiograph_dsl::digest::axi_fact_id_v1;
 use axiograph_dsl::schema_v1::{
-    parse_schema_v1, ConstraintV1, RelationDeclV1, RewriteOrientationV1, SchemaV1Instance,
-    SchemaV1Module, SchemaV1Schema, SetItemV1,
+    parse_schema_v1, ConstraintV1, GeneratorDeclV1, RelationDeclV1, RewriteOrientationV1,
+    RoleKindV1, SchemaV1Instance, SchemaV1Module, SchemaV1Schema, SetItemV1,
 };
+use axiograph_kernel::runtime_fact_id_v2;
 
 use crate::axi_meta::*;
+use crate::axi_module_typecheck::{validate_axi_v1_module, Module, WellTypedModuleState};
+use crate::kernel_ir::{derive_runtime_schema_index, RuntimeSchemaIndex};
 use crate::PathDB;
+
+fn role_kind_wire(kind: RoleKindV1) -> &'static str {
+    match kind {
+        RoleKindV1::Data => "data",
+        RoleKindV1::Context => "context",
+        RoleKindV1::World => "world",
+        RoleKindV1::Temporal => "temporal",
+        RoleKindV1::Parameter => "parameter",
+        RoleKindV1::Evidence => "evidence",
+    }
+}
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AxiSchemaV1ImportSummary {
@@ -53,10 +68,47 @@ pub fn import_axi_schema_v1_into_pathdb(
 ) -> Result<AxiSchemaV1ImportSummary> {
     let module =
         parse_schema_v1(text).map_err(|e| anyhow!("failed to parse axi_schema_v1 module: {e}"))?;
+    let module = validate_axi_v1_module(module)
+        .map_err(|e| anyhow!("failed to validate axi_schema_v1 module: {e}"))?;
     import_axi_schema_v1_module_into_pathdb(db, &module)
 }
 
-pub fn import_axi_schema_v1_module_into_pathdb(
+/// Import a lifecycle-typed canonical `.axi` module into PathDB.
+///
+/// This boundary accepts only modules that already carry a Rust-side
+/// well-typedness witness (`Module<Validated>` or `Module<Reviewed>`). Use
+/// [`validate_axi_v1_module`] first, or [`import_axi_schema_v1_into_pathdb`] to
+/// parse, validate, and import text in one step.
+///
+/// ```compile_fail
+/// use axiograph_dsl::axi_v1::parse_axi_v1;
+/// use axiograph_pathdb::axi_module_import::import_axi_schema_v1_module_into_pathdb;
+/// use axiograph_pathdb::PathDB;
+///
+/// let raw = parse_axi_v1(
+///     r#"
+/// module Demo
+///
+/// schema S:
+///   object Person
+///
+/// instance I of S:
+///   Person = {Alice}
+/// "#,
+/// )
+/// .unwrap();
+///
+/// let mut db = PathDB::new();
+/// let _ = import_axi_schema_v1_module_into_pathdb(&mut db, &raw);
+/// ```
+pub fn import_axi_schema_v1_module_into_pathdb<S: WellTypedModuleState>(
+    db: &mut PathDB,
+    module: &Module<S>,
+) -> Result<AxiSchemaV1ImportSummary> {
+    import_axi_schema_v1_module_into_pathdb_impl(db, module.module())
+}
+
+fn import_axi_schema_v1_module_into_pathdb_impl(
     db: &mut PathDB,
     module: &SchemaV1Module,
 ) -> Result<AxiSchemaV1ImportSummary> {
@@ -75,18 +127,25 @@ pub fn import_axi_schema_v1_module_into_pathdb(
     summary.meta_relations_added += meta.summary.meta_relations_added;
 
     // Derived traversal edges are a runtime convenience. To avoid collisions when
-    // multiple schemas define the same relation name (e.g. `Fam.Parent` and
-    // `Census.Parent`), we choose a stable label per relation name:
+    // multiple schemas define the same relation or explicit generator name, choose
+    // a stable label across the shared edge namespace:
     //
-    // - emit unqualified `Parent` only when the name is unique across schemas
-    // - otherwise emit schema-qualified `<Schema>.Parent`
+    // - emit an unqualified name only when it is unique across schemas and arrow kinds;
+    // - otherwise emit schema-qualified `<Schema>.<Arrow>`.
     //
-    // AxQL elaboration desugars `Schema.Rel` accordingly.
+    // AxQL elaboration desugars qualified relation names accordingly.
     let meta_plane = crate::axi_semantics::MetaPlaneIndex::from_db(db)?;
     let mut relation_name_counts: HashMap<String, usize> = HashMap::new();
     for schema in meta_plane.schemas.values() {
         for rel in schema.relation_decls.keys() {
             *relation_name_counts.entry(rel.clone()).or_insert(0) += 1;
+        }
+    }
+    for schema in &module.schemas {
+        for generator in &schema.generators {
+            *relation_name_counts
+                .entry(generator.name.clone())
+                .or_insert(0) += 1;
         }
     }
 
@@ -105,16 +164,15 @@ pub fn import_axi_schema_v1_module_into_pathdb(
 
         let schema_index = SchemaIndex::new(schema);
         let schema_handles = handles.schemas.get(&schema.name).cloned();
-        let mut ctx =
-            InstanceImportContext::new(
-                db,
-                module,
-                inst,
-                schema,
-                schema_index,
-                schema_handles,
-                &relation_name_counts,
-            );
+        let mut ctx = InstanceImportContext::new(
+            db,
+            module,
+            inst,
+            schema,
+            schema_index,
+            schema_handles,
+            &relation_name_counts,
+        );
         ctx.import_instance_data()?;
         summary.instances_imported += 1;
         summary.entities_added += ctx.summary.entities_added;
@@ -292,7 +350,11 @@ impl<'a> MetaImportContext<'a> {
                             (ATTR_AXI_MODULE.to_string(), module_name.to_string()),
                             (ATTR_AXI_SCHEMA.to_string(), schema.name.clone()),
                             (ATTR_FIELD_NAME.to_string(), field.field.clone()),
-                            (ATTR_FIELD_TYPE.to_string(), field.ty.clone()),
+                            (ATTR_FIELD_TYPE.to_string(), field.ty.to_string()),
+                            (
+                                ATTR_FIELD_KIND.to_string(),
+                                role_kind_wire(field.kind).to_string(),
+                            ),
                             (ATTR_FIELD_INDEX.to_string(), field_index.to_string()),
                         ],
                     )?;
@@ -302,24 +364,8 @@ impl<'a> MetaImportContext<'a> {
                         field_entity,
                     )?;
 
-                    // Ensure the field type exists as an object decl when possible.
-                    if !object_type_ids.contains_key(&field.ty) {
-                        let ty_entity = self.get_or_create_meta_entity(
-                            META_TYPE_OBJECT_TYPE,
-                            &meta_id_object_type(module_name, &schema.name, &field.ty),
-                            vec![
-                                (META_ATTR_NAME.to_string(), field.ty.clone()),
-                                (ATTR_AXI_MODULE.to_string(), module_name.to_string()),
-                                (ATTR_AXI_SCHEMA.to_string(), schema.name.clone()),
-                            ],
-                        )?;
-                        self.add_meta_edge_if_missing(
-                            META_REL_SCHEMA_HAS_OBJECT,
-                            schema_entity,
-                            ty_entity,
-                        )?;
-                        object_type_ids.insert(field.ty.clone(), ty_entity);
-                    }
+                    // Object and relation-object targets are declared explicitly.
+                    // The importer never synthesizes shadow object types from roles.
                 }
 
                 relation_ids.insert(rel.name.clone(), rel_entity);
@@ -527,24 +573,18 @@ fn constraint_attrs(c: &ConstraintV1) -> (&'static str, Vec<(String, String)>) {
             dst_field,
             max,
             params,
-        } => (
-            "at_most",
-            {
-                let mut attrs = vec![
-                    (ATTR_CONSTRAINT_RELATION.to_string(), relation.clone()),
-                    (ATTR_CONSTRAINT_SRC_FIELD.to_string(), src_field.clone()),
-                    (ATTR_CONSTRAINT_DST_FIELD.to_string(), dst_field.clone()),
-                    (ATTR_CONSTRAINT_MAX.to_string(), max.to_string()),
-                ];
-                if let Some(ps) = params.as_ref() {
-                    attrs.push((
-                        ATTR_CONSTRAINT_PARAM_FIELDS.to_string(),
-                        ps.join(","),
-                    ));
-                }
-                attrs
-            },
-        ),
+        } => ("at_most", {
+            let mut attrs = vec![
+                (ATTR_CONSTRAINT_RELATION.to_string(), relation.clone()),
+                (ATTR_CONSTRAINT_SRC_FIELD.to_string(), src_field.clone()),
+                (ATTR_CONSTRAINT_DST_FIELD.to_string(), dst_field.clone()),
+                (ATTR_CONSTRAINT_MAX.to_string(), max.to_string()),
+            ];
+            if let Some(ps) = params.as_ref() {
+                attrs.push((ATTR_CONSTRAINT_PARAM_FIELDS.to_string(), ps.join(",")));
+            }
+            attrs
+        }),
         ConstraintV1::Typing { relation, rule } => (
             "typing",
             vec![
@@ -558,73 +598,55 @@ fn constraint_attrs(c: &ConstraintV1) -> (&'static str, Vec<(String, String)>) {
             values,
             carriers,
             params,
-        } => (
-            "symmetric_where_in",
-            {
-                let mut attrs = vec![
+        } => ("symmetric_where_in", {
+            let mut attrs = vec![
                 (ATTR_CONSTRAINT_RELATION.to_string(), relation.clone()),
                 (ATTR_CONSTRAINT_WHERE_FIELD.to_string(), field.clone()),
                 (
                     ATTR_CONSTRAINT_WHERE_IN_VALUES.to_string(),
                     values.join(","),
                 ),
-                ];
-                if let Some(c) = carriers.as_ref() {
-                    // Reuse src/dst field attrs as the carrier pair for closure constraints.
-                    attrs.push((ATTR_CONSTRAINT_SRC_FIELD.to_string(), c.left_field.clone()));
-                    attrs.push((ATTR_CONSTRAINT_DST_FIELD.to_string(), c.right_field.clone()));
-                }
-                if let Some(ps) = params.as_ref() {
-                    attrs.push((
-                        ATTR_CONSTRAINT_PARAM_FIELDS.to_string(),
-                        ps.join(","),
-                    ));
-                }
-                attrs
-            },
-        ),
+            ];
+            if let Some(c) = carriers.as_ref() {
+                // Reuse src/dst field attrs as the carrier pair for closure constraints.
+                attrs.push((ATTR_CONSTRAINT_SRC_FIELD.to_string(), c.left_field.clone()));
+                attrs.push((ATTR_CONSTRAINT_DST_FIELD.to_string(), c.right_field.clone()));
+            }
+            if let Some(ps) = params.as_ref() {
+                attrs.push((ATTR_CONSTRAINT_PARAM_FIELDS.to_string(), ps.join(",")));
+            }
+            attrs
+        }),
         ConstraintV1::Symmetric {
             relation,
             carriers,
             params,
-        } => (
-            "symmetric",
-            {
-                let mut attrs = vec![(ATTR_CONSTRAINT_RELATION.to_string(), relation.clone())];
-                if let Some(c) = carriers.as_ref() {
-                    attrs.push((ATTR_CONSTRAINT_SRC_FIELD.to_string(), c.left_field.clone()));
-                    attrs.push((ATTR_CONSTRAINT_DST_FIELD.to_string(), c.right_field.clone()));
-                }
-                if let Some(ps) = params.as_ref() {
-                    attrs.push((
-                        ATTR_CONSTRAINT_PARAM_FIELDS.to_string(),
-                        ps.join(","),
-                    ));
-                }
-                attrs
-            },
-        ),
+        } => ("symmetric", {
+            let mut attrs = vec![(ATTR_CONSTRAINT_RELATION.to_string(), relation.clone())];
+            if let Some(c) = carriers.as_ref() {
+                attrs.push((ATTR_CONSTRAINT_SRC_FIELD.to_string(), c.left_field.clone()));
+                attrs.push((ATTR_CONSTRAINT_DST_FIELD.to_string(), c.right_field.clone()));
+            }
+            if let Some(ps) = params.as_ref() {
+                attrs.push((ATTR_CONSTRAINT_PARAM_FIELDS.to_string(), ps.join(",")));
+            }
+            attrs
+        }),
         ConstraintV1::Transitive {
             relation,
             carriers,
             params,
-        } => (
-            "transitive",
-            {
-                let mut attrs = vec![(ATTR_CONSTRAINT_RELATION.to_string(), relation.clone())];
-                if let Some(c) = carriers.as_ref() {
-                    attrs.push((ATTR_CONSTRAINT_SRC_FIELD.to_string(), c.left_field.clone()));
-                    attrs.push((ATTR_CONSTRAINT_DST_FIELD.to_string(), c.right_field.clone()));
-                }
-                if let Some(ps) = params.as_ref() {
-                    attrs.push((
-                        ATTR_CONSTRAINT_PARAM_FIELDS.to_string(),
-                        ps.join(","),
-                    ));
-                }
-                attrs
-            },
-        ),
+        } => ("transitive", {
+            let mut attrs = vec![(ATTR_CONSTRAINT_RELATION.to_string(), relation.clone())];
+            if let Some(c) = carriers.as_ref() {
+                attrs.push((ATTR_CONSTRAINT_SRC_FIELD.to_string(), c.left_field.clone()));
+                attrs.push((ATTR_CONSTRAINT_DST_FIELD.to_string(), c.right_field.clone()));
+            }
+            if let Some(ps) = params.as_ref() {
+                attrs.push((ATTR_CONSTRAINT_PARAM_FIELDS.to_string(), ps.join(",")));
+            }
+            attrs
+        }),
         ConstraintV1::Key { relation, fields } => (
             "key",
             vec![
@@ -640,11 +662,11 @@ fn constraint_attrs(c: &ConstraintV1) -> (&'static str, Vec<(String, String)>) {
             ],
         ),
         ConstraintV1::Unknown { text } => {
-            // Best-effort: many domains want richer constraint vocabularies than the
-            // v1 parser understands (e.g. typing rules, graded-commutativity, etc).
+            // Unsupported constraint syntax stays addressable as `Unknown`.
+            // Accepted/certified claims require later typed constraint checking;
+            // this import path does not turn opaque text into trusted theory.
             //
-            // We keep the canonical parser permissive by storing these as `Unknown`,
-            // but we still try to extract a *relation name* so:
+            // We still try to extract a *relation name* so:
             // - `MetaPlaneIndex.constraints_by_relation` can index them, and
             // - the REPL can display them under `constraints <schema>`.
             let mut attrs = vec![(ATTR_CONSTRAINT_TEXT.to_string(), text.clone())];
@@ -672,7 +694,7 @@ fn extract_relation_from_unknown_constraint(text: &str) -> Option<String> {
     //   - `functional Rel(...)` (handled by the parser when it matches the canonical form)
     //
     // We treat the *second token* as the relation name, stripping punctuation like `:` or `(`.
-    let mut it = text.trim().split_whitespace();
+    let mut it = text.split_whitespace();
     let _kind = it.next()?;
     let raw_rel = it.next()?;
 
@@ -690,9 +712,7 @@ fn extract_relation_from_unknown_constraint(text: &str) -> Option<String> {
     // Defensive: only accept identifiers that look like relation labels in the
     // canonical surface (ASCII letters/digits/underscores, not starting with digit).
     let mut chars = rel.chars();
-    let Some(first) = chars.next() else {
-        return None;
-    };
+    let first = chars.next()?;
     if !(first.is_ascii_alphabetic() || first == '_') {
         return None;
     }
@@ -711,6 +731,7 @@ fn extract_relation_from_unknown_constraint(text: &str) -> Option<String> {
 struct SchemaIndex {
     objects: HashSet<String>,
     relations: AHashMap<String, RelationDeclV1>,
+    compiled_ir: RuntimeSchemaIndex,
     supertypes_of: AHashMap<String, HashSet<String>>,
     subtypes_of: AHashMap<String, HashSet<String>>,
 }
@@ -779,6 +800,7 @@ impl SchemaIndex {
         Self {
             objects,
             relations,
+            compiled_ir: derive_runtime_schema_index(schema),
             supertypes_of,
             subtypes_of,
         }
@@ -792,16 +814,20 @@ impl SchemaIndex {
         self.relations.get(name)
     }
 
+    fn relation_semantics(&self, name: &str) -> Option<&crate::kernel_ir::RelationSemanticsIr> {
+        self.compiled_ir.relation(name)
+    }
+
     fn tuple_entity_type_name(&self, relation_name: &str) -> String {
-        // If the schema also declares an object with the same name, keep tuple
-        // entities distinct so we don't conflate:
-        // - `LawCategory` (the category object)
-        // - `LawCategory(law, category)` (the relation tuples)
-        if self.is_object_type(relation_name) {
-            format!("{relation_name}Fact")
-        } else {
-            relation_name.to_string()
-        }
+        self.relation_semantics(relation_name)
+            .map(|rel| rel.tuple_type_name.clone())
+            .unwrap_or_else(|| {
+                if self.is_object_type(relation_name) {
+                    format!("{relation_name}Fact")
+                } else {
+                    relation_name.to_string()
+                }
+            })
     }
 
     fn canonical_entity_type_for_axi_type(&self, axi_type: &str) -> Result<String> {
@@ -917,6 +943,14 @@ impl<'a> InstanceImportContext<'a> {
             if all_idents {
                 // Prefer treating ident-sets as object assignments.
                 self.import_object_assignment(&assignment.name, &assignment.value.items)?;
+            } else if let Some(generator) = self
+                .schema
+                .generators
+                .iter()
+                .find(|generator| generator.name == assignment.name)
+                .cloned()
+            {
+                self.import_generator_assignment(&generator, &assignment.value.items)?;
             } else {
                 self.import_relation_assignment(&assignment.name, &assignment.value.items)?;
             }
@@ -973,9 +1007,7 @@ impl<'a> InstanceImportContext<'a> {
 
         if candidate_ids.len() > 1 {
             return Err(anyhow!(
-                "ambiguous element `{}`: multiple entities exist across related types for `{}`",
-                element_name,
-                object_type
+                "ambiguous element `{element_name}`: multiple entities exist across related types for `{object_type}`"
             ));
         }
 
@@ -1026,7 +1058,7 @@ impl<'a> InstanceImportContext<'a> {
             .entities
             .type_index
             .entry(preferred_type_id)
-            .or_insert_with(roaring::RoaringBitmap::new)
+            .or_default()
             .insert(entity_id);
 
         self.ensure_entity_in_supertypes(entity_id, preferred_type);
@@ -1041,7 +1073,7 @@ impl<'a> InstanceImportContext<'a> {
                 .entities
                 .type_index
                 .entry(sup_id)
-                .or_insert_with(roaring::RoaringBitmap::new)
+                .or_default()
                 .insert(entity_id);
         }
     }
@@ -1070,6 +1102,82 @@ impl<'a> InstanceImportContext<'a> {
         Ok(())
     }
 
+    fn import_generator_assignment(
+        &mut self,
+        generator: &GeneratorDeclV1,
+        items: &[SetItemV1],
+    ) -> Result<()> {
+        if !self.schema_index.is_object_type(&generator.source)
+            || !self.schema_index.is_object_type(&generator.target)
+        {
+            return Err(anyhow!(
+                "PathDB execution currently requires object-type endpoints for generator `{}`; canonical relation-object generator interpretations remain in KernelSnapshotIr",
+                generator.name
+            ));
+        }
+        let edge_label = if self
+            .relation_name_counts
+            .get(&generator.name)
+            .copied()
+            .unwrap_or(0)
+            > 1
+        {
+            format!("{}.{}", self.schema.name, generator.name)
+        } else {
+            generator.name.clone()
+        };
+
+        for item in items {
+            let SetItemV1::Tuple { label, fields } = item else {
+                continue;
+            };
+            if label.is_some() {
+                return Err(anyhow!(
+                    "instance `{}` generator `{}` mappings may not have fact labels",
+                    self.inst.name,
+                    generator.name
+                ));
+            }
+            let mut mapping = HashMap::new();
+            for (field, value) in fields {
+                if mapping.insert(field.as_str(), value.as_str()).is_some() {
+                    return Err(anyhow!(
+                        "instance `{}` generator `{}` repeats field `{field}`",
+                        self.inst.name,
+                        generator.name
+                    ));
+                }
+            }
+            if mapping.len() != 2
+                || !mapping.contains_key("source")
+                || !mapping.contains_key("target")
+            {
+                return Err(anyhow!(
+                    "instance `{}` generator `{}` expects exactly source/target fields",
+                    self.inst.name,
+                    generator.name
+                ));
+            }
+            let source = self.get_or_create_object_entity(&generator.source, mapping["source"])?;
+            let target = self.get_or_create_object_entity(&generator.target, mapping["target"])?;
+            let relation_id = self.db.interner.intern(&edge_label);
+            let existed = self.db.relations.has_edge(source, relation_id, target);
+            self.add_edge_if_missing_with_attrs(
+                &edge_label,
+                source,
+                target,
+                vec![
+                    (ATTR_AXI_SCHEMA, self.schema.name.as_str()),
+                    (ATTR_AXI_INSTANCE, self.inst.name.as_str()),
+                ],
+            )?;
+            if !existed {
+                self.summary.derived_edges_added += 1;
+            }
+        }
+        Ok(())
+    }
+
     fn import_relation_assignment(
         &mut self,
         relation_name: &str,
@@ -1084,9 +1192,14 @@ impl<'a> InstanceImportContext<'a> {
                 self.schema.name
             ));
         };
+        let relation_semantics = self
+            .schema_index
+            .relation_semantics(relation_name)
+            .cloned()
+            .ok_or_else(|| anyhow!("missing compiled semantics for relation `{relation_name}`"))?;
 
         for it in items {
-            let SetItemV1::Tuple { fields } = it else {
+            let SetItemV1::Tuple { fields, .. } = it else {
                 continue;
             };
 
@@ -1129,12 +1242,17 @@ impl<'a> InstanceImportContext<'a> {
             // Canonicalize tuple fields in schema-declared order.
             let mut ordered_fields: Vec<(&str, &str)> = Vec::with_capacity(decl.fields.len());
             for f in &decl.fields {
-                let v = field_value_names
-                    .get(&f.field)
-                    .expect("field presence checked above");
+                let v = field_value_names.get(&f.field).ok_or_else(|| {
+                    anyhow!(
+                        "missing field `{}` while canonicalizing `{}` tuple in instance `{}`",
+                        f.field,
+                        relation_name,
+                        self.inst.name
+                    )
+                })?;
                 ordered_fields.push((f.field.as_str(), v.as_str()));
             }
-            let fact_id = axi_fact_id_v1(
+            let fact_id = runtime_fact_id_v2(
                 self.module.module_name.as_str(),
                 self.schema.name.as_str(),
                 self.inst.name.as_str(),
@@ -1146,7 +1264,7 @@ impl<'a> InstanceImportContext<'a> {
             let tuple_name = format!(
                 "{relation_name}_fact_{}",
                 fact_id
-                    .strip_prefix(axiograph_dsl::digest::AXI_FACT_ID_V1_PREFIX)
+                    .strip_prefix(axiograph_kernel::FACT_ID_V2_PREFIX)
                     .unwrap_or(&fact_id)
             );
 
@@ -1191,9 +1309,17 @@ impl<'a> InstanceImportContext<'a> {
             for f in &decl.fields {
                 let value_name = field_value_names
                     .get(&f.field)
-                    .expect("field presence checked above")
+                    .ok_or_else(|| {
+                        anyhow!(
+                            "missing field `{}` while importing `{}` tuple in instance `{}`",
+                            f.field,
+                            relation_name,
+                            self.inst.name
+                        )
+                    })?
                     .as_str();
-                let value_entity_id = self.get_or_create_object_entity(&f.ty, value_name)?;
+                let value_entity_id =
+                    self.get_or_create_object_entity(f.ty.referenced_name(), value_name)?;
                 values_by_field.insert(f.field.clone(), value_entity_id);
 
                 // Field edge: tuple -field-> value
@@ -1232,7 +1358,8 @@ impl<'a> InstanceImportContext<'a> {
             // Treat certain “equivalence” relations as homotopy witnesses so
             // users can query them generically (not only by the domain-specific
             // relation name).
-            let homotopy_sides = derive_homotopy_sides(relation_name, &values_by_field);
+            let homotopy_sides =
+                resolve_relation_pair(relation_semantics.homotopy_field_names(), &values_by_field);
             if let Some((lhs, rhs)) = homotopy_sides {
                 self.mark_virtual_type(tuple_entity_id, "Homotopy");
                 self.add_edge_if_missing_with_attrs(
@@ -1253,7 +1380,10 @@ impl<'a> InstanceImportContext<'a> {
             // This is a lightweight bridge toward the HoTT/groupoid view where
             // arrows are first-class and can be inspected in the REPL.
             if homotopy_sides.is_none() {
-                if let Some((from, to)) = derive_morphism_endpoints(&decl, &values_by_field) {
+                if let Some((from, to)) = resolve_relation_pair(
+                    relation_semantics.morphism_field_names(),
+                    &values_by_field,
+                ) {
                     self.mark_virtual_type(tuple_entity_id, "Morphism");
                     self.add_edge_if_missing_with_attrs(
                         "from",
@@ -1271,7 +1401,9 @@ impl<'a> InstanceImportContext<'a> {
             }
 
             // Derived binary edge (convenience traversal).
-            if let Some((src, dst)) = derive_binary_endpoints(&decl, &values_by_field) {
+            if let Some((src, dst)) =
+                resolve_relation_pair(relation_semantics.carrier_field_names(), &values_by_field)
+            {
                 let derived_label = if self
                     .relation_name_counts
                     .get(relation_name)
@@ -1307,7 +1439,7 @@ impl<'a> InstanceImportContext<'a> {
             .entities
             .type_index
             .entry(type_id)
-            .or_insert_with(roaring::RoaringBitmap::new)
+            .or_default()
             .insert(entity_id);
     }
 
@@ -1326,7 +1458,11 @@ impl<'a> InstanceImportContext<'a> {
             for (k, v) in attrs {
                 let k_id = self.db.interner.intern(k);
                 let v_id = self.db.interner.intern(v);
-                if !rel_mut.attrs.iter().any(|(kk, vv)| *kk == k_id && *vv == v_id) {
+                if !rel_mut
+                    .attrs
+                    .iter()
+                    .any(|(kk, vv)| *kk == k_id && *vv == v_id)
+                {
                     rel_mut.attrs.push((k_id, v_id));
                 }
             }
@@ -1339,106 +1475,10 @@ impl<'a> InstanceImportContext<'a> {
     }
 }
 
-fn derive_binary_endpoints(
-    decl: &RelationDeclV1,
+fn resolve_relation_pair(
+    pair: Option<(&str, &str)>,
     values_by_field: &HashMap<String, u32>,
 ) -> Option<(u32, u32)> {
-    // Canonical derived edge rule (for convenience traversal + certificates):
-    //
-    // 1) If the relation is "primary binary" after dropping context/time metadata,
-    //    derive a single edge in schema-declared order.
-    //
-    // 2) Otherwise, fall back to a small, *explicit* set of conventional endpoint
-    //    field pairs (from/to, lhs/rhs, path1/path2, ...).
-    //
-    // This is intentionally deterministic: the Lean checker can re-run the same
-    // endpoint selection when validating `.axi`-anchored query certificates.
-
-    let primary_fields: Vec<&str> = decl
-        .fields
-        .iter()
-        .map(|f| f.field.as_str())
-        .filter(|f| *f != "ctx" && *f != "time")
-        .collect();
-
-    if primary_fields.len() == 2 {
-        let a = values_by_field.get(primary_fields[0])?;
-        let b = values_by_field.get(primary_fields[1])?;
-        return Some((*a, *b));
-    }
-
-    // Prefer “equivalence sides” over endpoints when present. For many canonical
-    // examples, `from/to` are metadata about the endpoints of the *paths*, but
-    // the equivalence itself relates *path objects* (e.g. `route1/route2`).
-    for (src, dst) in [
-        ("lhs", "rhs"),
-        ("route1", "route2"),
-        ("path1", "path2"),
-        ("rel1", "rel2"),
-        ("i1", "i2"),
-        ("s1", "s2"),
-        ("left", "right"),
-        ("child", "parent"),
-        ("from", "to"),
-        ("source", "target"),
-        ("src", "dst"),
-    ] {
-        if let (Some(a), Some(b)) = (values_by_field.get(src), values_by_field.get(dst)) {
-            return Some((*a, *b));
-        }
-    }
-
-    None
-}
-
-fn derive_morphism_endpoints(
-    decl: &RelationDeclV1,
-    values_by_field: &HashMap<String, u32>,
-) -> Option<(u32, u32)> {
-    // If it is already binary, use the declared field order.
-    if decl.fields.len() == 2 {
-        let a = values_by_field.get(&decl.fields[0].field)?;
-        let b = values_by_field.get(&decl.fields[1].field)?;
-        return Some((*a, *b));
-    }
-
-    // For n-ary relations, prefer explicit endpoint field names.
-    for (src, dst) in [
-        ("from", "to"),
-        ("source", "target"),
-        ("src", "dst"),
-        ("child", "parent"),
-    ] {
-        if let (Some(a), Some(b)) = (values_by_field.get(src), values_by_field.get(dst)) {
-            return Some((*a, *b));
-        }
-    }
-
-    None
-}
-
-fn derive_homotopy_sides(
-    relation_name: &str,
-    values_by_field: &HashMap<String, u32>,
-) -> Option<(u32, u32)> {
-    // Heuristic: relations whose names include “Equiv/Equivalence” are treated
-    // as 2-cells/homotopies when we can find a reasonable “lhs/rhs”-like pair.
-    if !(relation_name.contains("Equiv") || relation_name.contains("Equivalence")) {
-        return None;
-    }
-
-    for (lhs, rhs) in [
-        ("lhs", "rhs"),
-        ("route1", "route2"),
-        ("path1", "path2"),
-        ("rel1", "rel2"),
-        ("i1", "i2"),
-        ("s1", "s2"),
-        ("left", "right"),
-    ] {
-        if let (Some(a), Some(b)) = (values_by_field.get(lhs), values_by_field.get(rhs)) {
-            return Some((*a, *b));
-        }
-    }
-    None
+    let (left, right) = pair?;
+    Some((*values_by_field.get(left)?, *values_by_field.get(right)?))
 }

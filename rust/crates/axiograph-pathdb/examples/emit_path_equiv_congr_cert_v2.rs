@@ -1,7 +1,7 @@
 use axiograph_pathdb::{CertificateV2, PathExprV2, ProofProducingOptimizer, WithProof};
 
 fn main() {
-    let optimizer = ProofProducingOptimizer::default();
+    let optimizer = ProofProducingOptimizer;
 
     // Base equivalence: two different spellings of `p ; q`.
     let p = PathExprV2::Step {

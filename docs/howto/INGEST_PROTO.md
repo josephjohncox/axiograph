@@ -3,8 +3,10 @@
 **Diataxis:** How-to  
 **Audience:** users (and contributors)
 
-This repo supports ingesting large Protobuf/gRPC APIs into the generic Axiograph
-Evidence/Proposals schema (`proposals.json`).
+This repo supports a Protobuf/gRPC evidence adapter that emits typed
+`ProposalsFileV1` and `EvidenceChunkBundleV1` artifacts. It is not a semantic,
+query, certificate, or accepted-plane authority until reviewed into canonical
+`.axi`.
 
 The goal is to capture:
 
@@ -14,23 +16,12 @@ The goal is to capture:
   (HTTP endpoints, auth scopes, idempotency, stability, tags, field semantics)
 - **Tacit interaction hints**: low-confidence workflow groupings inferred from RPC naming
 
-## Why Buf descriptor-set *JSON*?
+## Why binary Buf descriptor sets?
 
-In the binary `google.protobuf.FileDescriptorSet` format, custom options (proto
-extensions) are encoded as extension fields. In Rust, decoding those extensions
-requires an extension-aware/reflective runtime.
-
-Buf’s descriptor-set **JSON** output includes extension fields explicitly, using
-keys like:
-
-```json
-{
-  "[acme.annotations.v1.http]": { "get": "/v1/payments/{payment_id}" }
-}
-```
-
-That makes annotation-driven ingestion practical without adding a heavy runtime
-dependency.
+The supported descriptor input is Buf’s binary
+`google.protobuf.FileDescriptorSet` (`*.binpb`). Axiograph decodes it with
+`prost-reflect::DescriptorPool::decode`, which preserves custom extension
+options through a maintained reflection API.
 
 ## Run on the included “large API” example
 
@@ -40,7 +31,7 @@ The example module is in `examples/proto/large_api/` and includes:
 - custom RPC + field annotations (`acme.annotations.v1.*`)
 - doc comments that describe typical interaction flows
 
-Run ingestion (release mode recommended):
+Run evidence extraction (release mode recommended):
 
 ```bash
 cd rust
@@ -49,11 +40,11 @@ cargo run -p axiograph-cli --release -- ingest proto ingest ../examples/proto/la
   --chunks ../build/ingest/proto_api/chunks.json
 ```
 
-This produces:
+This produces evidence-plane artifacts:
 
-- `../build/ingest/proto_api/descriptor.json` (Buf descriptor set, JSON)
+- `../build/ingest/proto_api/descriptor.binpb` (binary Buf descriptor set)
 - `../build/ingest/proto_api/proposals.json` (entities + relations)
-- `../build/ingest/proto_api/chunks.json` (doc comment chunks for RAG)
+- `../build/ingest/proto_api/chunks.json` (`EvidenceChunkBundleV1` doc-comment evidence for RAG)
 
 ## What gets emitted
 
@@ -93,25 +84,24 @@ cargo run -p axiograph-cli --release -- ingest proto ingest /path/to/your/buf/mo
   --chunks ../build/ingest/your_api/chunks.json
 ```
 
-If you already have a descriptor-set JSON file, you can skip `buf build`:
+If you already have a binary descriptor-set file, you can skip `buf build`:
 
 ```bash
 cd rust
 cargo run -p axiograph-cli --release -- ingest proto ingest /unused/root \
-  --descriptor /path/to/descriptor.json \
+  --descriptor /path/to/descriptor.binpb \
   --out ../build/ingest/your_api/proposals.json
 ```
 
-## End-to-end ontology engineering (Proto, over time)
+## Review and promotion
 
-For a full “ingest → LLM augmentation → draft `.axi` → promotion gate → PathDB + viz”
-demo across multiple proto services and several evolution ticks, run:
+Treat Proto extraction, LLM augmentation, and drafted `.axi` as evidence-plane
+outputs. Validate and inspect a candidate with the normal authoring commands,
+then promote only through a typed `AxiStore::promote` transition that closes the
+CQ, trust, and runtime-theory gates and advances the protected accepted ref.
+Copying a draft into an `accepted/` directory is not promotion.
 
-```bash
-./scripts/ontology_engineering_proto_evolution_ollama_demo.sh
-```
-
-This demo also imports doc comment chunks into the produced `.axpd` snapshots
-as `DocChunk` nodes (`axiograph db pathdb import-chunks ...`), enabling `fts(...)`
-queries and LLM grounding over real doc text, plus semantic metadata (FQNs,
-kinds, message/field names, etc) via `DocChunk.search_text`.
+Doc comment chunks remain typed evidence. They may be loaded into process-local
+query state or included as an explicitly ordered, content-digested
+materialization overlay so grounding can cite `DocChunk` evidence. They do not
+become canonical ontology material by appearing in a derived PathDB image.

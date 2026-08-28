@@ -1,31 +1,50 @@
-# Axiograph LLM Plugin Protocol (`axiograph_llm_plugin_v2` / `axiograph_llm_plugin_v3`)
+# Axiograph LLM Integration Payloads (`axiograph_llm_plugin_v2` / `axiograph_llm_plugin_v3`)
 
 **Diataxis:** Reference  
 **Audience:** contributors
 
 The Axiograph REPL (and some CLI discovery workflows) support an optional
-**LLM-assisted** layer.
+agent/model integration layer. In practice this should be read as:
+
+- typed plugin protocols,
+- API-backed model runners,
+- tool-loop agent interfaces,
+- and host-managed MCP/skill-style surfaces that carry typed payloads,
+
+not merely "free-form LLM rewriting".
 
 There are two related protocols:
 
-- `axiograph_llm_plugin_v2`: translate questions → structured query (`query_ir_v1` preferred; AxQL fallback) and (optionally) summarize results.
+- `axiograph_llm_plugin_v2`: translate questions → structured `query_ir_v1` and (optionally) summarize results.
   - Used by REPL `llm query ...` and some CLI workflows (e.g. discovery augmentation).
+  - Query-authoring loops should prefer `axql_explore` for partial/ambiguous
+    queries, `axql_elaborate` for validation/inference, and `axql_run` only
+    once execution is actually needed.
 - `axiograph_llm_plugin_v3`: a **tool-loop step** protocol for agentic workflows (LLM calls tools; Rust executes; LLM answers).
   - Used by REPL `llm ask ...` / `llm answer ...` (and `llm agent ...` for verbose debugging).
+  - CQ authoring loops should prefer `semantic_competency_questions` with
+    question-first `.cq` text (`ask`, `about`, `given`, `expect`) before
+    falling back to typed query execution. Raw AxQL is a lowering/debug artifact,
+    not the primary way to express ontology coverage intent.
 
-1. an LLM proposes a **structured** query (AxQL)
+1. an LLM proposes a **structured** query (`query_ir_v1`)
 2. Rust executes the proposed query against the loaded snapshot
 3. (optional) the LLM summarizes results into a natural-language answer
 
-This document specifies the **plugin protocol** used by the REPL so we can use:
+This document specifies the **typed payloads** used by the REPL so we can use:
 
 - a local lightweight model runner (Ollama, llama.cpp, llamafile, …), or
-- a remote LLM API (later), without changing the REPL itself.
+- remote LLM APIs through built-in provider clients, without changing the REPL
+  semantics.
 
-The LLM is **untrusted**: it produces *candidate queries*. Axiograph is the
-source of truth for execution (and later: certificate production for Lean).
+The model/agent layer is **untrusted**: it produces *candidate queries*, tool
+calls, or summaries. Axiograph is the source of truth for execution, typing,
+trust surfacing, and later certificate production for Lean.
 
-The same plugin protocol is also used by evidence-plane discovery augmentation:
+The same typed payload can be used by evidence-plane discovery augmentation
+when you need an external bridge. For normal local demos, prefer the built-in
+mock/OpenAI/Anthropic/Ollama paths; command plugins are debugging and adapter
+examples, not core protocol infrastructure:
 
 ```bash
 cd rust
@@ -70,15 +89,21 @@ llm agent [--steps N] [--rows N] <question...>
 
 See `docs/tutorials/REPL.md` for a walkthrough.
 
-## Transport
+## Command-Plugin Transport
 
-Plugins are external commands:
+Command plugins are external processes:
 
 - **stdin**: a single JSON request
 - **stdout**: a single JSON response
 - **stderr**: may be used for debug logs (shown only on plugin failure)
 
 The REPL runs plugins without a shell (no `sh -c`), so argv splitting is safe.
+
+This stdin/stdout transport is a local adapter boundary, not a custom JSON-RPC
+stack. MCP hosts should use the `rmcp`-backed server, editor integrations should
+use the `lsp-server`/`lsp-types` LSP server, and HTTP clients should use the
+typed DB-server endpoints and maintained HTTP clients rather than copying this
+command-plugin framing.
 
 ## Request schema (v2)
 
@@ -96,8 +121,7 @@ Top-level:
 
 The plugin should translate a user question into a **structured query**.
 
-Preferred output: `query_ir_v1` (typed JSON that compiles into AxQL).
-Fallback output: `axql` (string).
+Required output: `query_ir_v1` (typed JSON that compiles into AxQL).
 
 ```json
 {
@@ -121,21 +145,13 @@ Preferred response (typed IR):
 {
   "query_ir_v1": {
     "version": 1,
-    "select": ["?x"],
-    "where": [
+    "select_vars": ["?x"],
+    "where_atoms": [
       { "kind": "type", "term": "?x", "type": "Node" },
       { "kind": "attr_eq", "term": "?x", "key": "name", "value": "b" }
     ],
     "limit": 20
   }
-}
-```
-
-Fallback response (AxQL text):
-
-```json
-{
-  "axql": "select ?x where ?x is Node, ?x.name = \"b\" limit 20"
 }
 ```
 
@@ -147,7 +163,15 @@ The plugin should produce a natural-language answer grounded in results.
 {
   "kind": "answer",
   "question": "how do I reach c from a?",
-  "query": { "kind": "axql", "axql": "select ?y where ..." },
+  "query": {
+    "kind": "query_ir_v1",
+    "query_ir_v1": {
+      "version": 1,
+      "select_vars": ["?y"],
+      "where_atoms": [ ... ],
+      "limit": 20
+    }
+  },
   "results": {
     "vars": ["?x", "?y"],
     "rows": [
@@ -191,8 +215,7 @@ Top-level (fields are optional; shape depends on the task):
 
 ```json
 {
-  "query_ir_v1": { "version": 1, "select": ["?x"], "where": [ ... ], "limit": 20 },
-  "axql": "select ?x where ...",
+  "query_ir_v1": { "version": 1, "select_vars": ["?x"], "where_atoms": [ ... ], "limit": 20 },
   "answer": "…",
   "added_proposals": [ ... ],
   "schema_hint_updates": [ { "proposal_id": "...", "schema_hint": "machinist_learning" } ],
@@ -245,14 +268,17 @@ Note: for large snapshots, Axiograph may compact `schema` and/or truncate large 
 to keep the request size bounded. Plugins should treat `schema` as hints and be robust to missing
 fields (they can always request more detail via additional tool calls).
 
-Note: Axiograph may also include **backend-prefetched** retrieval steps in the `transcript` (e.g.
-`db_summary` + `semantic_search`) so tool-loop mode behaves like a RAG pipeline by default.
+Note: Axiograph may also include **backend-prefetched** retrieval steps in the
+`transcript` (e.g. `db_summary` + `semantic_search`) so tool-loop mode behaves
+like a RAG pipeline by default. Retrieval output is evidence-plane only; see
+`docs/reference/EMBEDDINGS_AND_EVIDENCE.md` for the embedding/vector trust
+boundary and relationship-lifting rule.
 
 ### Response: tool call
 
 ```json
 {
-  "tool_call": { "name": "axql_run", "args": { "query_ir_v1": { "version": 1, "where": [ ... ] }, "limit": 25 } }
+  "tool_call": { "name": "axql_run", "args": { "query_ir_v1": { "version": 1, "where_atoms": [ ... ] }, "limit": 25 } }
 }
 ```
 
@@ -265,7 +291,7 @@ execute sequentially:
 {
   "tool_calls": [
     { "name": "lookup_relation", "args": { "relation": "Parent" } },
-    { "name": "axql_run", "args": { "query_ir_v1": { "version": 1, "where": [ ... ] }, "limit": 25 } }
+    { "name": "axql_run", "args": { "query_ir_v1": { "version": 1, "where_atoms": [ ... ] }, "limit": 25 } }
   ]
 }
 ```
@@ -284,9 +310,11 @@ execute sequentially:
 }
 ```
 
-## Reference implementation
+## Debug Command Adapter
 
-This repo includes a deterministic “mock LLM” plugin:
+This repo includes a deterministic "mock LLM" command adapter. Use it for
+debugging adapter behavior or offline protocol experiments; normal REPL flows
+should use the built-in mock/OpenAI/Anthropic/Ollama backends.
 
 - `scripts/axiograph_llm_plugin_mock.py`
 

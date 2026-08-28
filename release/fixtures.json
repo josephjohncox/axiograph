@@ -1,0 +1,94 @@
+{
+  "schema": "axiograph-release-fixtures-v2",
+  "trusted_checker": {
+    "build_id": "axiograph-verify-main-v3",
+    "entrypoint": "lean/Axiograph/VerifyMain.lean",
+    "protocol": "axiograph-verifier-stdio-v2"
+  },
+  "claim": {
+    "certificate_kind": "query_result_v4",
+    "claim_kind": "finite_exact_complete",
+    "expected_answer_digest": "axi:answer:v2:sha256:7e467b07fcf8b9d793730ad2d12f5385acf2ab6e06caf2b0d510ea155f2e1e1b",
+    "expected_prepared_query_digest": "axi:query:v2:sha256:45f7d434cb08e4f1e0d9377d141822a3954c52e7b368c70b851532e8dc496a9f",
+    "expected_revision_digest": "axi:revision:v2:sha256:42bf0963a63ec48bb7386a7f4730985d872a9bbf6a0b79855f4b567b1baf9859",
+    "scope": "exact rows for the certificate's bounded finite executable denotation"
+  },
+  "module": {
+    "bytes": 167,
+    "path": "fixtures/verification/query_result_v4_exact.axi",
+    "sha256": "b87fa7fcb182fdcc9d026a0fa1dcd13f9ca3ada8b673fe74b6d1b3b9020e4fce"
+  },
+  "cases": [
+    {
+      "bytes": 1169,
+      "expect": "accept",
+      "id": "exact-complete-answer",
+      "message_contains": "exact finite query answer verified",
+      "path": "fixtures/verification/query_result_v4_exact.json",
+      "sha256": "664eed414eca019f2d5ad42be697076daae8c0b6049f5954c30abec8fe8f229f"
+    },
+    {
+      "bytes": 1169,
+      "expect": "reject",
+      "id": "altered-answer-digest",
+      "message_contains": "answer digest mismatch",
+      "path": "fixtures/verification/reject/query_result_v4_altered_answer_digest.json",
+      "sha256": "bdbfd1670812b5c2d4a94f4c8fa2ed8bc3f77491b1828415a5446c183bd62b39"
+    },
+    {
+      "bytes": 1169,
+      "expect": "reject",
+      "id": "altered-prepared-query-digest",
+      "message_contains": "prepared-query digest mismatch",
+      "path": "fixtures/verification/reject/query_result_v4_altered_prepared_digest.json",
+      "sha256": "10a97ac4c8e52378ad90348ef005790f64c4cd400281265d7280e49896af8e34"
+    },
+    {
+      "bytes": 1173,
+      "expect": "reject",
+      "id": "duplicate-row",
+      "message_contains": "not exactly equal to the bounded finite denotation",
+      "path": "fixtures/verification/reject/query_result_v4_duplicate_row.json",
+      "sha256": "1386ba401566b3d8acd21f12ed687689c439bc49d3637ba74b6dfc761d4a5e1f"
+    },
+    {
+      "bytes": 1356,
+      "expect": "reject",
+      "id": "extra-row",
+      "message_contains": "references unknown entity",
+      "path": "fixtures/verification/reject/query_result_v4_extra_row.json",
+      "sha256": "4fc3dee0f64634903a3b1fe52c6e036261c386cc40050f1238b9f06ff355527a"
+    },
+    {
+      "bytes": 1170,
+      "expect": "reject",
+      "id": "forged-type-witness",
+      "message_contains": "type witness mismatch",
+      "path": "fixtures/verification/reject/query_result_v4_forged_witness.json",
+      "sha256": "d10a5aa3aad6a25d29079b727d8302fa9e7fee9884ae1060b944827135be7b67"
+    },
+    {
+      "bytes": 970,
+      "expect": "reject",
+      "id": "missing-row",
+      "message_contains": "not exactly equal to the bounded finite denotation",
+      "path": "fixtures/verification/reject/query_result_v4_missing_row.json",
+      "sha256": "a89bfe25689b3839d64bd415ad6472913bcdcc2d223e7f442280bc67cc630519"
+    },
+    {
+      "bytes": 1168,
+      "expect": "reject",
+      "id": "truncated-answer",
+      "message_contains": "rejects truncated answers",
+      "path": "fixtures/verification/reject/query_result_v4_truncated.json",
+      "sha256": "4eab312b23241d73d91cad15d109d8e848be427673a213db517e12da05f054ba"
+    }
+  ],
+  "non_claims": [
+    "open-world ontology completeness",
+    "unbounded path completeness",
+    "approximate-query completeness",
+    "general dependent type theory",
+    "univalence or unrestricted higher paths"
+  ]
+}

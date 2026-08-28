@@ -1,0 +1,231 @@
+{
+  "version": "tooling_overlay_bundle_v1",
+  "fddd_context_map": {
+    "context_id": "bounded-context:subscription-billing",
+    "label": "Subscription billing software overlay",
+    "summary": "Maps subscription billing ontology to fDDD contexts, application services, entitlement workers, coverage, and generated behavior skeletons.",
+    "scopes": [
+      {
+        "kind": "relation",
+        "schema": "SubscriptionBilling",
+        "name": "InvoicePaidBy"
+      },
+      {
+        "kind": "relation",
+        "schema": "SubscriptionBilling",
+        "name": "AccountGrantedEntitlement"
+      },
+      {
+        "kind": "equation",
+        "schema": "SubscriptionBilling",
+        "name": "paid_invoice_entitles_subscription"
+      }
+    ],
+    "bounded_contexts": [
+      {
+        "binding_id": "bounded-context:subscription-billing",
+        "label": "Subscription billing",
+        "summary": "Owns invoice settlement, entitlement grants, and product-access eligibility.",
+        "ontology_refs": [
+          {
+            "kind": "schema",
+            "schema": "SubscriptionBilling",
+            "name": "SubscriptionBilling"
+          }
+        ]
+      }
+    ],
+    "aggregates": [
+      {
+        "binding_id": "aggregate:account",
+        "label": "Account aggregate",
+        "ontology_refs": [
+          {
+            "kind": "object",
+            "schema": "SubscriptionBilling",
+            "name": "Account"
+          }
+        ]
+      },
+      {
+        "binding_id": "aggregate:subscription",
+        "label": "Subscription aggregate",
+        "ontology_refs": [
+          {
+            "kind": "object",
+            "schema": "SubscriptionBilling",
+            "name": "Subscription"
+          }
+        ]
+      }
+    ],
+    "processes": [
+      {
+        "binding_id": "process:invoice-settlement",
+        "label": "Invoice settlement process",
+        "summary": "Accept a payment for an issued invoice and bind that payment to the invoice lifecycle.",
+        "ontology_refs": [
+          {
+            "kind": "relation",
+            "schema": "SubscriptionBilling",
+            "name": "SubscriptionGeneratesInvoice"
+          },
+          {
+            "kind": "relation",
+            "schema": "SubscriptionBilling",
+            "name": "InvoicePaidBy"
+          }
+        ]
+      },
+      {
+        "binding_id": "process:grant-entitlement",
+        "label": "Grant entitlement process",
+        "summary": "Project paid invoice evidence into the account entitlement read model.",
+        "ontology_refs": [
+          {
+            "kind": "relation",
+            "schema": "SubscriptionBilling",
+            "name": "PaidInvoiceGrantsEntitlement"
+          },
+          {
+            "kind": "relation",
+            "schema": "SubscriptionBilling",
+            "name": "AccountGrantedEntitlement"
+          }
+        ]
+      }
+    ],
+    "functions": [
+      {
+        "binding_id": "function:apply-payment",
+        "label": "Apply payment function",
+        "summary": "Application service that records invoice payment and emits entitlement-grant work.",
+        "ontology_refs": [
+          {
+            "kind": "relation",
+            "schema": "SubscriptionBilling",
+            "name": "InvoicePaidBy"
+          }
+        ]
+      },
+      {
+        "binding_id": "function:check-product-access",
+        "label": "Check product access function",
+        "summary": "Read-side function that uses AccountGrantedEntitlement to authorize product access.",
+        "ontology_refs": [
+          {
+            "kind": "relation",
+            "schema": "SubscriptionBilling",
+            "name": "AccountGrantedEntitlement"
+          }
+        ]
+      }
+    ],
+    "business_rules": [
+      {
+        "binding_id": "rule:paid-invoice-before-access",
+        "label": "Paid invoice before access",
+        "summary": "An account receives product access only after the subscription invoice is paid and grants the entitlement.",
+        "ontology_refs": [
+          {
+            "kind": "equation",
+            "schema": "SubscriptionBilling",
+            "name": "paid_invoice_entitles_subscription"
+          },
+          {
+            "kind": "relation",
+            "schema": "SubscriptionBilling",
+            "name": "AccountGrantedEntitlement"
+          }
+        ]
+      }
+    ]
+  },
+  "implementation_surfaces": {
+    "surfaces": [
+      {
+        "surface_id": "endpoint:billing:apply-payment",
+        "kind": "endpoint",
+        "label": "Billing apply-payment endpoint",
+        "ontology_refs": [
+          {
+            "kind": "relation",
+            "schema": "SubscriptionBilling",
+            "name": "InvoicePaidBy"
+          }
+        ],
+        "code_refs": [
+          "services/billing/internal/payments/apply_payment.go",
+          "apps/billing/src/apply-payment.ts"
+        ],
+        "test_refs": [
+          "tests/behavior-cases/apply-payment.spec.ts"
+        ],
+        "languages": [
+          "go",
+          "typescript"
+        ]
+      },
+      {
+        "surface_id": "worker:entitlements:grant",
+        "kind": "job",
+        "label": "Entitlement grant worker",
+        "ontology_refs": [
+          {
+            "kind": "relation",
+            "schema": "SubscriptionBilling",
+            "name": "AccountGrantedEntitlement"
+          }
+        ],
+        "code_refs": [
+          "workers/entitlements/src/grant_entitlement.rs",
+          "services/entitlements/grant.py"
+        ],
+        "test_refs": [
+          "tests/behavior_cases/test_entitlement_grant.py"
+        ],
+        "languages": [
+          "rust",
+          "python"
+        ]
+      }
+    ],
+    "coverage_edges": [
+      {
+        "surface_id": "endpoint:billing:apply-payment",
+        "rule_id": "schema/subscriptionbilling/relation/invoicepaidby/rule/key/0",
+        "status": "tested"
+      },
+      {
+        "surface_id": "worker:entitlements:grant",
+        "rule_id": "schema/subscriptionbilling/relation/accountgrantedentitlement/rule/key/0",
+        "status": "implemented"
+      }
+    ]
+  },
+  "coverage_policy": {
+    "coverage_mode": "advisory",
+    "require_codegen_languages": [
+      "rust",
+      "typescript",
+      "python",
+      "go"
+    ],
+    "strict_coverage": false,
+    "require_code_refs": false,
+    "require_runtime_theory": false,
+    "fail_on_unresolved_obligations": false
+  },
+  "codegen_plan": {
+    "languages": [
+      "rust",
+      "typescript",
+      "python",
+      "go"
+    ],
+    "test_name": "subscription_billing_entitlement",
+    "notes": [
+      "Generates behavior-test skeletons for payment, entitlement worker, and product-access checks."
+    ]
+  }
+}

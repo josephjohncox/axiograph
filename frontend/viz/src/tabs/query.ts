@@ -77,7 +77,6 @@ async function axqlRequest(certify, verify) {
       contexts,
       certify: !!certify,
       verify: !!verify,
-      include_anchor: false,
     };
     if (snapshot) body.snapshot = snapshot;
 

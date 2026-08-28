@@ -1,4 +1,4 @@
-//! Quality checks / linting for `.axi` modules and `.axpd` snapshots.
+//! Quality checks and linting for exact canonical `.axi` modules.
 //!
 //! This is intentionally tooling-first:
 //! - it produces an auditable report,
@@ -13,14 +13,14 @@
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::Path;
 
 use axiograph_pathdb::axi_meta::ATTR_AXI_RELATION;
 use axiograph_pathdb::axi_meta::REL_AXI_FACT_IN_CONTEXT;
 use axiograph_pathdb::axi_semantics::{ConstraintDecl, MetaPlaneIndex};
 use axiograph_pathdb::PathDB;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct QualityReportV1 {
     pub version: String,
     pub generated_at_unix_secs: u64,
@@ -31,14 +31,14 @@ pub struct QualityReportV1 {
     pub findings: Vec<QualityFindingV1>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct QualitySummaryV1 {
     pub error_count: usize,
     pub warning_count: usize,
     pub info_count: usize,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct QualityFindingV1 {
     pub level: String, // "error" | "warning" | "info"
     pub code: String,
@@ -74,8 +74,8 @@ fn node_name(db: &PathDB, id: u32) -> Option<String> {
 }
 
 pub fn cmd_quality(
-    input: &PathBuf,
-    out: Option<&PathBuf>,
+    input: &Path,
+    out: Option<&Path>,
     format: &str,
     profile: &str,
     plane: &str,
@@ -107,7 +107,7 @@ pub fn cmd_quality(
 
     match out {
         Some(path) => {
-            std::fs::write(path, rendered)?;
+            crate::security::write_output_bounded(path, rendered, "CLI output")?;
             println!("wrote {}", path.display());
         }
         None => {
@@ -126,7 +126,7 @@ pub fn cmd_quality(
 
 pub fn run_quality_checks(
     db: &PathDB,
-    input: &PathBuf,
+    input: &Path,
     profile: &str,
     plane: &str,
 ) -> Result<QualityReportV1> {
@@ -256,7 +256,9 @@ pub fn run_quality_checks(
         // `axi_fact_in_context` targets must always be Contexts (or schema-local subtypes).
         if let Some(ctx_rel_id) = db.interner.id_of(REL_AXI_FACT_IN_CONTEXT) {
             let mut allowed_context_types: std::collections::HashSet<String> =
-                ["Context".to_string(), "World".to_string()].into_iter().collect();
+                ["Context".to_string(), "World".to_string()]
+                    .into_iter()
+                    .collect();
             for schema in meta.schemas.values() {
                 for obj in &schema.object_types {
                     if schema.is_subtype(obj, "Context") {
@@ -310,7 +312,8 @@ pub fn run_quality_checks(
         entities_with_proposal_id.sort_unstable();
         entities_with_proposal_id.dedup();
 
-        let mut entities_with_conf: std::collections::HashSet<u32> = std::collections::HashSet::new();
+        let mut entities_with_conf: std::collections::HashSet<u32> =
+            std::collections::HashSet::new();
         if let Some(key_id) = proposal_conf_key {
             for entity_id in 0..db.entities.len() as u32 {
                 if db.entities.get_attr(entity_id, key_id).is_some() {
@@ -519,7 +522,7 @@ pub fn run_quality_checks(
                                             findings.push(QualityFindingV1 {
                                                 level: if profile == "strict" { "error".to_string() } else { "warning".to_string() },
                                                 code: "functional_violation".to_string(),
-                                                message: format!("functional violation on {rel_name}.{src_field} -> {rel_name}.{dst_field} (src={} has multiple dsts: {} and {}; tuple={i})", src, prev_dst, dst),
+                                                message: format!("functional violation on {rel_name}.{src_field} -> {rel_name}.{dst_field} (src={src} has multiple dsts: {prev_dst} and {dst}; tuple={i})"),
                                                 schema: Some(schema_name.clone()),
                                                 relation: Some(rel_name.clone()),
                                                 entity_id: None,
@@ -545,8 +548,9 @@ pub fn run_quality_checks(
                                     let Some(dst) = t.get(dst_field) else {
                                         continue;
                                     };
-                                    let mut key: Vec<u32> =
-                                        Vec::with_capacity(1 + params.as_ref().map_or(0, |p| p.len()));
+                                    let mut key: Vec<u32> = Vec::with_capacity(
+                                        1 + params.as_ref().map_or(0, |p| p.len()),
+                                    );
                                     let mut param_pairs: Vec<(String, u32)> = Vec::new();
                                     key.push(*src);
                                     let mut missing_param = false;
@@ -563,7 +567,7 @@ pub fn run_quality_checks(
                                     if missing_param {
                                         continue;
                                     }
-                                    let entry = map.entry(key).or_insert_with(HashSet::new);
+                                    let entry = map.entry(key).or_default();
                                     entry.insert(*dst);
                                     if entry.len() > *max as usize {
                                         let ctx = if param_pairs.is_empty() {

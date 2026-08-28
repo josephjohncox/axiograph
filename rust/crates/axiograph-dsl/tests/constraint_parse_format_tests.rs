@@ -15,8 +15,7 @@ fn parses_symmetric_with_param_clause() {
 
 #[test]
 fn parses_transitive_with_on_and_param_clause() {
-    let c = parse_constraint_v1("transitive Accessible on (from, to) param (ctx)")
-        .expect("parse");
+    let c = parse_constraint_v1("transitive Accessible on (from, to) param (ctx)").expect("parse");
     assert_eq!(
         c,
         ConstraintV1::Transitive {
@@ -50,12 +49,16 @@ fn parses_param_before_on_even_if_noncanonical() {
 #[test]
 fn rejects_param_clause_on_key_constraints() {
     let err = parse_constraint_v1("key R(a) param (ctx)").expect_err("should error");
-    assert!(err.contains("only supported for symmetric/transitive/at_most"), "err={err}");
+    assert!(
+        err.contains("only supported for symmetric/transitive/at_most"),
+        "err={err}"
+    );
 }
 
 #[test]
 fn rejects_duplicate_param_clause() {
-    let err = parse_constraint_v1("symmetric R param (ctx) param (time)").expect_err("should error");
+    let err =
+        parse_constraint_v1("symmetric R param (ctx) param (time)").expect_err("should error");
     assert!(err.contains("duplicate `param"), "err={err}");
 }
 

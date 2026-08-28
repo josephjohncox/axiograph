@@ -53,14 +53,18 @@ pub struct RecommendedReading {
 }
 
 /// Parse BibTeX format
-pub fn parse_bibtex(content: &str) -> Vec<BibEntry> {
-    let entry_re = Regex::new(r"@(\w+)\s*\{\s*([^,]+),\s*((?:[^@])*)\}").unwrap();
-    let field_re = Regex::new(r"(\w+)\s*=\s*\{([^}]*)\}").unwrap();
+pub fn parse_bibtex(content: &str) -> Result<Vec<BibEntry>> {
+    let entry_re = Regex::new(r"@(\w+)\s*\{\s*([^,]+),\s*((?:[^@])*)\}")?;
+    let field_re = Regex::new(r"(\w+)\s*=\s*\{([^}]*)\}")?;
 
     let mut entries = Vec::new();
 
     for caps in entry_re.captures_iter(content) {
-        let entry_type = match caps[1].to_lowercase().as_str() {
+        let (Some(entry_type), Some(id), Some(fields)) = (caps.get(1), caps.get(2), caps.get(3))
+        else {
+            continue;
+        };
+        let entry_type = match entry_type.as_str().to_lowercase().as_str() {
             "book" => EntryType::Book,
             "article" => EntryType::Article,
             "inproceedings" | "conference" => EntryType::InProceedings,
@@ -70,12 +74,14 @@ pub fn parse_bibtex(content: &str) -> Vec<BibEntry> {
             _ => EntryType::Other,
         };
 
-        let id = caps[2].trim().to_string();
-        let fields = &caps[3];
+        let id = id.as_str().trim().to_string();
+        let fields = fields.as_str();
 
         let mut field_map: HashMap<String, String> = HashMap::new();
         for fcaps in field_re.captures_iter(fields) {
-            field_map.insert(fcaps[1].to_lowercase(), fcaps[2].to_string());
+            if let (Some(key), Some(value)) = (fcaps.get(1), fcaps.get(2)) {
+                field_map.insert(key.as_str().to_lowercase(), value.as_str().to_string());
+            }
         }
 
         let authors = field_map
@@ -104,7 +110,7 @@ pub fn parse_bibtex(content: &str) -> Vec<BibEntry> {
         });
     }
 
-    entries
+    Ok(entries)
 }
 
 /// Parse a reading list (markdown format)
@@ -117,12 +123,12 @@ pub fn parse_bibtex(content: &str) -> Vec<BibEntry> {
 ///   Importance: high
 ///   Notes: Why this is recommended
 /// ```
-pub fn parse_reading_list(content: &str) -> Vec<RecommendedReading> {
-    let domain_re = Regex::new(r"##\s*Domain:\s*(.+)").unwrap();
-    let entry_re = Regex::new(r"(?m)^-\s+\*\*(.+?)\*\*\s+by\s+(.+?)\s*\((\d{4})\)").unwrap();
-    let topics_re = Regex::new(r"Topics:\s*(.+)").unwrap();
-    let importance_re = Regex::new(r"Importance:\s*(\w+)").unwrap();
-    let notes_re = Regex::new(r"Notes:\s*(.+)").unwrap();
+pub fn parse_reading_list(content: &str) -> Result<Vec<RecommendedReading>> {
+    let domain_re = Regex::new(r"##\s*Domain:\s*(.+)")?;
+    let entry_re = Regex::new(r"(?m)^-\s+\*\*(.+?)\*\*\s+by\s+(.+?)\s*\((\d{4})\)")?;
+    let topics_re = Regex::new(r"Topics:\s*(.+)")?;
+    let importance_re = Regex::new(r"Importance:\s*(\w+)")?;
+    let notes_re = Regex::new(r"Notes:\s*(.+)")?;
 
     let mut readings = Vec::new();
     let mut current_domain = "general".to_string();
@@ -133,16 +139,24 @@ pub fn parse_reading_list(content: &str) -> Vec<RecommendedReading> {
     while i < lines.len() {
         let line = lines[i];
 
-        if let Some(caps) = domain_re.captures(line) {
-            current_domain = caps[1].trim().to_string();
+        if let Some(domain) = domain_re
+            .captures(line)
+            .and_then(|captures| captures.get(1))
+        {
+            current_domain = domain.as_str().trim().to_string();
             i += 1;
             continue;
         }
 
         if let Some(caps) = entry_re.captures(line) {
-            let title = caps[1].to_string();
-            let author = caps[2].to_string();
-            let year: u32 = caps[3].parse().unwrap_or(0);
+            let (Some(title), Some(author), Some(year)) = (caps.get(1), caps.get(2), caps.get(3))
+            else {
+                i += 1;
+                continue;
+            };
+            let title = title.as_str().to_string();
+            let author = author.as_str().to_string();
+            let year = year.as_str().parse::<u32>().unwrap_or(0);
 
             // Look ahead for metadata
             let mut topics = Vec::new();
@@ -158,12 +172,22 @@ pub fn parse_reading_list(content: &str) -> Vec<RecommendedReading> {
                     break;
                 }
 
-                if let Some(tcaps) = topics_re.captures(next) {
-                    topics = tcaps[1].split(',').map(|s| s.trim().to_string()).collect();
+                if let Some(topic_list) = topics_re
+                    .captures(next)
+                    .and_then(|captures| captures.get(1))
+                {
+                    topics = topic_list
+                        .as_str()
+                        .split(',')
+                        .map(|value| value.trim().to_string())
+                        .collect();
                 }
 
-                if let Some(icaps) = importance_re.captures(next) {
-                    importance = match icaps[1].to_lowercase().as_str() {
+                if let Some(importance_name) = importance_re
+                    .captures(next)
+                    .and_then(|captures| captures.get(1))
+                {
+                    importance = match importance_name.as_str().to_lowercase().as_str() {
                         "critical" | "essential" => 1.0,
                         "high" => 0.8,
                         "medium" => 0.5,
@@ -172,8 +196,8 @@ pub fn parse_reading_list(content: &str) -> Vec<RecommendedReading> {
                     };
                 }
 
-                if let Some(ncaps) = notes_re.captures(next) {
-                    notes = ncaps[1].to_string();
+                if let Some(note) = notes_re.captures(next).and_then(|captures| captures.get(1)) {
+                    notes = note.as_str().to_string();
                 }
             }
 
@@ -204,7 +228,7 @@ pub fn parse_reading_list(content: &str) -> Vec<RecommendedReading> {
         i += 1;
     }
 
-    readings
+    Ok(readings)
 }
 
 fn sanitize_id(s: &str) -> String {
@@ -240,7 +264,7 @@ pub fn readings_to_extraction(readings: &[RecommendedReading], doc_id: &str) -> 
             );
 
             Chunk {
-                chunk_id: format!("{}_{}", doc_id, i),
+                chunk_id: format!("{doc_id}_{i}"),
                 document_id: doc_id.to_string(),
                 page: None,
                 span_id: r.bib.id.clone(),
@@ -347,4 +371,28 @@ pub fn canonical_machining_references() -> Vec<RecommendedReading> {
             notes: "Comprehensive manufacturing textbook".to_string(),
         },
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reading_parsers_remain_fallible_and_extract_expected_fields() {
+        let bibtex = r#"@book{handbook,
+            title={Machinery Handbook},
+            author={Erik Oberg and Franklin Jones},
+            year={2020}
+        }"#;
+        let entries = parse_bibtex(bibtex).expect("parse bounded BibTeX fixture");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].id, "handbook");
+        assert_eq!(entries[0].authors.len(), 2);
+
+        let markdown = "## Domain: Machining\n\n- **Metal Cutting** by M. Shaw (2005)\n  Topics: cutting, tooling\n  Importance: high\n  Notes: Theory\n";
+        let readings = parse_reading_list(markdown).expect("parse bounded reading fixture");
+        assert_eq!(readings.len(), 1);
+        assert_eq!(readings[0].relevance_domains, ["Machining"]);
+        assert_eq!(readings[0].importance, 0.8);
+    }
 }

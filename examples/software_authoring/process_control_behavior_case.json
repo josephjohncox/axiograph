@@ -1,0 +1,53 @@
+{
+  "version": "behavior_case_check_request_v1",
+  "behavior_case": {
+    "case_id": "process_control.charge_authorization",
+    "title": "Certified material and safe charge window authorize reactor charge",
+    "summary": "Domain-only behavior case for plant process-control authorization. Simulator, HMI, PLC, ERP, and codegen surfaces are overlay data.",
+    "given": {
+      "snapshot_label": "accepted process-control ontology seed",
+      "world": "accepted",
+      "facts": [
+        "BatchUsesMaterial(batch=Batch_42, lot=Lot_17, ctx=Accepted, time=T0)",
+        "MaterialHasCertificate(lot=Lot_17, certificate=Cert_17, ctx=Accepted, time=T0)",
+        "SimulationSupportsAction(run=Sim_Charge_Window_42, action=OpenChargeValve, ctx=Accepted, time=T1)",
+        "InterlockAllowsAction(interlock=ChargeValveInterlock, action=OpenChargeValve, ctx=Accepted, time=T1)"
+      ],
+      "notes": [
+        "These are accepted semantic facts; simulator traces and PLC code refs live in the tooling overlay."
+      ]
+    },
+    "when": {
+      "kind": "query",
+      "label": "Ask whether the batch can be cleared for reactor charge"
+    },
+    "then": {
+      "expected_outcomes": [
+        "The material certificate is transported to the batch.",
+        "The simulation supports the charge action.",
+        "The interlock allows the charge action.",
+        "The batch is cleared for reactor charge in the accepted world."
+      ],
+      "rule_scopes": [
+        {
+          "schema": "ProcessControl",
+          "scope_class": "relation",
+          "relation": "BatchHasCertifiedMaterial"
+        },
+        {
+          "schema": "ProcessControl",
+          "scope_class": "relation",
+          "relation": "BatchClearedForCharge"
+        }
+      ],
+      "trust_target": "strong",
+      "notes": [
+        "This behavior case can drive service tests and coverage reports, but not direct PLC mutation."
+      ]
+    },
+    "notes": [
+      "The domain model remains representation-only; fDDD/tooling overlays drive engineering workflows."
+    ]
+  },
+  "lifecycle_state": "accepted"
+}

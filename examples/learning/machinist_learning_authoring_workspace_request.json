@@ -1,0 +1,16 @@
+{
+  "version": "authoring_workspace_request_v1",
+  "operation": "promotion_review",
+  "axi_path": "examples/learning/MachinistLearning.axi",
+  "cq_path": "examples/learning/machinist_learning.cq",
+  "schema": "MachiningLearning",
+  "query_ir_v1": {
+    "version": 1,
+    "select_vars": ["operation"],
+    "where_atoms": [
+      { "kind": "type", "term": "?operation", "type": "MachiningOperation" }
+    ],
+    "limit": 10
+  },
+  "focus_variable": "operation"
+}

@@ -6,22 +6,17 @@
 //! - It emits Axiograph ingestion artifacts (structured `proposals.json`).
 //! - It does *not* define or extend the trusted kernel semantics (Lean does that).
 //!
-//! Today this crate uses **Sophia** to parse common RDF serializations:
-//! - N-Triples (`.nt`)
-//! - Turtle (`.ttl`)
-//! - N-Quads (`.nq`)
-//! - TriG (`.trig`)
-//! - RDF/XML (`.rdf`, `.owl`, `.xml`)
+//! Today this crate uses **Sophia** for N-Triples, Turtle, N-Quads, and TriG,
+//! and the maintained **Oxigraph RDF/XML parser** for `.rdf`, `.owl`, and
+//! `.xml` inputs.
 //!
 //! Roadmap:
 //! - Add SHACL-like validation as a certificate-checked ingestion gate.
 //! - Add named-graph / provenance exports (PROV-inspired) as a boundary layer.
 
-pub mod owl;
-
 use anyhow::{anyhow, Result};
-use axiograph_dsl::digest::fnv1a64_digest_bytes;
 use axiograph_ingest_docs::{EvidencePointer, ProposalMetaV1, ProposalV1};
+use axiograph_kernel::object_blob_digest_v2;
 use sophia::api::prelude::*;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -109,18 +104,18 @@ fn sanitize_id_component(s: &str) -> String {
 
 fn rdf_entity_id(iri: &str) -> String {
     let local = sanitize_id_component(&local_name(iri));
-    let digest = fnv1a64_digest_bytes(iri.as_bytes());
+    let digest = object_blob_digest_v2(iri.as_bytes());
     format!("rdf_entity::{local}::{digest}")
 }
 
 fn rdf_bnode_entity_id(bnode: &str, evidence_locator: &str) -> String {
     let text = format!("bnode:{evidence_locator}\n{bnode}");
-    let digest = fnv1a64_digest_bytes(text.as_bytes());
+    let digest = object_blob_digest_v2(text.as_bytes());
     format!("rdf_bnode::{digest}")
 }
 
 fn rdf_context_id(evidence_locator: &str) -> String {
-    let digest = fnv1a64_digest_bytes(evidence_locator.as_bytes());
+    let digest = object_blob_digest_v2(evidence_locator.as_bytes());
     format!("rdf_context::{digest}")
 }
 
@@ -128,12 +123,12 @@ fn rdf_graph_id(graph_name: &RdfNode, evidence_locator: &str) -> String {
     match graph_name {
         RdfNode::Iri(iri) => {
             let local = sanitize_id_component(&local_name(iri));
-            let digest = fnv1a64_digest_bytes(iri.as_bytes());
+            let digest = object_blob_digest_v2(iri.as_bytes());
             format!("rdf_graph::{local}::{digest}")
         }
         RdfNode::BlankNode(bn) => {
             let text = format!("graph_bnode:{evidence_locator}\n{bn}");
-            let digest = fnv1a64_digest_bytes(text.as_bytes());
+            let digest = object_blob_digest_v2(text.as_bytes());
             format!("rdf_graph_bnode::{digest}")
         }
     }
@@ -162,112 +157,168 @@ fn rdf_relation_id(statement: &RdfStatement, evidence_locator: &str, context_id:
         "{evidence_locator}\n{context_id}\n{subject_text}\n{}\n{object_text}\n{}",
         statement.predicate_iri, statement.index
     );
-    let digest = fnv1a64_digest_bytes(text.as_bytes());
+    let digest = object_blob_digest_v2(text.as_bytes());
     format!("rdf_rel::{digest}")
 }
 
-fn unescape_rdf_string(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut chars = s.chars();
-    while let Some(c) = chars.next() {
-        if c != '\\' {
-            out.push(c);
-            continue;
-        }
-        match chars.next() {
-            Some('n') => out.push('\n'),
-            Some('r') => out.push('\r'),
-            Some('t') => out.push('\t'),
-            Some('"') => out.push('"'),
-            Some('\\') => out.push('\\'),
-            Some(other) => {
-                out.push('\\');
-                out.push(other);
-            }
-            None => out.push('\\'),
-        }
+fn parse_term<T: sophia::api::term::Term>(term: T) -> Result<RdfObject> {
+    if let Some(iri) = term.iri() {
+        return Ok(RdfObject::Node(RdfNode::Iri(iri.as_str().to_string())));
     }
-    out
-}
-
-fn parse_term_display(term: &str) -> Result<RdfObject> {
-    let s = term.trim();
-
-    if let Some(rest) = s.strip_prefix("<").and_then(|t| t.strip_suffix(">")) {
-        return Ok(RdfObject::Node(RdfNode::Iri(rest.to_string())));
+    if let Some(blank_node) = term.bnode_id() {
+        return Ok(RdfObject::Node(RdfNode::BlankNode(
+            blank_node.as_str().to_string(),
+        )));
     }
-
-    if let Some(rest) = s.strip_prefix("_:") {
-        return Ok(RdfObject::Node(RdfNode::BlankNode(rest.to_string())));
-    }
-
-    if s.starts_with('"') {
-        // Very small literal parser (N-Triples-ish display form).
-        let mut end_quote = None;
-        let mut prev_was_escape = false;
-        for (i, ch) in s.char_indices().skip(1) {
-            if ch == '"' && !prev_was_escape {
-                end_quote = Some(i);
-                break;
-            }
-            prev_was_escape = ch == '\\' && !prev_was_escape;
-            if ch != '\\' {
-                prev_was_escape = false;
-            }
-        }
-        let Some(end) = end_quote else {
-            return Err(anyhow!("invalid literal term (missing closing quote): {s}"));
+    if let Some(lexical) = term.lexical_form() {
+        let language = term
+            .language_tag()
+            .map(|language| language.as_str().to_string());
+        let datatype = if language.is_some() {
+            None
+        } else {
+            term.datatype()
+                .map(|datatype| datatype.as_str().to_string())
+                .filter(|datatype| datatype != "http://www.w3.org/2001/XMLSchema#string")
         };
-
-        let lexical_raw = &s[1..end];
-        let lexical = unescape_rdf_string(lexical_raw);
-        let mut rest = s[end + 1..].trim();
-
-        let mut language = None;
-        let mut datatype = None;
-
-        if let Some(lang) = rest.strip_prefix('@') {
-            language = Some(lang.to_string());
-            rest = "";
-        } else if let Some(dt) = rest.strip_prefix("^^") {
-            let dt = dt.trim();
-            if let Some(dt_iri) = dt.strip_prefix("<").and_then(|t| t.strip_suffix(">")) {
-                datatype = Some(dt_iri.to_string());
-            } else if !dt.is_empty() {
-                datatype = Some(dt.to_string());
-            }
-            rest = "";
-        }
-
-        if !rest.is_empty() {
-            // Keep best-effort; don't fail ingestion on future extensions.
-        }
-
         return Ok(RdfObject::Literal(RdfLiteral {
-            lexical,
+            lexical: lexical.to_string(),
             datatype,
             language,
         }));
     }
-
-    Err(anyhow!("unsupported RDF term form: {s}"))
+    Err(anyhow!("unsupported RDF term kind: {:?}", term.kind()))
 }
 
-fn parse_node_term_display(term: &str) -> Result<RdfNode> {
-    match parse_term_display(term)? {
+fn parse_node_term<T: sophia::api::term::Term>(term: T) -> Result<RdfNode> {
+    match parse_term(term)? {
         RdfObject::Node(node) => Ok(node),
-        RdfObject::Literal(_) => Err(anyhow!("expected IRI/blank node, got literal: {term}")),
+        RdfObject::Literal(_) => Err(anyhow!("expected IRI or blank node")),
+    }
+}
+
+fn parse_oxrdf_node(term: oxrdf::NamedOrBlankNode) -> RdfNode {
+    match term {
+        oxrdf::NamedOrBlankNode::NamedNode(node) => RdfNode::Iri(node.as_str().to_string()),
+        oxrdf::NamedOrBlankNode::BlankNode(node) => RdfNode::BlankNode(node.as_str().to_string()),
+    }
+}
+
+fn parse_oxrdf_term(term: oxrdf::Term) -> Result<RdfObject> {
+    match term {
+        oxrdf::Term::NamedNode(node) => {
+            Ok(RdfObject::Node(RdfNode::Iri(node.as_str().to_string())))
+        }
+        oxrdf::Term::BlankNode(node) => Ok(RdfObject::Node(RdfNode::BlankNode(
+            node.as_str().to_string(),
+        ))),
+        oxrdf::Term::Literal(literal) => {
+            if literal.direction().is_some() {
+                return Err(anyhow!(
+                    "directional RDF 1.2 literals are outside the ingestion proposal model"
+                ));
+            }
+            let language = literal.language().map(str::to_string);
+            let datatype = if language.is_some() {
+                None
+            } else {
+                Some(literal.datatype().as_str().to_string())
+                    .filter(|datatype| datatype != "http://www.w3.org/2001/XMLSchema#string")
+            };
+            Ok(RdfObject::Literal(RdfLiteral {
+                lexical: literal.value().to_string(),
+                datatype,
+                language,
+            }))
+        }
+        oxrdf::Term::Triple(_) => Err(anyhow!(
+            "quoted RDF 1.2 triple terms are outside the ingestion proposal model"
+        )),
     }
 }
 
 fn compact_predicate_name(iri: &str) -> String {
     let local = local_name(iri);
     if local == iri {
-        let digest = fnv1a64_digest_bytes(iri.as_bytes());
+        let digest = object_blob_digest_v2(iri.as_bytes());
         format!("iri_{digest}")
     } else {
         local
     }
+}
+
+pub const MAX_RDF_INPUT_BYTES: usize = 8 * 1024 * 1024;
+pub const MAX_RDF_STATEMENTS: usize = 50_000;
+pub const MAX_RDF_XML_DEPTH: usize = 128;
+pub const MAX_RDF_XML_EVENTS: usize = 1_000_000;
+pub const MAX_RDF_XML_ATTRIBUTES_PER_ELEMENT: usize = 64;
+
+fn push_rdf_statement(
+    out: &mut Vec<RdfStatement>,
+    subject: RdfNode,
+    predicate_iri: String,
+    object: RdfObject,
+    graph_name: Option<RdfNode>,
+) -> std::result::Result<(), RdfIngestSinkError> {
+    if out.len() >= MAX_RDF_STATEMENTS {
+        return Err(RdfIngestSinkError::from(anyhow!(
+            "RDF input exceeds {MAX_RDF_STATEMENTS} statements"
+        )));
+    }
+    out.push(RdfStatement {
+        index: out.len(),
+        subject,
+        predicate_iri,
+        object,
+        graph_name,
+    });
+    Ok(())
+}
+
+fn push_triple_terms<S, P, O>(
+    out: &mut Vec<RdfStatement>,
+    subject: S,
+    predicate: P,
+    object: O,
+) -> std::result::Result<(), RdfIngestSinkError>
+where
+    S: sophia::api::term::Term,
+    P: sophia::api::term::Term,
+    O: sophia::api::term::Term,
+{
+    let subject = parse_node_term(subject).map_err(RdfIngestSinkError::from)?;
+    let predicate = parse_node_term(predicate).map_err(RdfIngestSinkError::from)?;
+    let RdfNode::Iri(predicate_iri) = predicate else {
+        return Ok(());
+    };
+    let object = parse_term(object).map_err(RdfIngestSinkError::from)?;
+    push_rdf_statement(out, subject, predicate_iri, object, None)
+}
+
+fn push_quad_terms<S, P, O, G>(
+    out: &mut Vec<RdfStatement>,
+    subject: S,
+    predicate: P,
+    object: O,
+    graph_name: Option<G>,
+) -> std::result::Result<(), RdfIngestSinkError>
+where
+    S: sophia::api::term::Term,
+    P: sophia::api::term::Term,
+    O: sophia::api::term::Term,
+    G: sophia::api::term::Term,
+{
+    let subject = parse_node_term(subject).map_err(RdfIngestSinkError::from)?;
+    let predicate = parse_node_term(predicate).map_err(RdfIngestSinkError::from)?;
+    let RdfNode::Iri(predicate_iri) = predicate else {
+        return Ok(());
+    };
+    let object = parse_term(object).map_err(RdfIngestSinkError::from)?;
+    let graph_name = graph_name
+        .map(parse_node_term)
+        .transpose()
+        .map_err(RdfIngestSinkError::from)?;
+    push_rdf_statement(out, subject, predicate_iri, object, graph_name)
 }
 
 fn push_attr_value(attrs: &mut HashMap<String, String>, key: String, value: String) {
@@ -284,10 +335,70 @@ fn push_attr_value(attrs: &mut HashMap<String, String>, key: String, value: Stri
     }
 }
 
+fn validate_rdf_xml_with_patched_parser(bytes: &[u8]) -> Result<()> {
+    use quick_xml::events::{BytesStart, Event};
+
+    fn validate_attributes(start: &BytesStart<'_>) -> Result<()> {
+        for (index, attribute) in start.attributes().with_checks(true).enumerate() {
+            if index >= MAX_RDF_XML_ATTRIBUTES_PER_ELEMENT {
+                return Err(anyhow!(
+                    "RDF/XML element exceeds {MAX_RDF_XML_ATTRIBUTES_PER_ELEMENT} attributes"
+                ));
+            }
+            attribute.map_err(|error| anyhow!("invalid RDF/XML attribute set: {error}"))?;
+        }
+        Ok(())
+    }
+
+    // Parse exact bytes through a bounded structural pass before semantic
+    // RDF/XML decoding. Both passes use quick-xml 0.41, but this pass enforces
+    // Axiograph's tighter input, attribute, namespace, depth, and event limits.
+    let mut reader = quick_xml::NsReader::from_reader(std::io::Cursor::new(bytes));
+    let mut buffer = Vec::new();
+    let mut depth = 0usize;
+    let mut events = 0usize;
+    loop {
+        let event = reader
+            .read_event_into(&mut buffer)
+            .map_err(|error| anyhow!("invalid RDF/XML structure: {error}"))?;
+        events += 1;
+        if events > MAX_RDF_XML_EVENTS {
+            return Err(anyhow!(
+                "RDF/XML exceeds {MAX_RDF_XML_EVENTS} parser events"
+            ));
+        }
+        match event {
+            Event::Start(start) => {
+                validate_attributes(&start)?;
+                depth += 1;
+                if depth > MAX_RDF_XML_DEPTH {
+                    return Err(anyhow!("RDF/XML exceeds depth {MAX_RDF_XML_DEPTH}"));
+                }
+            }
+            Event::Empty(start) => validate_attributes(&start)?,
+            Event::End(_) => {
+                depth = depth
+                    .checked_sub(1)
+                    .ok_or_else(|| anyhow!("RDF/XML contains an unmatched closing tag"))?;
+            }
+            Event::Eof => break,
+            _ => {}
+        }
+        buffer.clear();
+    }
+    if depth != 0 {
+        return Err(anyhow!("RDF/XML contains unclosed elements"));
+    }
+    Ok(())
+}
+
 fn parse_rdf_statements_from_bytes_v1(
     bytes: &[u8],
     format: RdfFormatV1,
 ) -> Result<Vec<RdfStatement>> {
+    if format == RdfFormatV1::RdfXml {
+        validate_rdf_xml_with_patched_parser(bytes)?;
+    }
     let cursor = std::io::Cursor::new(bytes);
     let reader = std::io::BufReader::new(cursor);
 
@@ -296,149 +407,54 @@ fn parse_rdf_statements_from_bytes_v1(
             let mut out: Vec<RdfStatement> = Vec::new();
             let mut parser = sophia::turtle::parser::nt::parse_bufread(reader);
             parser
-                .try_for_each_triple(|t| -> std::result::Result<(), RdfIngestSinkError> {
-                    let subject = parse_node_term_display(&t.s().to_string())
-                        .map_err(RdfIngestSinkError::from)?;
-                    let predicate_iri = parse_node_term_display(&t.p().to_string())
-                        .map_err(RdfIngestSinkError::from)?;
-                    let RdfNode::Iri(predicate_iri) = predicate_iri else {
-                        return Ok(());
-                    };
-                    let object =
-                        parse_term_display(&t.o().to_string()).map_err(RdfIngestSinkError::from)?;
-                    let index = out.len();
-                    out.push(RdfStatement {
-                        index,
-                        subject,
-                        predicate_iri,
-                        object,
-                        graph_name: None,
-                    });
-                    Ok(())
+                .try_for_each_triple(|triple| {
+                    push_triple_terms(&mut out, triple.s(), triple.p(), triple.o())
                 })
-                .map_err(|e| anyhow!("failed to parse N-Triples: {e}"))?;
+                .map_err(|error| anyhow!("failed to parse N-Triples: {error}"))?;
             Ok(out)
         }
         RdfFormatV1::Turtle => {
             let mut out: Vec<RdfStatement> = Vec::new();
             let mut parser = sophia::turtle::parser::turtle::parse_bufread(reader);
             parser
-                .try_for_each_triple(|t| -> std::result::Result<(), RdfIngestSinkError> {
-                    let subject = parse_node_term_display(&t.s().to_string())
-                        .map_err(RdfIngestSinkError::from)?;
-                    let predicate_iri = parse_node_term_display(&t.p().to_string())
-                        .map_err(RdfIngestSinkError::from)?;
-                    let RdfNode::Iri(predicate_iri) = predicate_iri else {
-                        return Ok(());
-                    };
-                    let object =
-                        parse_term_display(&t.o().to_string()).map_err(RdfIngestSinkError::from)?;
-                    let index = out.len();
-                    out.push(RdfStatement {
-                        index,
-                        subject,
-                        predicate_iri,
-                        object,
-                        graph_name: None,
-                    });
-                    Ok(())
+                .try_for_each_triple(|triple| {
+                    push_triple_terms(&mut out, triple.s(), triple.p(), triple.o())
                 })
-                .map_err(|e| anyhow!("failed to parse Turtle: {e}"))?;
+                .map_err(|error| anyhow!("failed to parse Turtle: {error}"))?;
             Ok(out)
         }
         RdfFormatV1::NQuads => {
             let mut out: Vec<RdfStatement> = Vec::new();
             let mut parser = sophia::turtle::parser::nq::parse_bufread(reader);
             parser
-                .try_for_each_quad(|q| -> std::result::Result<(), RdfIngestSinkError> {
-                    let subject = parse_node_term_display(&q.s().to_string())
-                        .map_err(RdfIngestSinkError::from)?;
-                    let predicate_iri = parse_node_term_display(&q.p().to_string())
-                        .map_err(RdfIngestSinkError::from)?;
-                    let RdfNode::Iri(predicate_iri) = predicate_iri else {
-                        return Ok(());
-                    };
-                    let object =
-                        parse_term_display(&q.o().to_string()).map_err(RdfIngestSinkError::from)?;
-                    let graph_name = q
-                        .g()
-                        .map(|g| {
-                            parse_node_term_display(&g.to_string())
-                                .map_err(RdfIngestSinkError::from)
-                        })
-                        .transpose()?;
-                    let index = out.len();
-                    out.push(RdfStatement {
-                        index,
-                        subject,
-                        predicate_iri,
-                        object,
-                        graph_name,
-                    });
-                    Ok(())
+                .try_for_each_quad(|quad| {
+                    push_quad_terms(&mut out, quad.s(), quad.p(), quad.o(), quad.g())
                 })
-                .map_err(|e| anyhow!("failed to parse N-Quads: {e}"))?;
+                .map_err(|error| anyhow!("failed to parse N-Quads: {error}"))?;
             Ok(out)
         }
         RdfFormatV1::TriG => {
             let mut out: Vec<RdfStatement> = Vec::new();
             let mut parser = sophia::turtle::parser::trig::parse_bufread(reader);
             parser
-                .try_for_each_quad(|q| -> std::result::Result<(), RdfIngestSinkError> {
-                    let subject = parse_node_term_display(&q.s().to_string())
-                        .map_err(RdfIngestSinkError::from)?;
-                    let predicate_iri = parse_node_term_display(&q.p().to_string())
-                        .map_err(RdfIngestSinkError::from)?;
-                    let RdfNode::Iri(predicate_iri) = predicate_iri else {
-                        return Ok(());
-                    };
-                    let object =
-                        parse_term_display(&q.o().to_string()).map_err(RdfIngestSinkError::from)?;
-                    let graph_name = q
-                        .g()
-                        .map(|g| {
-                            parse_node_term_display(&g.to_string())
-                                .map_err(RdfIngestSinkError::from)
-                        })
-                        .transpose()?;
-                    let index = out.len();
-                    out.push(RdfStatement {
-                        index,
-                        subject,
-                        predicate_iri,
-                        object,
-                        graph_name,
-                    });
-                    Ok(())
+                .try_for_each_quad(|quad| {
+                    push_quad_terms(&mut out, quad.s(), quad.p(), quad.o(), quad.g())
                 })
-                .map_err(|e| anyhow!("failed to parse TriG: {e}"))?;
+                .map_err(|error| anyhow!("failed to parse TriG: {error}"))?;
             Ok(out)
         }
         RdfFormatV1::RdfXml => {
             let mut out: Vec<RdfStatement> = Vec::new();
-            let mut parser = sophia::xml::parser::parse_bufread(reader);
-            parser
-                .try_for_each_triple(|t| -> std::result::Result<(), RdfIngestSinkError> {
-                    let subject = parse_node_term_display(&t.s().to_string())
-                        .map_err(RdfIngestSinkError::from)?;
-                    let predicate_iri = parse_node_term_display(&t.p().to_string())
-                        .map_err(RdfIngestSinkError::from)?;
-                    let RdfNode::Iri(predicate_iri) = predicate_iri else {
-                        return Ok(());
-                    };
-                    let object =
-                        parse_term_display(&t.o().to_string()).map_err(RdfIngestSinkError::from)?;
-                    let index = out.len();
-                    out.push(RdfStatement {
-                        index,
-                        subject,
-                        predicate_iri,
-                        object,
-                        graph_name: None,
-                    });
-                    Ok(())
-                })
-                .map_err(|e| anyhow!("failed to parse RDF/XML: {e}"))?;
+            for triple in oxrdfxml::RdfXmlParser::new().for_slice(bytes) {
+                let triple = triple.map_err(|error| anyhow!("failed to parse RDF/XML: {error}"))?;
+                push_rdf_statement(
+                    &mut out,
+                    parse_oxrdf_node(triple.subject),
+                    triple.predicate.as_str().to_string(),
+                    parse_oxrdf_term(triple.object)?,
+                    None,
+                )?;
+            }
             Ok(out)
         }
     }
@@ -468,7 +484,7 @@ pub fn proposals_from_rdf_file_v1(
     evidence_locator: Option<String>,
     schema_hint: Option<String>,
 ) -> Result<Vec<ProposalV1>> {
-    let bytes = std::fs::read(path)?;
+    let bytes = axiograph_security::read_file_bounded(path, MAX_RDF_INPUT_BYTES, "RDF input")?;
     let ext = path
         .extension()
         .and_then(|s| s.to_str())
@@ -492,6 +508,9 @@ pub fn proposals_from_rdf_v1(
     evidence_locator: Option<String>,
     schema_hint: Option<String>,
 ) -> Result<Vec<ProposalV1>> {
+    if bytes.len() > MAX_RDF_INPUT_BYTES {
+        return Err(anyhow!("RDF input exceeds {MAX_RDF_INPUT_BYTES} bytes"));
+    }
     let evidence_locator = evidence_locator.unwrap_or_else(|| "<memory>".to_string());
     let context_id = rdf_context_id(&evidence_locator);
 
@@ -503,7 +522,8 @@ pub fn proposals_from_rdf_v1(
     let mut types_by_resource: HashMap<RdfNode, HashSet<String>> = HashMap::new();
     let mut attrs_by_resource: HashMap<RdfNode, HashMap<String, Vec<RdfLiteral>>> = HashMap::new();
 
-    // All edges (including rdf:type) that connect node → node.
+    // Node-to-node relationship statements. `rdf:type` is handled as entity
+    // typing below, not as a binary relation proposal.
     let mut node_edges: Vec<(RdfStatement, RdfNode)> = Vec::new();
 
     for stmt in &statements {
@@ -516,7 +536,6 @@ pub fn proposals_from_rdf_v1(
         match &stmt.object {
             RdfObject::Node(obj_node) => {
                 resources.insert(obj_node.clone());
-                node_edges.push((stmt.clone(), obj_node.clone()));
 
                 if stmt.predicate_iri == RDF_TYPE_IRI {
                     if let RdfNode::Iri(ty_iri) = obj_node {
@@ -525,6 +544,8 @@ pub fn proposals_from_rdf_v1(
                             .or_default()
                             .insert(ty_iri.clone());
                     }
+                } else {
+                    node_edges.push((stmt.clone(), obj_node.clone()));
                 }
             }
             RdfObject::Literal(lit) => {
@@ -745,6 +766,8 @@ pub fn proposals_from_rdf_v1(
 
         let mut attrs = HashMap::new();
         attrs.insert("context".to_string(), stmt_context_id.clone());
+        attrs.insert("axi_source_field".to_string(), "subject".to_string());
+        attrs.insert("axi_target_field".to_string(), "object".to_string());
 
         out.push(ProposalV1::Relation {
             meta: ProposalMetaV1 {
@@ -830,6 +853,108 @@ ex:a ex:label "Alice"@en .
                 ..
             } if entity_type == "Context"
         )));
+    }
+
+    #[test]
+    fn rdf_xml_passes_bounded_structural_preflight_before_semantic_parse() {
+        let xml = r#"<?xml version="1.0"?>
+<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+         xmlns:ex="http://example.org/">
+  <rdf:Description rdf:about="http://example.org/a">
+    <ex:knows rdf:resource="http://example.org/b" />
+  </rdf:Description>
+</rdf:RDF>"#;
+        let proposals = proposals_from_rdf_v1(
+            xml.as_bytes(),
+            RdfFormatV1::RdfXml,
+            Some("file://valid.rdf".to_string()),
+            None,
+        )
+        .expect("bounded RDF/XML should parse");
+        assert!(proposals.iter().any(|proposal| matches!(
+            proposal,
+            ProposalV1::Relation { rel_type, .. } if rel_type == "knows"
+        )));
+    }
+
+    #[test]
+    fn rdf_xml_rejects_rdf_12_terms_the_proposal_model_cannot_preserve() {
+        let directional = r#"<?xml version="1.0"?>
+<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+         xmlns:ex="http://example.org/"
+         xmlns:its="http://www.w3.org/2005/11/its"
+         rdf:version="1.2">
+  <rdf:Description rdf:about="http://example.org/a">
+    <ex:label xml:lang="ar" its:dir="rtl">مرحبا</ex:label>
+  </rdf:Description>
+</rdf:RDF>"#;
+        let error = parse_rdf_statements_from_bytes_v1(directional.as_bytes(), RdfFormatV1::RdfXml)
+            .expect_err("directional literal semantics must not be discarded");
+        assert!(error.to_string().contains("directional RDF 1.2"));
+
+        let quoted_triple = r#"<?xml version="1.0"?>
+<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+         xmlns:ex="http://example.org/"
+         rdf:version="1.2">
+  <rdf:Description rdf:about="http://example.org/a">
+    <ex:claim rdf:parseType="Triple">
+      <rdf:Description rdf:type="http://example.org/Claim" />
+    </ex:claim>
+  </rdf:Description>
+</rdf:RDF>"#;
+        let error =
+            parse_rdf_statements_from_bytes_v1(quoted_triple.as_bytes(), RdfFormatV1::RdfXml)
+                .expect_err("quoted triple semantics must not be flattened");
+        assert!(error.to_string().contains("quoted RDF 1.2"));
+    }
+
+    #[test]
+    fn rdf_xml_preflight_rejects_adversarial_attributes_namespaces_and_depth() {
+        let duplicate = br#"<root duplicate="a" duplicate="b" />"#;
+        assert!(validate_rdf_xml_with_patched_parser(duplicate).is_err());
+
+        let attributes = (0..=MAX_RDF_XML_ATTRIBUTES_PER_ELEMENT)
+            .map(|index| format!("a{index}=\"v{index}\""))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let attribute_flood = format!("<root {attributes} />");
+        let error = validate_rdf_xml_with_patched_parser(attribute_flood.as_bytes())
+            .expect_err("attribute fanout must reject");
+        assert!(error.to_string().contains("attributes"));
+
+        let namespaces = (0..=256)
+            .map(|index| format!("xmlns:n{index}=\"urn:n{index}\""))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let namespace_flood = format!("<root {namespaces} />");
+        assert!(validate_rdf_xml_with_patched_parser(namespace_flood.as_bytes()).is_err());
+
+        let deep = format!(
+            "{}{}",
+            "<node>".repeat(MAX_RDF_XML_DEPTH + 1),
+            "</node>".repeat(MAX_RDF_XML_DEPTH + 1)
+        );
+        let error = validate_rdf_xml_with_patched_parser(deep.as_bytes())
+            .expect_err("over-deep RDF/XML must reject");
+        assert!(error.to_string().contains("depth"));
+    }
+
+    #[test]
+    fn rdf_ingest_rejects_oversized_bytes_before_parsing() {
+        let bytes = vec![b' '; MAX_RDF_INPUT_BYTES + 1];
+        let error = proposals_from_rdf_v1(&bytes, RdfFormatV1::NTriples, None, None)
+            .expect_err("oversized RDF input must reject");
+        assert!(error.to_string().contains("RDF input exceeds"));
+    }
+
+    #[test]
+    fn rdf_ingest_rejects_statement_fanout() {
+        let line = "_:a <http://example.org/p> _:b .\n";
+        let input = line.repeat(MAX_RDF_STATEMENTS + 1);
+        assert!(input.len() < MAX_RDF_INPUT_BYTES);
+        let error = parse_rdf_statements_from_bytes_v1(input.as_bytes(), RdfFormatV1::NTriples)
+            .expect_err("RDF statement fanout must reject");
+        assert!(error.to_string().contains("statements"));
     }
 
     #[test]

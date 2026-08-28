@@ -40,6 +40,7 @@ target
 *.tlean
 *.ast.json
 *.lock
+!rust/Cargo.lock
 build
 GPATH
 GRTAGS
@@ -149,8 +150,18 @@ latex.out/
 .bin/
 
 bin/
+# Rust package entry points are source, not generated bin output.
+!rust/crates/*/src/bin/
+!rust/crates/*/src/bin/*.rs
 
 # Local direnv overrides
 .envrc.local
 *.envrc
 !.envrc
+
+*.stderr
+!rust/crates/axiograph-pathdb/tests/ui/*.stderr
+
+# Local agent indexes and review artifacts
+.codebase-index/
+.pi-subagents/

@@ -1,10 +1,10 @@
-//! Sync Manager: Orchestrates bidirectional LLM ↔ KG synchronization
+//! Sync Manager: orchestrates LLM evidence extraction and grounding
 //!
 //! The sync manager coordinates:
 //! 1. Fact extraction from LLM conversations
 //! 2. Validation against schema
 //! 3. Conflict detection and resolution
-//! 4. Storage to both .axi files and PathDB
+//! 4. Evidence/cache materialization
 //! 5. Provenance and version tracking
 
 #![allow(unused_imports, unused_mut, unused_variables)]
@@ -12,16 +12,46 @@
 use crate::{
     Conflict, ConflictResolver, ConflictType, ConversationTurn, ExtractedFact, FactExtractor,
     FactId, FactSource, FactStatus, FactValidator, GroundedFact, GroundingContext,
-    GuardrailContext, LLMProvider, Resolution, SchemaContext, SessionId, StructuredFact,
-    SyncConfig, SyncState, ValidationResult,
+    GroundingProvenanceV1, GuardrailContext, LLMProvider, Resolution, SchemaContext, SessionId,
+    StructuredFact, SyncConfig, SyncState, ValidationResult,
 };
 use axiograph_pathdb::PathDB;
-use axiograph_storage::{Change, ChangeSource, StorableFact, UnifiedStorage};
+use axiograph_storage::{Change, ChangeId, ChangeSource, StorableFact, UnifiedStorage};
 use chrono::Utc;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, OnceLock};
 use uuid::Uuid;
+
+const MAX_SYNC_BATCH_SIZE: usize = 10_000;
+const MAX_SYNC_CONVERSATION_TURNS: usize = 4_096;
+const MAX_SYNC_CONVERSATION_BYTES: usize = 8 * 1024 * 1024;
+
+struct FactIntegrationOutcome {
+    integrated: Vec<ExtractedFact>,
+    pending_review: Vec<(ExtractedFact, ChangeId)>,
+}
+
+struct SyncExtractionPatterns {
+    is_a: regex::Regex,
+    has: regex::Regex,
+    rule: regex::Regex,
+}
+
+fn sync_extraction_patterns() -> anyhow::Result<&'static SyncExtractionPatterns> {
+    static PATTERNS: OnceLock<Result<SyncExtractionPatterns, regex::Error>> = OnceLock::new();
+    PATTERNS
+        .get_or_init(|| {
+            Ok(SyncExtractionPatterns {
+                is_a: regex::Regex::new(r"(?i)(\w+)\s+is\s+a\s+(\w+)")?,
+                has: regex::Regex::new(r"(?i)(\w+)\s+has\s+(\w+)\s+of\s+(\w+)")?,
+                rule: regex::Regex::new(r"(?i)(always|never|should)\s+(.+?)\s+when\s+(.+)")?,
+            })
+        })
+        .as_ref()
+        .map_err(|error| anyhow::anyhow!("compile sync extraction patterns: {error}"))
+}
 
 // ============================================================================
 // Sync Events for Observability
@@ -48,11 +78,7 @@ pub enum SyncEvent {
         types: Vec<ConflictType>,
     },
     /// Facts integrated into storage
-    FactsIntegrated {
-        count: usize,
-        axi_files: Vec<String>,
-        pathdb_ids: Vec<u32>,
-    },
+    FactsIntegrated { count: usize, pathdb_ids: Vec<u32> },
     /// Rollback performed
     RolledBack {
         to_version: u64,
@@ -69,12 +95,14 @@ pub type SyncEventHandler = Box<dyn Fn(SyncEvent) + Send + Sync>;
 // Sync Manager
 // ============================================================================
 
-/// The main sync manager integrating LLM with unified storage
+/// The main sync manager integrating LLM output with runtime evidence storage.
 pub struct SyncManager {
-    /// Unified storage (handles both .axi and PathDB)
+    /// Runtime evidence store and PathDB cache materialization.
     storage: Arc<UnifiedStorage>,
     /// Current sync state
     state: Arc<RwLock<SyncState>>,
+    /// Storage review changes keyed by their corresponding pending fact.
+    pending_storage_changes: Arc<RwLock<HashMap<FactId, ChangeId>>>,
     /// Configuration
     config: SyncConfig,
     /// Event handlers
@@ -84,28 +112,42 @@ pub struct SyncManager {
 }
 
 impl SyncManager {
-    /// Create a new sync manager with unified storage
+    /// Create a new sync manager with runtime evidence storage.
     pub fn new(
         storage: Arc<UnifiedStorage>,
         config: SyncConfig,
         default_provider: LLMProvider,
-    ) -> Self {
+    ) -> anyhow::Result<Self> {
+        if !config.auto_integrate_threshold.is_finite()
+            || !(0.0..=1.0).contains(&config.auto_integrate_threshold)
+        {
+            return Err(anyhow::anyhow!(
+                "auto_integrate_threshold must be a finite probability in [0, 1]"
+            ));
+        }
+        if config.batch_size == 0 || config.batch_size > MAX_SYNC_BATCH_SIZE {
+            return Err(anyhow::anyhow!(
+                "batch_size must be in 1..={MAX_SYNC_BATCH_SIZE}"
+            ));
+        }
         let state = SyncState {
             session_id: Uuid::new_v4(),
             last_sync: Utc::now(),
             pending_facts: Vec::new(),
             recent_integrations: Vec::new(),
+            rejected_facts: Vec::new(),
             conflicts: Vec::new(),
             graph_version: 0,
         };
 
-        Self {
+        Ok(Self {
             storage,
             state: Arc::new(RwLock::new(state)),
+            pending_storage_changes: Arc::new(RwLock::new(HashMap::new())),
             config,
             event_handlers: Vec::new(),
             default_provider,
-        }
+        })
     }
 
     /// Add an event handler
@@ -130,20 +172,50 @@ impl SyncManager {
         conversation: &[ConversationTurn],
         provider: Option<LLMProvider>,
     ) -> anyhow::Result<SyncResult> {
+        if conversation.len() > MAX_SYNC_CONVERSATION_TURNS {
+            return Err(anyhow::anyhow!(
+                "conversation turn count {} exceeds {MAX_SYNC_CONVERSATION_TURNS}",
+                conversation.len()
+            ));
+        }
+        let mut conversation_bytes = 0_usize;
+        for turn in conversation {
+            conversation_bytes = conversation_bytes
+                .checked_add(turn.content.len())
+                .ok_or_else(|| anyhow::anyhow!("conversation byte count overflow"))?;
+            for (key, value) in &turn.metadata {
+                conversation_bytes = conversation_bytes
+                    .checked_add(key.len())
+                    .and_then(|total| total.checked_add(value.len()))
+                    .ok_or_else(|| anyhow::anyhow!("conversation byte count overflow"))?;
+            }
+            if conversation_bytes > MAX_SYNC_CONVERSATION_BYTES {
+                return Err(anyhow::anyhow!(
+                    "conversation bytes {conversation_bytes} exceed {MAX_SYNC_CONVERSATION_BYTES}"
+                ));
+            }
+        }
         let provider = provider.unwrap_or_else(|| self.default_provider.clone());
         let session_id = self.state.read().session_id;
 
         // Step 1: Extract facts
         let extracted = self.extract_facts(conversation, &provider).await?;
+        if extracted.len() > self.config.batch_size {
+            return Err(anyhow::anyhow!(
+                "extracted fact count {} exceeds configured batch_size {}",
+                extracted.len(),
+                self.config.batch_size
+            ));
+        }
 
         self.emit(SyncEvent::FactsExtracted {
             session_id,
             count: extracted.len(),
-            source: format!("{:?}", provider),
+            source: format!("{provider:?}"),
         });
 
         // Step 2: Validate facts
-        let (valid, invalid, needs_review) = self.validate_facts(&extracted)?;
+        let (valid, invalid, mut needs_review) = self.validate_facts(&extracted)?;
 
         self.emit(SyncEvent::FactsValidated {
             valid: valid.len(),
@@ -162,11 +234,26 @@ impl SyncManager {
         }
 
         // Step 4: Integrate valid, non-conflicting facts
-        let integrated = self.integrate_facts(valid, &provider, session_id)?;
+        let conflicting_fact_ids = conflicts
+            .iter()
+            .map(|conflict| conflict.new_fact.id)
+            .collect::<HashSet<_>>();
+        let integrable = valid
+            .into_iter()
+            .filter(|fact| !conflicting_fact_ids.contains(&fact.id))
+            .collect();
+        let integration = self.integrate_facts(integrable, &provider, session_id)?;
+        let integrated = integration.integrated;
+        {
+            let mut pending_storage_changes = self.pending_storage_changes.write();
+            for (fact, change_id) in integration.pending_review {
+                pending_storage_changes.insert(fact.id, change_id);
+                needs_review.push(fact);
+            }
+        }
 
         self.emit(SyncEvent::FactsIntegrated {
             count: integrated.len(),
-            axi_files: vec!["llm_extracted.axi".to_string()],
             pathdb_ids: integrated
                 .iter()
                 .flat_map(|f| {
@@ -209,7 +296,8 @@ impl SyncManager {
 
         for (idx, turn) in conversation.iter().enumerate() {
             // Simple pattern-based extraction (would use LLM in production)
-            let extracted = self.pattern_extract(&turn.content)?;
+            let remaining = self.config.batch_size.saturating_sub(facts.len());
+            let extracted = self.pattern_extract(&turn.content, remaining)?;
 
             for structured in extracted {
                 facts.push(ExtractedFact {
@@ -233,36 +321,61 @@ impl SyncManager {
     }
 
     /// Pattern-based fact extraction (simplified)
-    fn pattern_extract(&self, text: &str) -> anyhow::Result<Vec<StructuredFact>> {
+    fn pattern_extract(&self, text: &str, max_facts: usize) -> anyhow::Result<Vec<StructuredFact>> {
         let mut facts = Vec::new();
 
+        let patterns = sync_extraction_patterns()?;
+
         // Pattern: "X is a Y"
-        let is_a_re = regex::Regex::new(r"(?i)(\w+)\s+is\s+a\s+(\w+)")?;
-        for cap in is_a_re.captures_iter(text) {
+        for captures in patterns.is_a.captures_iter(text) {
+            let (Some(name), Some(entity_type)) = (captures.get(1), captures.get(2)) else {
+                continue;
+            };
+            if facts.len() >= max_facts {
+                return Err(anyhow::anyhow!(
+                    "extracted fact count exceeds configured batch_size"
+                ));
+            }
             facts.push(StructuredFact::Entity {
-                entity_type: cap[2].to_string(),
-                name: cap[1].to_string(),
+                entity_type: entity_type.as_str().to_string(),
+                name: name.as_str().to_string(),
                 attributes: std::collections::HashMap::new(),
             });
         }
 
         // Pattern: "X has Y of Z"
-        let has_re = regex::Regex::new(r"(?i)(\w+)\s+has\s+(\w+)\s+of\s+(\w+)")?;
-        for cap in has_re.captures_iter(text) {
+        for captures in patterns.has.captures_iter(text) {
+            let (Some(name), Some(attribute), Some(value)) =
+                (captures.get(1), captures.get(2), captures.get(3))
+            else {
+                continue;
+            };
             let mut attrs = std::collections::HashMap::new();
-            attrs.insert(cap[2].to_string(), cap[3].to_string());
+            attrs.insert(attribute.as_str().to_string(), value.as_str().to_string());
+            if facts.len() >= max_facts {
+                return Err(anyhow::anyhow!(
+                    "extracted fact count exceeds configured batch_size"
+                ));
+            }
             facts.push(StructuredFact::Entity {
                 entity_type: "Unknown".to_string(),
-                name: cap[1].to_string(),
+                name: name.as_str().to_string(),
                 attributes: attrs,
             });
         }
 
         // Pattern: "always/never/should X when Y"
-        let rule_re = regex::Regex::new(r"(?i)(always|never|should)\s+(.+?)\s+when\s+(.+)")?;
-        for cap in rule_re.captures_iter(text) {
+        for captures in patterns.rule.captures_iter(text) {
+            let (Some(action), Some(condition)) = (captures.get(2), captures.get(3)) else {
+                continue;
+            };
+            if facts.len() >= max_facts {
+                return Err(anyhow::anyhow!(
+                    "extracted fact count exceeds configured batch_size"
+                ));
+            }
             facts.push(StructuredFact::TacitKnowledge {
-                rule: format!("{} -> {}", &cap[3], &cap[2]),
+                rule: format!("{} -> {}", condition.as_str(), action.as_str()),
                 confidence: 0.8,
                 domain: "general".to_string(),
             });
@@ -281,12 +394,12 @@ impl SyncManager {
             } => {
                 let attrs: Vec<String> = attributes
                     .iter()
-                    .map(|(k, v)| format!("{} = {}", k, v))
+                    .map(|(k, v)| format!("{k} = {v}"))
                     .collect();
                 if attrs.is_empty() {
-                    format!("{} is a {}", name, entity_type)
+                    format!("{name} is a {entity_type}")
                 } else {
-                    format!("{} is a {} with {}", name, entity_type, attrs.join(", "))
+                    format!("{name} is a {entity_type} with {}", attrs.join(", "))
                 }
             }
             StructuredFact::Relation {
@@ -295,24 +408,19 @@ impl SyncManager {
                 target,
                 ..
             } => {
-                format!("{} {} {}", source, rel_type, target)
+                format!("{source} {rel_type} {target}")
             }
             StructuredFact::Constraint {
                 name, condition, ..
             } => {
-                format!("Constraint {}: {}", name, condition)
+                format!("Constraint {name}: {condition}")
             }
             StructuredFact::TacitKnowledge {
                 rule,
                 confidence,
                 domain,
             } => {
-                format!(
-                    "[{}] {} (confidence: {:.0}%)",
-                    domain,
-                    rule,
-                    confidence * 100.0
-                )
+                format!("[{domain}] {rule} (confidence: {:.0}%)", confidence * 100.0)
             }
         }
     }
@@ -326,12 +434,9 @@ impl SyncManager {
         let mut invalid = Vec::new();
         let mut needs_review = Vec::new();
 
-        let pathdb = self.storage.pathdb();
-        let db = pathdb.read();
-
         for fact in facts {
             // Check schema validity
-            let schema_valid = self.check_schema_validity(&fact.structured, &db);
+            let schema_valid = self.check_schema_validity(&fact.structured);
 
             if !schema_valid {
                 let mut rejected = fact.clone();
@@ -372,49 +477,21 @@ impl SyncManager {
     }
 
     /// Check if fact matches schema
-    fn check_schema_validity(&self, fact: &StructuredFact, _db: &PathDB) -> bool {
-        // Simplified - would check against actual schema
+    fn check_schema_validity(&self, fact: &StructuredFact) -> bool {
+        let schema = self.storage.schema();
         match fact {
             StructuredFact::Entity { entity_type, .. } => {
-                // Accept common entity types
-                matches!(
-                    entity_type.as_str(),
-                    "Material"
-                        | "Tool"
-                        | "Operation"
-                        | "Machine"
-                        | "Constraint"
-                        | "Guideline"
-                        | "Concept"
-                        | "Unknown"
-                        | "Person"
-                        | "Organization"
-                        | "Location"
-                        | "Event"
-                )
+                schema.entity_types.iter().any(|known| known == entity_type)
             }
             StructuredFact::Relation { rel_type, .. } => {
-                // Accept common relation types
-                matches!(
-                    rel_type.as_str(),
-                    "hasMaterial"
-                        | "usesTool"
-                        | "produces"
-                        | "requires"
-                        | "isPartOf"
-                        | "relatedTo"
-                        | "precedes"
-                        | "follows"
-                )
+                schema.relation_types.iter().any(|known| known == rel_type)
             }
-            _ => true, // Constraints and tacit knowledge always pass
+            StructuredFact::Constraint { .. } | StructuredFact::TacitKnowledge { .. } => true,
         }
     }
 
-    /// Detect conflicts with existing knowledge
     fn detect_conflicts(&self, facts: &[ExtractedFact]) -> anyhow::Result<Vec<Conflict>> {
-        let pathdb = self.storage.pathdb();
-        let db = pathdb.read();
+        let db = self.storage.pathdb();
         let mut conflicts = Vec::new();
 
         for fact in facts {
@@ -432,9 +509,7 @@ impl SyncManager {
                             new_fact: fact.clone(),
                             existing_facts: existing.iter().collect(),
                             conflict_type: ConflictType::AttributeMismatch,
-                            suggested_resolution: Resolution::Merge {
-                                weights: (0.5, 0.5),
-                            },
+                            suggested_resolution: Resolution::HumanReview,
                         });
                     }
                 }
@@ -444,53 +519,77 @@ impl SyncManager {
         Ok(conflicts)
     }
 
-    /// Integrate validated facts into unified storage
+    /// Integrate validated facts into runtime evidence storage.
     fn integrate_facts(
         &self,
-        facts: Vec<ExtractedFact>,
+        mut facts: Vec<ExtractedFact>,
         provider: &LLMProvider,
         session_id: SessionId,
-    ) -> anyhow::Result<Vec<ExtractedFact>> {
-        let mut integrated = Vec::new();
-
-        // Convert to storable facts
-        let storable: Vec<StorableFact> = facts
-            .iter()
-            .filter_map(|f| self.to_storable(&f.structured))
-            .collect();
-
-        if storable.is_empty() {
-            return Ok(integrated);
+    ) -> anyhow::Result<FactIntegrationOutcome> {
+        if facts.is_empty() {
+            return Ok(FactIntegrationOutcome {
+                integrated: Vec::new(),
+                pending_review: Vec::new(),
+            });
         }
-
-        // Add to unified storage
+        let storable = facts
+            .iter()
+            .map(|fact| {
+                self.to_storable(&fact.structured).ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "validated fact {} cannot be represented in storage",
+                        fact.id
+                    )
+                })
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
         let source = ChangeSource::LLMExtraction {
             session_id,
-            model: format!("{:?}", provider),
-            confidence: facts.iter().map(|f| f.confidence).sum::<f32>() / facts.len() as f32,
+            model: format!("{provider:?}"),
+            confidence: facts
+                .iter()
+                .map(|fact| fact.confidence)
+                .fold(1.0_f32, f32::min),
         };
-
-        self.storage.add_facts(storable, source)?;
-
-        // Flush to persist
+        let change_id = self.storage.add_facts(storable, source)?;
         let results = self.storage.flush()?;
 
-        // Update fact statuses
-        for (i, fact) in facts.into_iter().enumerate() {
-            let mut updated = fact;
-            if let Some(result) = results.get(0) {
-                // Simplified
-                updated.status = FactStatus::Integrated {
+        if let Some(result) = results.iter().find(|result| result.change_id == change_id) {
+            for fact in &mut facts {
+                fact.status = FactStatus::Integrated {
                     entity_ids: result.pathdb_ids.clone(),
                 };
             }
-            integrated.push(updated);
+            Ok(FactIntegrationOutcome {
+                integrated: facts,
+                pending_review: Vec::new(),
+            })
+        } else if self
+            .storage
+            .pending()
+            .iter()
+            .any(|change| change.id == change_id)
+        {
+            let pending = facts
+                .into_iter()
+                .map(|mut fact| {
+                    fact.status = FactStatus::NeedsReview {
+                        reason: "runtime evidence storage policy requires review".to_string(),
+                    };
+                    (fact, change_id)
+                })
+                .collect();
+            Ok(FactIntegrationOutcome {
+                integrated: Vec::new(),
+                pending_review: pending,
+            })
+        } else {
+            Err(anyhow::anyhow!(
+                "storage change {change_id} was neither applied nor retained for review"
+            ))
         }
-
-        Ok(integrated)
     }
 
-    /// Convert extracted fact to storable fact
     fn to_storable(&self, fact: &StructuredFact) -> Option<StorableFact> {
         match fact {
             StructuredFact::Entity {
@@ -538,7 +637,12 @@ impl SyncManager {
             } => Some(StorableFact::TacitKnowledge {
                 name: format!(
                     "tacit_{}",
-                    Uuid::new_v4().to_string().split('-').next().unwrap()
+                    Uuid::new_v4()
+                        .simple()
+                        .to_string()
+                        .chars()
+                        .take(8)
+                        .collect::<String>()
                 ),
                 rule: rule.clone(),
                 confidence: *confidence,
@@ -552,100 +656,27 @@ impl SyncManager {
     // KG → LLM: Build Grounding Context
     // ========================================================================
 
-    /// Build grounding context for LLM from knowledge graph
+    /// Build bounded, explicitly evidence-plane grounding from process-local
+    /// staged state. Schema names and constraints still come from the canonical
+    /// `.axi` schema loaded by `UnifiedStorage`.
     pub fn build_grounding_context(
         &self,
         query: &str,
         max_facts: usize,
     ) -> anyhow::Result<GroundingContext> {
-        let pathdb = self.storage.pathdb();
-        let db = pathdb.read();
-
-        // Extract keywords from query
-        let keywords = self.extract_keywords(query);
-
-        // Find relevant facts
-        let mut facts = Vec::new();
-        for keyword in &keywords {
-            if let Some(entities) = db.find_by_type(keyword) {
-                for id in entities.iter().take(max_facts / keywords.len().max(1)) {
-                    if let Some(entity) = db.get_entity(id) {
-                        facts.push(GroundedFact {
-                            id,
-                            natural: format!(
-                                "{} is a {}",
-                                entity
-                                    .attrs
-                                    .get("name")
-                                    .map(|s| s.as_str())
-                                    .unwrap_or("entity"),
-                                entity.entity_type
-                            ),
-                            structured: format!("Entity({}, type={})", id, entity.entity_type),
-                            confidence: 1.0,
-                            citation: vec![format!("PathDB:Entity:{}", id)],
-                            related: vec![],
-                        });
-                    }
-                }
-            }
-        }
-
-        // Build schema context
-        let schema = self.storage.schema();
-        let schema_module = schema.read();
-        let schema_context = SchemaContext {
-            entity_types: schema_module.entity_types.clone(),
-            relation_types: schema_module.relation_types.clone(),
-            constraints: schema_module.constraints.clone(),
-        };
-
-        // Get applicable guardrails
-        let guardrails = self.get_applicable_guardrails(&keywords);
-
-        Ok(GroundingContext {
-            facts,
-            schema_context: Some(schema_context),
-            active_guardrails: guardrails,
-            suggested_queries: self.suggest_followup_queries(query),
-        })
-    }
-
-    /// Extract keywords from query
-    fn extract_keywords(&self, query: &str) -> Vec<String> {
-        // Simple keyword extraction (would use NLP in production)
-        query
-            .split_whitespace()
-            .filter(|w| w.len() > 3)
-            .map(|w| w.to_lowercase())
-            .filter(|w| {
-                !matches!(
-                    w.as_str(),
-                    "what" | "how" | "when" | "where" | "which" | "that" | "this"
-                )
-            })
-            .collect()
-    }
-
-    /// Get applicable guardrails for topic
-    fn get_applicable_guardrails(&self, _keywords: &[String]) -> Vec<GuardrailContext> {
-        // Simplified - would query guardrail index
-        vec![GuardrailContext {
-            rule_id: "safety_001".to_string(),
-            severity: "warning".to_string(),
-            description: "Safety verification required for cutting operations".to_string(),
-            applies_when: "discussing cutting parameters".to_string(),
-        }]
-    }
-
-    /// Suggest follow-up queries
-    fn suggest_followup_queries(&self, _query: &str) -> Vec<String> {
-        // Simplified - would use query patterns
-        vec![
-            "What are the recommended parameters?".to_string(),
-            "Are there any safety constraints?".to_string(),
-            "What related concepts should I understand?".to_string(),
-        ]
+        let db = self.storage.pathdb();
+        let schema_module = self.storage.schema();
+        let mut context = crate::grounding::evidence_grounding_context_with_schema(
+            &db,
+            query,
+            max_facts,
+            &schema_module.entity_types,
+            &schema_module.relation_types,
+            &schema_module.constraints,
+        )?;
+        context.provenance =
+            GroundingProvenanceV1::evidence("unified_storage_process_local_evidence");
+        Ok(context)
     }
 
     // ========================================================================
@@ -664,77 +695,140 @@ impl SyncManager {
 
     /// Approve a pending fact
     pub fn approve_fact(&self, fact_id: FactId) -> anyhow::Result<()> {
+        let fact = self
+            .state
+            .read()
+            .pending_facts
+            .iter()
+            .find(|fact| fact.id == fact_id)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("pending fact {fact_id} was not found"))?;
+
+        let mapped_change = self.pending_storage_changes.read().get(&fact_id).copied();
+        let approved_fact_ids = if let Some(change_id) = mapped_change {
+            let ids = self
+                .pending_storage_changes
+                .read()
+                .iter()
+                .filter_map(|(pending_fact_id, pending_change_id)| {
+                    (*pending_change_id == change_id).then_some(*pending_fact_id)
+                })
+                .collect::<Vec<_>>();
+            self.storage.approve_change(change_id)?;
+            ids
+        } else {
+            let storable = self.to_storable(&fact.structured).ok_or_else(|| {
+                anyhow::anyhow!("pending fact {fact_id} cannot be represented in storage")
+            })?;
+            let change_id = self
+                .storage
+                .add_facts(vec![storable], ChangeSource::UserEdit { user_id: None })?;
+            self.storage.approve_change(change_id)?;
+            vec![fact_id]
+        };
+
+        self.pending_storage_changes
+            .write()
+            .retain(|pending_fact_id, _| !approved_fact_ids.contains(pending_fact_id));
         let mut state = self.state.write();
-
-        if let Some(idx) = state.pending_facts.iter().position(|f| f.id == fact_id) {
-            let fact = state.pending_facts.remove(idx);
-            drop(state);
-
-            // Integrate the approved fact
-            if let Some(storable) = self.to_storable(&fact.structured) {
-                self.storage
-                    .add_facts(vec![storable], ChangeSource::UserEdit { user_id: None })?;
-                self.storage.flush()?;
-            }
-        }
-
+        state
+            .pending_facts
+            .retain(|pending| !approved_fact_ids.contains(&pending.id));
+        state.recent_integrations.extend(approved_fact_ids);
+        state.graph_version += 1;
         Ok(())
     }
 
-    /// Reject a pending fact
     pub fn reject_fact(&self, fact_id: FactId, reason: &str) -> anyhow::Result<()> {
-        let mut state = self.state.write();
-
-        if let Some(fact) = state.pending_facts.iter_mut().find(|f| f.id == fact_id) {
-            fact.status = FactStatus::Rejected {
-                reason: reason.to_string(),
-            };
+        if reason.trim().is_empty() {
+            return Err(anyhow::anyhow!("rejection reason must not be empty"));
+        }
+        if !self
+            .state
+            .read()
+            .pending_facts
+            .iter()
+            .any(|fact| fact.id == fact_id)
+        {
+            return Err(anyhow::anyhow!("pending fact {fact_id} was not found"));
         }
 
+        let mapped_change = self.pending_storage_changes.read().get(&fact_id).copied();
+        let rejected_fact_ids = if let Some(change_id) = mapped_change {
+            let ids = self
+                .pending_storage_changes
+                .read()
+                .iter()
+                .filter_map(|(pending_fact_id, pending_change_id)| {
+                    (*pending_change_id == change_id).then_some(*pending_fact_id)
+                })
+                .collect::<Vec<_>>();
+            self.storage.reject_change(change_id, reason)?;
+            ids
+        } else {
+            vec![fact_id]
+        };
+
+        self.pending_storage_changes
+            .write()
+            .retain(|pending_fact_id, _| !rejected_fact_ids.contains(pending_fact_id));
+        let mut state = self.state.write();
+        let rejected = state
+            .pending_facts
+            .iter()
+            .filter(|fact| rejected_fact_ids.contains(&fact.id))
+            .cloned()
+            .map(|mut fact| {
+                fact.status = FactStatus::Rejected {
+                    reason: reason.to_string(),
+                };
+                fact
+            })
+            .collect::<Vec<_>>();
+        state
+            .pending_facts
+            .retain(|pending| !rejected_fact_ids.contains(&pending.id));
+        state.rejected_facts.extend(rejected);
+        state.graph_version += 1;
         Ok(())
     }
 
-    /// Resolve a conflict
     pub fn resolve_conflict(
         &self,
         conflict_id: usize,
         resolution: Resolution,
     ) -> anyhow::Result<()> {
         let mut state = self.state.write();
-
-        if conflict_id < state.conflicts.len() {
-            let conflict = &state.conflicts[conflict_id];
-
-            match resolution {
-                Resolution::ReplaceOld => {
-                    // Integrate new fact
-                    if let Some(storable) = self.to_storable(&conflict.new_fact.structured) {
-                        drop(state);
-                        self.storage
-                            .add_facts(vec![storable], ChangeSource::UserEdit { user_id: None })?;
-                        self.storage.flush()?;
-                    }
-                }
-                Resolution::KeepOld => {
-                    // Just remove from conflicts
-                }
-                Resolution::Merge { weights: _ } => {
-                    // Would merge attributes
-                    // Simplified for now
-                }
-                Resolution::HumanReview => {
-                    // Move to pending review
-                    let conflict = state.conflicts.remove(conflict_id);
-                    state.pending_facts.push(conflict.new_fact);
-                    return Ok(());
-                }
-            }
-
-            let mut state = self.state.write();
-            state.conflicts.remove(conflict_id);
+        if conflict_id >= state.conflicts.len() {
+            return Err(anyhow::anyhow!("conflict {conflict_id} was not found"));
         }
 
-        Ok(())
+        match resolution {
+            Resolution::KeepOld => {
+                let conflict = state.conflicts.remove(conflict_id);
+                let mut fact = conflict.new_fact;
+                fact.status = FactStatus::Rejected {
+                    reason: "kept existing runtime evidence during conflict resolution".to_string(),
+                };
+                state.rejected_facts.push(fact);
+                Ok(())
+            }
+            Resolution::HumanReview => {
+                let conflict = state.conflicts.remove(conflict_id);
+                let mut fact = conflict.new_fact;
+                fact.status = FactStatus::NeedsReview {
+                    reason: "conflict requires explicit human review".to_string(),
+                };
+                state.pending_facts.push(fact);
+                Ok(())
+            }
+            Resolution::ReplaceOld => Err(anyhow::anyhow!(
+                "ReplaceOld is unsupported: runtime evidence storage cannot atomically replace the conflicting record"
+            )),
+            Resolution::Merge { .. } => Err(anyhow::anyhow!(
+                "Merge is unsupported: no typed attribute-merge operation is implemented"
+            )),
+        }
     }
 
     // ========================================================================
@@ -790,40 +884,252 @@ pub struct SyncStats {
     pub total_integrated: usize,
     pub pending_review: usize,
     pub unresolved_conflicts: usize,
-    #[serde(alias = "kg_version")]
     pub graph_version: u64,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axiograph_storage::StorageConfig;
+    use axiograph_storage::{ReviewPolicy, StorageConfig};
     use tempfile::tempdir;
+
+    fn write_test_schema(dir: &tempfile::TempDir, objects: &[&str]) {
+        let mut source = "module TestSchema\n\nschema S:\n".to_string();
+        for object in objects {
+            source.push_str(&format!("  object {object}\n"));
+        }
+        std::fs::write(dir.path().join("TestSchema.axi"), source).unwrap();
+    }
+
+    #[test]
+    fn sync_config_rejects_legacy_or_unknown_fields() {
+        let mut value = serde_json::to_value(SyncConfig::default()).unwrap();
+        value["legacy_batch_limit"] = serde_json::json!(100);
+        assert!(serde_json::from_value::<SyncConfig>(value).is_err());
+    }
+
+    #[test]
+    fn sync_manager_rejects_non_finite_auto_integrate_threshold() {
+        let dir = tempdir().unwrap();
+        let storage = Arc::new(
+            UnifiedStorage::new(StorageConfig {
+                axi_dir: dir.path().to_path_buf(),
+                ..Default::default()
+            })
+            .unwrap(),
+        );
+        let error = SyncManager::new(
+            storage,
+            SyncConfig {
+                auto_integrate_threshold: f32::NAN,
+                ..Default::default()
+            },
+            LLMProvider::Custom {
+                name: "test".to_string(),
+                endpoint: "http://localhost".to_string(),
+            },
+        )
+        .err()
+        .expect("non-finite sync threshold must fail closed");
+        assert!(error.to_string().contains("auto_integrate_threshold"));
+    }
+
+    #[test]
+    fn sync_manager_rejects_zero_batch_size() {
+        let dir = tempdir().unwrap();
+        let storage = Arc::new(
+            UnifiedStorage::new(StorageConfig {
+                axi_dir: dir.path().to_path_buf(),
+                ..Default::default()
+            })
+            .unwrap(),
+        );
+        let error = SyncManager::new(
+            storage,
+            SyncConfig {
+                batch_size: 0,
+                ..Default::default()
+            },
+            LLMProvider::Custom {
+                name: "test".to_string(),
+                endpoint: "http://localhost".to_string(),
+            },
+        )
+        .err()
+        .expect("zero sync batch size must fail closed");
+        assert!(error.to_string().contains("batch_size"));
+    }
+
+    #[test]
+    fn sync_manager_rejects_unbounded_batch_size() {
+        let dir = tempdir().unwrap();
+        let storage = Arc::new(
+            UnifiedStorage::new(StorageConfig {
+                axi_dir: dir.path().to_path_buf(),
+                ..Default::default()
+            })
+            .unwrap(),
+        );
+        let error = SyncManager::new(
+            storage,
+            SyncConfig {
+                batch_size: usize::MAX,
+                ..Default::default()
+            },
+            LLMProvider::Custom {
+                name: "test".to_string(),
+                endpoint: "http://localhost".to_string(),
+            },
+        )
+        .err()
+        .expect("unbounded sync batch size must fail closed");
+        assert!(error.to_string().contains("batch_size"));
+    }
+
+    #[tokio::test]
+    async fn sync_rejects_extracted_fact_batches_over_configured_limit() {
+        let dir = tempdir().unwrap();
+        write_test_schema(&dir, &["Material", "Tool"]);
+        let storage = Arc::new(
+            UnifiedStorage::new(StorageConfig {
+                axi_dir: dir.path().to_path_buf(),
+                ..Default::default()
+            })
+            .unwrap(),
+        );
+        let manager = SyncManager::new(
+            Arc::clone(&storage),
+            SyncConfig {
+                auto_integrate_threshold: 0.0,
+                batch_size: 1,
+                human_review_constraints: false,
+                ..Default::default()
+            },
+            LLMProvider::Custom {
+                name: "test".to_string(),
+                endpoint: "http://localhost".to_string(),
+            },
+        )
+        .unwrap();
+        let conversation = vec![ConversationTurn {
+            role: crate::Role::User,
+            content: "Titanium is a Material. Carbide is a Tool.".to_string(),
+            timestamp: Utc::now(),
+            metadata: std::collections::HashMap::new(),
+        }];
+
+        let error = manager
+            .sync_from_conversation(&conversation, None)
+            .await
+            .expect_err("oversized extracted-fact batch must fail closed");
+
+        assert!(error.to_string().contains("extracted fact count"));
+        assert!(storage.pending().is_empty());
+        assert!(storage.changelog().is_empty());
+        assert!(manager.pending_review().is_empty());
+    }
+
+    #[tokio::test]
+    async fn sync_rejects_excessive_conversation_turns_before_extraction() {
+        let dir = tempdir().unwrap();
+        let storage = Arc::new(
+            UnifiedStorage::new(StorageConfig {
+                axi_dir: dir.path().to_path_buf(),
+                ..Default::default()
+            })
+            .unwrap(),
+        );
+        let manager = SyncManager::new(
+            storage,
+            SyncConfig::default(),
+            LLMProvider::Custom {
+                name: "test".to_string(),
+                endpoint: "http://localhost".to_string(),
+            },
+        )
+        .unwrap();
+        let conversation = (0..4097)
+            .map(|_| ConversationTurn {
+                role: crate::Role::User,
+                content: String::new(),
+                timestamp: Utc::now(),
+                metadata: std::collections::HashMap::new(),
+            })
+            .collect::<Vec<_>>();
+
+        let error = manager
+            .sync_from_conversation(&conversation, None)
+            .await
+            .expect_err("excessive conversation turns must fail closed");
+        assert!(error.to_string().contains("conversation turn count"));
+    }
+
+    #[tokio::test]
+    async fn sync_rejects_excessive_conversation_bytes_before_extraction() {
+        let dir = tempdir().unwrap();
+        let storage = Arc::new(
+            UnifiedStorage::new(StorageConfig {
+                axi_dir: dir.path().to_path_buf(),
+                ..Default::default()
+            })
+            .unwrap(),
+        );
+        let manager = SyncManager::new(
+            storage,
+            SyncConfig::default(),
+            LLMProvider::Custom {
+                name: "test".to_string(),
+                endpoint: "http://localhost".to_string(),
+            },
+        )
+        .unwrap();
+        let conversation = vec![ConversationTurn {
+            role: crate::Role::User,
+            content: "x".repeat(8 * 1024 * 1024 + 1),
+            timestamp: Utc::now(),
+            metadata: std::collections::HashMap::new(),
+        }];
+
+        let error = manager
+            .sync_from_conversation(&conversation, None)
+            .await
+            .expect_err("excessive conversation bytes must fail closed");
+        assert!(error.to_string().contains("conversation bytes"));
+    }
 
     #[tokio::test]
     async fn test_sync_from_conversation() {
         let dir = tempdir().unwrap();
+        write_test_schema(&dir, &["Material", "Tool"]);
         let config = StorageConfig {
             axi_dir: dir.path().to_path_buf(),
-            pathdb_path: dir.path().join("test.axpd"),
-            changelog_path: dir.path().join("changelog.json"),
+            require_review: ReviewPolicy {
+                constraints: true,
+                low_confidence_threshold: Some(0.95),
+                schema_changes: true,
+            },
             ..Default::default()
         };
 
         let storage = Arc::new(UnifiedStorage::new(config).unwrap());
-        let sync_config = SyncConfig::default();
+        let sync_config = SyncConfig {
+            auto_integrate_threshold: 0.0,
+            human_review_constraints: false,
+            ..Default::default()
+        };
         let manager = SyncManager::new(
-            storage,
+            Arc::clone(&storage),
             sync_config,
             LLMProvider::Custom {
                 name: "test".to_string(),
                 endpoint: "http://localhost".to_string(),
             },
-        );
+        )
+        .expect("valid sync configuration");
 
         let conversation = vec![ConversationTurn {
             role: crate::Role::User,
-            content: "Titanium is a Material with hardness of 36".to_string(),
+            content: "Titanium is a Material. Carbide is a Tool.".to_string(),
             timestamp: Utc::now(),
             metadata: std::collections::HashMap::new(),
         }];
@@ -833,7 +1139,227 @@ mod tests {
             .await
             .unwrap();
 
-        // Should extract the entity
-        assert!(result.integrated_count > 0 || result.pending_review > 0);
+        assert_eq!(result.integrated_count, 0);
+        assert_eq!(result.pending_review, 2);
+        assert!(storage.pathdb().find_by_type("Material").is_none());
+        assert!(storage.pathdb().find_by_type("Tool").is_none());
+
+        let fact_id = manager.pending_review()[0].id;
+        manager.approve_fact(fact_id).unwrap();
+        assert!(manager.pending_review().is_empty());
+        assert!(storage.pathdb().find_by_type("Material").is_some());
+        assert!(storage.pathdb().find_by_type("Tool").is_some());
+    }
+
+    #[tokio::test]
+    async fn storage_review_change_is_rejected_with_pending_fact() {
+        let dir = tempdir().unwrap();
+        write_test_schema(&dir, &["Material"]);
+        let storage = Arc::new(
+            UnifiedStorage::new(StorageConfig {
+                axi_dir: dir.path().to_path_buf(),
+                require_review: ReviewPolicy {
+                    constraints: true,
+                    low_confidence_threshold: Some(0.95),
+                    schema_changes: true,
+                },
+                ..Default::default()
+            })
+            .unwrap(),
+        );
+        let manager = SyncManager::new(
+            Arc::clone(&storage),
+            SyncConfig {
+                auto_integrate_threshold: 0.0,
+                human_review_constraints: false,
+                ..Default::default()
+            },
+            LLMProvider::Custom {
+                name: "test".to_string(),
+                endpoint: "http://localhost".to_string(),
+            },
+        )
+        .expect("valid sync configuration");
+        let conversation = vec![ConversationTurn {
+            role: crate::Role::User,
+            content: "Titanium is a Material with hardness of 36".to_string(),
+            timestamp: Utc::now(),
+            metadata: std::collections::HashMap::new(),
+        }];
+        manager
+            .sync_from_conversation(&conversation, None)
+            .await
+            .unwrap();
+
+        let fact_id = manager.pending_review()[0].id;
+        manager
+            .reject_fact(fact_id, "unsupported evidence")
+            .unwrap();
+
+        assert!(manager.pending_review().is_empty());
+        assert!(storage.pending().is_empty());
+        assert!(storage.pathdb().find_by_type("Material").is_none());
+        assert!(matches!(
+            storage.changelog().as_slice(),
+            [Change {
+                status: axiograph_storage::ChangeStatus::Rejected { reason },
+                ..
+            }] if reason == "unsupported evidence"
+        ));
+    }
+
+    #[tokio::test]
+    async fn sync_validation_uses_loaded_schema_types() {
+        let dir = tempdir().unwrap();
+        write_test_schema(&dir, &["Widget"]);
+        let storage = Arc::new(
+            UnifiedStorage::new(StorageConfig {
+                axi_dir: dir.path().to_path_buf(),
+                ..Default::default()
+            })
+            .unwrap(),
+        );
+        let manager = SyncManager::new(
+            Arc::clone(&storage),
+            SyncConfig {
+                auto_integrate_threshold: 0.0,
+                human_review_constraints: false,
+                ..Default::default()
+            },
+            LLMProvider::Custom {
+                name: "test".to_string(),
+                endpoint: "http://localhost".to_string(),
+            },
+        )
+        .expect("valid sync configuration");
+        let conversation = vec![ConversationTurn {
+            role: crate::Role::User,
+            content: "Bolt is a Widget.".to_string(),
+            timestamp: Utc::now(),
+            metadata: std::collections::HashMap::new(),
+        }];
+
+        let result = manager
+            .sync_from_conversation(&conversation, None)
+            .await
+            .unwrap();
+
+        assert_eq!(result.integrated_count, 1);
+        assert_eq!(result.pending_review, 0);
+        assert!(storage.pathdb().find_by_type("Widget").is_some());
+    }
+
+    #[tokio::test]
+    async fn conflicting_fact_is_not_materialized() {
+        let dir = tempdir().unwrap();
+        write_test_schema(&dir, &["Material"]);
+        let storage = Arc::new(
+            UnifiedStorage::new(StorageConfig {
+                axi_dir: dir.path().to_path_buf(),
+                require_review: ReviewPolicy {
+                    constraints: false,
+                    low_confidence_threshold: None,
+                    schema_changes: false,
+                },
+                ..Default::default()
+            })
+            .unwrap(),
+        );
+        storage
+            .add_facts(
+                vec![StorableFact::Entity {
+                    name: "Titanium".to_string(),
+                    entity_type: "Material".to_string(),
+                    attributes: Vec::new(),
+                }],
+                ChangeSource::UserEdit { user_id: None },
+            )
+            .unwrap();
+        storage.flush().unwrap();
+        let manager = SyncManager::new(
+            Arc::clone(&storage),
+            SyncConfig {
+                auto_integrate_threshold: 0.0,
+                human_review_constraints: false,
+                ..Default::default()
+            },
+            LLMProvider::Custom {
+                name: "test".to_string(),
+                endpoint: "http://localhost".to_string(),
+            },
+        )
+        .expect("valid sync configuration");
+        let conversation = vec![ConversationTurn {
+            role: crate::Role::User,
+            content: "Aluminum is a Material.".to_string(),
+            timestamp: Utc::now(),
+            metadata: std::collections::HashMap::new(),
+        }];
+
+        let result = manager
+            .sync_from_conversation(&conversation, None)
+            .await
+            .unwrap();
+
+        assert_eq!(result.integrated_count, 0);
+        assert_eq!(result.conflicts, 1);
+        assert!(matches!(
+            manager.unresolved_conflicts()[0].suggested_resolution,
+            Resolution::HumanReview
+        ));
+        assert_eq!(
+            storage
+                .pathdb()
+                .find_by_type("Material")
+                .expect("preloaded Material")
+                .len(),
+            1
+        );
+
+        let error = manager
+            .resolve_conflict(0, Resolution::ReplaceOld)
+            .expect_err("unsupported replacement must preserve the conflict");
+        assert!(error.to_string().contains("ReplaceOld"));
+        assert_eq!(manager.unresolved_conflicts().len(), 1);
+        assert_eq!(
+            storage
+                .pathdb()
+                .find_by_type("Material")
+                .expect("preloaded Material")
+                .len(),
+            1
+        );
+
+        manager
+            .resolve_conflict(0, Resolution::HumanReview)
+            .unwrap();
+        assert!(manager.unresolved_conflicts().is_empty());
+        assert!(matches!(
+            manager.pending_review().as_slice(),
+            [ExtractedFact {
+                status: FactStatus::NeedsReview { reason },
+                ..
+            }] if reason.contains("conflict")
+        ));
+
+        let second_conversation = vec![ConversationTurn {
+            role: crate::Role::User,
+            content: "Copper is a Material.".to_string(),
+            timestamp: Utc::now(),
+            metadata: std::collections::HashMap::new(),
+        }];
+        manager
+            .sync_from_conversation(&second_conversation, None)
+            .await
+            .unwrap();
+        manager.resolve_conflict(0, Resolution::KeepOld).unwrap();
+        assert!(manager.unresolved_conflicts().is_empty());
+        assert!(matches!(
+            manager.state().rejected_facts.as_slice(),
+            [ExtractedFact {
+                status: FactStatus::Rejected { reason },
+                ..
+            }] if reason.contains("kept existing")
+        ));
     }
 }

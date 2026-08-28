@@ -1,13 +1,14 @@
--- Schema Evolution via Univalence
+-- Schema evolution ontology
 --
--- Uses HoTT's univalence principle for ontology migration:
--- - Equivalent schemas are "the same" (can substitute)
--- - Schema changes that preserve structure are equivalences
--- - Data migration is transport along paths
+-- This example models schema/version/migration structure explicitly:
+-- - schemas and versions,
+-- - migrations and equivalences,
+-- - and transport of instances across reviewed migration paths.
 --
--- This is the category-theoretic approach to schema evolution:
--- schemas are objects, migrations are morphisms,
--- equivalences are isomorphisms.
+-- This is an operational meta-ontology for schema evolution: schemas and
+-- migrations are represented as finite data with reviewed evidence records.
+-- It does not assert univalence or prove that recorded migrations are
+-- categorical isomorphisms.
 
 module SchemaEvolution
 
@@ -33,9 +34,11 @@ schema OntologyMeta:
   relation MigrationCompose(m1: Migration, m2: Migration, result: Migration)
 
   -- ==========================================================================
-  -- Schema Equivalences (Univalence!)
+  -- Reviewed Schema-Equivalence Evidence
   -- ==========================================================================
-  -- Two schemas are equivalent if there's a structure-preserving bijection
+  -- A SchemaEquiv tuple records a reviewed claim and its forward/backward
+  -- migration witnesses. The finite checker validates its declared fields and
+  -- constraints; it does not derive univalence from this relation.
   
   relation SchemaEquiv(
     s1: Schema_,
@@ -46,9 +49,10 @@ schema OntologyMeta:
   )
 
   object EquivProof  -- Evidence of equivalence
+  object SchemaEquivalence
 
-  -- If schemas are equivalent, we can substitute one for the other
-  -- This is the univalence axiom for ontologies!
+  -- Substitution across a recorded equivalence requires an explicit typed
+  -- transport obligation in evolution tooling; it is not automatic.
 
   -- ==========================================================================
   -- Data Transport
@@ -79,7 +83,7 @@ schema OntologyMeta:
   -- Inverse of equivalence is an equivalence
   -- These are the groupoid laws!
 
-  relation EquivCompose(e1: SchemaEquiv, e2: SchemaEquiv, result: SchemaEquiv)
+  relation EquivCompose(e1: SchemaEquivalence, e2: SchemaEquivalence, result: SchemaEquivalence)
 
   -- Support types
   object Text
@@ -95,19 +99,9 @@ theory EvolutionLaws on OntologyMeta:
   -- Equivalence is transitive (via composition)
   constraint transitive SchemaEquiv
 
-  -- Migration composition is associative
-  equation migration_assoc:
-    MigrationCompose(MigrationCompose(a, b, ab), c, result) =
-    MigrationCompose(a, MigrationCompose(b, c, bc), result)
-
-  -- Identity migration exists
-  equation migration_identity:
-    MigrationCompose(m, IdentityMigration, m) = m
-
-  -- Inverse law for equivalences
-  equation equiv_inverse:
-    MigrationCompose(forward, backward, IdentityMigration) =
-    SchemaEquiv.forward ; SchemaEquiv.backward
+  -- MigrationCompose is instance-level data, not a schema-generator path.
+  -- Associativity, identity, and inverse claims therefore require explicit
+  -- finite witnesses and are not asserted as category equations here.
 
   -- Changes and their inverses
   constraint functional ChangeInverse.change -> ChangeInverse.inverse
@@ -143,6 +137,7 @@ instance ProductCatalog of OntologyMeta:
     MergeCategories,    -- V2 -> V1 (inverse of AddCategories)
     JoinSKU,            -- V3 -> V2 (inverse of NormalizeSKU)
     IdentityMigration,  -- No-op
+    DirectV1toV3,
     V3toV3alt,          -- V3 -> V3_alt (equivalence!)
     V3altToV3           -- V3_alt -> V3
   }
@@ -196,7 +191,7 @@ instance ProductCatalog of OntologyMeta:
     (change=Rename, inverse=Rename)  -- Self-inverse!
   }
 
-  -- SCHEMA EQUIVALENCES (the key HoTT insight!)
+  -- REVIEWED SCHEMA-EQUIVALENCE EVIDENCE
   EquivProof = {
     IsoProof,           -- Full isomorphism
     LosslessProof,      -- Information-preserving
@@ -207,6 +202,15 @@ instance ProductCatalog of OntologyMeta:
     -- V3 ≃ V3_alt (two normalizations are equivalent!)
     (s1=ProductV3, s2=ProductV3_alt,
      forward=V3toV3alt, backward=V3altToV3,
+     proof=IsoProof),
+    (s1=ProductV3_alt, s2=ProductV3,
+     forward=V3altToV3, backward=V3toV3alt,
+     proof=IsoProof),
+    (s1=ProductV3, s2=ProductV3,
+     forward=IdentityMigration, backward=IdentityMigration,
+     proof=IsoProof),
+    (s1=ProductV3_alt, s2=ProductV3_alt,
+     forward=IdentityMigration, backward=IdentityMigration,
      proof=IsoProof),
 
     -- AddCategories has inverse MergeCategories
@@ -252,4 +256,3 @@ instance ProductCatalog of OntologyMeta:
   }
 
   Text = {Proof_V3_equiv_V3alt}
-

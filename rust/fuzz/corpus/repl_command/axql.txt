@@ -1,0 +1,1 @@
+q --apply-refinement repair/parent select ?x where name("Åsa") -Parent-> ?x limit 3

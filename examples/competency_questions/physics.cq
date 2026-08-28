@@ -1,0 +1,91 @@
+version competency_question_bundle_v1
+
+question concept_any:
+  ask: List a Concept in the physics ontology.
+  expect: instance of Physics.Concept
+  min_rows: 1
+  weight: 2.0
+
+question concept_prereq:
+  ask: Find a prerequisite link between physics concepts.
+  expect: exists Physics.requires(concept=?c, prereq=?p)
+  min_rows: 1
+  weight: 2.0
+
+question concept_guideline:
+  ask: Find a safety guideline attached to a concept.
+  expect: exists Physics.explains(concept=?c, guideline=?g)
+  min_rows: 1
+  weight: 1.5
+
+question concept_example:
+  ask: Find an example linked to a physics concept.
+  expect: exists Physics.demonstrates(example=?e, concept=?c)
+  min_rows: 1
+  weight: 1.5
+
+question concept_description:
+  ask: Find a description text linked to a concept.
+  expect: exists Physics.conceptDescription(concept=?c, text=?t)
+  min_rows: 1
+  weight: 1.5
+
+question lie_group_has_algebra:
+  ask: Find a Lie group and its Lie algebra.
+  expect: exists Physics.LieGroupHasLieAlgebra(group=?g, alg=?a)
+  min_rows: 1
+  weight: 2.0
+
+question manifold_dimension:
+  ask: Find a manifold and its dimension.
+  expect: exists Physics.ManifoldDimension(manifold=?m, dim=?d)
+  min_rows: 1
+  weight: 2.0
+
+question metric_on_manifold:
+  ask: Find a metric defined on a smooth manifold.
+  expect: exists Physics.MetricOn(metric=?m, manifold=?s)
+  min_rows: 1
+  weight: 2.0
+
+question levi_civita_connection:
+  ask: Find a Levi-Civita connection associated with a metric.
+  expect: exists Physics.LeviCivitaConnection(metric=?m, connection=?c)
+  min_rows: 1
+  weight: 2.0
+
+question curvature_of_connection:
+  ask: Find a curvature tensor associated with a connection.
+  expect: exists Physics.CurvatureOf(connection=?c, curvature=?k)
+  min_rows: 1
+  weight: 2.0
+
+question form_on_manifold:
+  ask: Find a differential form defined on a manifold.
+  expect: exists Physics.FormOn(form=?f0, manifold=?m)
+  min_rows: 1
+  weight: 1.5
+
+question hamiltonian_vector_field:
+  ask: Find a Hamiltonian vector field.
+  expect: exists Physics.HamiltonianVectorFieldOf(H=?h, X=?x)
+  min_rows: 1
+  weight: 2.0
+
+question stress_energy_on_spacetime:
+  ask: Find a stress-energy tensor on a spacetime.
+  expect: exists Physics.StressEnergyOn(T=?t, spacetime=?s)
+  min_rows: 1
+  weight: 2.0
+
+question measurement_observation:
+  ask: Find a measurement observation record with run, quantity, unit, value bin, context, and time.
+  expect: exists PhysicsMeasurements.MeasurementObs(run=?r, quantity=?q, unit=?u, value_bin=?b, ctx=?c, time=?t)
+  min_rows: 1
+  weight: 2.0
+
+question quantity_has_unit:
+  ask: Find a quantity with a canonical unit.
+  expect: exists PhysicsMeasurements.QuantityHasCanonicalUnit(quantity=?q, unit=?u)
+  min_rows: 1
+  weight: 1.5

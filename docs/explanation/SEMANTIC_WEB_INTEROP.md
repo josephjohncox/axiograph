@@ -29,7 +29,7 @@ RDF import is an ingestion adapter that produces:
 - optional draft `.axi` candidates (reviewable), and
 - evidence chunks (if the source has docs/comments).
 
-Recommended mapping (prototype; evolves):
+Current boundary-layer mapping for evidence import:
 
 - RDF resources (IRIs / blank nodes) → `ProposalV1::Entity`
 - `rdf:type` → entity `entity_type` (or an attribute, if ambiguous)
@@ -37,19 +37,18 @@ Recommended mapping (prototype; evolves):
   - IRI object → `ProposalV1::Relation`
   - literal object → attribute on the subject entity (`attributes[predicate]=literal`)
 
-Supported serializations (via Sophia):
+Supported serializations:
 
-- N-Triples (`.nt`, `.ntriples`)
-- Turtle (`.ttl`, `.turtle`)
-- N-Quads (`.nq`, `.nquads`)
-- TriG (`.trig`)
-- RDF/XML (`.rdf`, `.owl`, `.xml`)
+- N-Triples (`.nt`, `.ntriples`), Turtle (`.ttl`, `.turtle`), N-Quads
+  (`.nq`, `.nquads`), and TriG (`.trig`) via Sophia 0.10;
+- RDF/XML (`.rdf`, `.owl`, `.xml`) via the pinned upstream Oxigraph parser on
+  quick-xml 0.41, after Axiograph's bounded structural preflight.
 
 ### 1.1.1 Public datasets + demos (for realistic testing)
 
 We keep large public datasets out of git, but provide:
 
-- a tiny SHACL fixture under `examples/rdfowl/w3c_shacl_minimal/` (committed),
+- a tiny committed SHACL boundary example under `examples/rdfowl/w3c_shacl_minimal/`,
 - scripts to fetch and ingest public datasets into `build/` (optional, networked).
 
 Recommended workflow:
@@ -58,7 +57,7 @@ Recommended workflow:
 
    - `./scripts/fetch_public_rdfowl_datasets.sh`
 
-2) Run a deterministic local demo (fixture) and an optional W3C slice ingest:
+2) Run a deterministic local boundary-layer demo and an optional W3C slice ingest:
 
    - `./scripts/rdfowl_public_datasets_demo.sh`
 
@@ -76,9 +75,14 @@ Notes:
   - a proposed rewrite rule (engine proposes, Lean checks), or
   - a proposed constraint/shape (engine validates, Lean checks).
 
-Minimal offline named-graph demo:
+Minimal offline named-graph ingest:
 
-- `./scripts/rdf_named_graph_context_demo.sh`
+```bash
+cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- \
+  ingest dir examples/rdfowl/named_graphs_minimal \
+  --out-dir build/examples/rdfowl/named_graphs_minimal \
+  --domain rdfowl
+```
 
 ### 1.2 OWL import (ontology → constraints + patterns)
 
@@ -154,7 +158,7 @@ Provenance and context are first-class in Axiograph:
 
 ### 3.1 Modeling
 
-We support two compatible representations:
+We support two boundary representations:
 
 1) **Graph-level:** treat each accepted snapshot as a context; facts are snapshot-scoped.
 2) **In-graph:** represent contexts explicitly as objects, and attach facts to contexts.

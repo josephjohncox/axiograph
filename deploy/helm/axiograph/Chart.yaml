@@ -1,6 +1,7 @@
 apiVersion: v2
 name: axiograph
-description: Axiograph PathDB server + /viz frontend (db serve)
+description: >-
+  Read-only Axiograph service for one authenticated SQLite materialization
 type: application
 version: 0.1.0
 appVersion: "0.6.0"

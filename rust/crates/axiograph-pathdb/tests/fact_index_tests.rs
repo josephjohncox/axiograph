@@ -58,9 +58,8 @@ instance I of S:
   }
 "#;
 
-    let m = axiograph_dsl::axi_v1::parse_axi_v1(text)?;
     let mut db = axiograph_pathdb::PathDB::new();
-    axiograph_pathdb::axi_module_import::import_axi_schema_v1_module_into_pathdb(&mut db, &m)?;
+    axiograph_pathdb::axi_module_import::import_axi_schema_v1_into_pathdb(&mut db, text)?;
 
     let a = entity_id_by_name(&db, "a")?;
     let b = entity_id_by_name(&db, "b")?;
@@ -83,7 +82,7 @@ module FactIndexContextTest
 schema S:
   object Node
   object Context
-  relation Flow(from: Node, to: Node) @context Context
+  relation Flow(from: Node, to: Node, ctx: Context @context)
 
 theory T on S:
   constraint key Flow(from, to, ctx)
@@ -97,9 +96,8 @@ instance I of S:
   }
 "#;
 
-    let m = axiograph_dsl::axi_v1::parse_axi_v1(text)?;
     let mut db = axiograph_pathdb::PathDB::new();
-    axiograph_pathdb::axi_module_import::import_axi_schema_v1_module_into_pathdb(&mut db, &m)?;
+    axiograph_pathdb::axi_module_import::import_axi_schema_v1_into_pathdb(&mut db, text)?;
 
     let accepted = entity_id_by_name(&db, "Accepted")?;
     let evidence = entity_id_by_name(&db, "Evidence")?;

@@ -26,7 +26,7 @@ schema Physics:
   relation LawInputs(law: PhysicalLaw, input: Quantity, dim: DimSignature)
   relation LawOutput(law: PhysicalLaw, output: Quantity, dim: DimSignature)
   relation LawFormula(law: PhysicalLaw, formula: Text)
-  relation LawCategory(law: PhysicalLaw, category: LawCategory)
+  relation LawHasCategory(law: PhysicalLaw, category: LawCategory)
   relation LawConfidence(law: PhysicalLaw, conf: Confidence)
 
   -- ==========================================================================
@@ -49,7 +49,7 @@ schema Physics:
 
   relation HeuristicRule(h: Heuristic, rule: Text)
   relation HeuristicRationale(h: Heuristic, rationale: Text)
-  relation HeuristicDomain(h: Heuristic, domain: HeuristicDomain)
+  relation HeuristicHasDomain(h: Heuristic, domain: HeuristicDomain)
   relation HeuristicApplicability(h: Heuristic, condition: Text)
   relation HeuristicConfidence(h: Heuristic, conf: Confidence)
 
@@ -141,7 +141,19 @@ instance TacitPhysicsKnowledge of Physics:
     -- Example descriptions
     Text_Ex_Ti_Roughing_OK,
     Text_Ex_Ti_Roughing_TooFast,
-    Text_Ex_Al_HighSpeed_OK
+    Text_Ex_Al_HighSpeed_OK,
+
+    -- Heuristic rules and rationales
+    Force_increases_with_DOC_and_feed,
+    Most_heat_enters_chip_at_high_speeds,
+    Stable_zones_exist_between_RPM_and_DOC,
+    Cut_titanium_at_low_speed_high_feed,
+    Aluminum_can_run_at_very_high_speeds,
+    Diffusion_wear_dominates_at_high_temperatures,
+    Chip_cross_section_determines_material_removal,
+    Less_time_for_conduction_at_high_speed,
+    Regenerative_vibration_creates_unstable_regions,
+    Poor_thermal_conductivity_concentrates_heat
   }
 
   LawFormula = {
@@ -150,7 +162,7 @@ instance TacitPhysicsKnowledge of Physics:
     (law=TaylorToolLife, formula=TaylorFormula)
   }
 
-  LawCategory = {
+  LawHasCategory = {
     (law=NewtonsSecond, category=Mechanics),
     (law=KineticEnergy, category=Mechanics),
     (law=TaylorToolLife, category=MaterialsScience),
@@ -179,7 +191,7 @@ instance TacitPhysicsKnowledge of Physics:
     (h=ToolWearDiffusion, rule=Diffusion_wear_dominates_at_high_temperatures)
   }
 
-  HeuristicDomain = {
+  HeuristicHasDomain = {
     (h=CuttingForceProportional, domain=Machining),
     (h=HeatGoesToChip, domain=Machining),
     (h=ChatterStabilityLobes, domain=Machining),

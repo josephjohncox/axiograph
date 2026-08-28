@@ -3,472 +3,285 @@
 **Diataxis:** Explanation  
 **Audience:** contributors
 
-> NOTE (Rust+Lean release): Axiograph’s trusted type-theoretic foundation is now **Lean4 + mathlib**.
-> Idris2 was used historically as a prototype proof layer and has been removed from the repo tree.
-> Any `idris` snippets below are historical design notes that should be ported/updated to Lean.
+> Current status: Axiograph's trusted type-theoretic foundation is Lean 4 +
+> mathlib. Rust is the operational runtime and must expose typed refs, checked
+> builders, residual obligations, and actionable diagnostics.
 
 ## Core Type System
 
-Axiograph uses **Lean 4 + mathlib** as its type-theoretic foundation for the trusted semantics and certificate checking, providing:
+Axiograph uses **Lean 4 + mathlib** for trusted semantics and certificate
+checking. Rust remains the operational engine, but Rust-generated claims are
+trusted only after Lean accepts a certificate.
+
+Lean provides the type-theoretic substrate for:
 
 - Dependent types
-- First-class types
-- Totality checking
-- Proof irrelevance (where appropriate)
-- Mathlib’s category theory / algebra libraries for “best in class” formalizations
+- Explicit universe levels
+- Inductive families
+- Proof irrelevance through `Prop`
+- Proof-relevant certificate witnesses in `Type`
+- Mathlib category theory, algebra, order, and finite-data libraries
 
-This document details the type-theoretic design choices and extensions.
+This document describes the current design target.
 
 ---
 
 ## 1. Universe Hierarchy
 
-### Current Approach
+Lean has explicit universe levels, which matter when schemas, categories, and
+semantic interpretations quantify over other structured objects.
 
-Idris uses `Type` with implicit universe polymorphism:
+```lean
+universe u v
 
-```idris
--- Schema objects live in Type
-record Schema where
-  Obj : Type
-  Gen : Obj -> Obj -> Type
+structure Schema where
+  Obj : Type u
+  Hom : Obj -> Obj -> Type v
+
+structure MetaSchema where
+  SchemaId : Type u
+  schema : SchemaId -> Schema
 ```
 
-### Missing: Explicit Universes
+Design rule: keep kernel objects universe-polymorphic when the abstraction
+really ranges over schemas or categories. Keep executable certificate checkers
+concrete when possible so the checked surface stays small.
 
-For large eliminations and set-theoretic concerns, we need:
-
-```idris
--- Proposed: Explicit universe levels
-record Schema (ℓ : Level) where
-  Obj : Type ℓ
-  Gen : Obj -> Obj -> Type ℓ
-  Eq  : Path Gen a b -> Path Gen a b -> Type ℓ
-
--- Large schemas containing schemas
-record MetaSchema where
-  schemas : Type 1  -- Universe of schemas
-  mappings : schemas -> schemas -> Type 0
-```
-
-**Status:** ⚠️ Implicit only, no `Type ω` or universe polymorphism
+**Status:** Current Lean foundation; expand only where kernel modules need it.
 
 ---
 
 ## 2. Inductive Families
 
-### Well-Founded Induction
+Path witnesses and reachability proofs are naturally indexed by endpoints.
 
-Path signatures indexed by length:
-
-```idris
-data PathSig : Nat -> Type where
-  PathNil  : PathSig 0
-  PathCons : StrId -> PathSig n -> PathSig (S n)
+```lean
+inductive Path (Obj : Type u) : Obj -> Obj -> Type u where
+  | id : Path Obj a a
+  | edge : Edge a b r -> Path Obj a b
+  | trans : Path Obj a b -> Path Obj b c -> Path Obj a c
 ```
 
-This ensures:
-- Length is tracked at type level
-- Operations preserve length invariants
-- Termination is guaranteed
+This gives the trusted checker:
 
-### Indexed Inductive Types
+- Endpoint alignment by construction
+- Explicit identity and composition constructors
+- A compact replay target for reachability certificates
 
-Reachability as an inductive family:
+Runtime Rust builders should mirror these invariants with checked constructors,
+but the trusted claim is the Lean replay result.
 
-```idris
-data Reachable : EntityId -> PathSig n -> EntityId -> Type where
-  ReachRefl : Reachable e PathNil e
-  ReachStep : (rel : Relation) ->
-              rel.source = from ->
-              rel.relType = r ->
-              Reachable rel.target p to ->
-              Reachable from (PathCons r p) to
-```
-
-**Properties verified by construction:**
-- Reflexivity for empty paths
-- Step-wise composition
-- Source/target consistency
+**Status:** Implemented for the finite presentation fragment in
+`Axiograph.Theory.Finite.Path`; certificate dispatch remains narrower.
 
 ---
 
-## 3. Proof Relevance vs Irrelevance
+## 3. Proof Relevance vs Erasure
 
-### Proof-Relevant Data
+Axiograph needs both proof-relevant and proof-irrelevant data.
 
-When proofs carry computational content:
+Proof-relevant objects are part of the audit trail:
 
-```idris
--- The proof IS the data
-data Reachable : EntityId -> PathSig n -> EntityId -> Type where
-  -- Constructors contain the actual path taken
+- Reachability witnesses
+- Rewrite derivations
+- Normalization certificates
+- Reconciliation decisions
+
+Proof-irrelevant propositions justify local invariants:
+
+```lean
+structure VProb where
+  numerator : Nat
+  bound : numerator <= precision
 ```
 
-### Proof-Irrelevant Propositions
+The `bound` proof matters to Lean, but it is not runtime evidence that users
+need to inspect. Certificates and derivation traces, by contrast, are data.
 
-When we only care that a proof exists:
-
-```idris
--- Using So for decidable propositions
-record Prob where
-  value : Double
-  valid : So (in01 value)  -- Proof irrelevant, erased at runtime
-
--- Using erased quantification
-erased
-validPath : (p : PathSig n) -> ValidPath p
-```
-
-### Missing: Full Prop/Set Distinction
-
-HoTT distinguishes:
-- **Prop** (h-propositions): At most one proof
-- **Set** (h-sets): No higher path structure
-- **Groupoid**: 2-paths exist
-- **∞-Groupoid**: All levels
-
-```idris
--- Proposed: Truncation levels
-data TruncLevel = Prop | Set | Groupoid | Inf
-
-isProp : Type -> Type
-isProp A = (x, y : A) -> x = y
-
-isSet : Type -> Type  
-isSet A = (x, y : A) -> isProp (x = y)
-```
-
-**Status:** ⚠️ Partial (some truncation), needs systematic treatment
+**Status:** Current Lean/Rust boundary. Rust may cache or emit witnesses; Lean
+decides whether the witness establishes the semantic claim.
 
 ---
 
-## 4. Record Types and Copatterns
+## 4. Paths, Equations, and Rewriting
 
-### Positive Records
+Path equivalence is a semantic relation, not a string or byte-level equality.
 
-Standard record types:
-
-```idris
-record Entity where
-  constructor MkEntity
-  entityId : EntityId
-  entityType : StrId
-  attrs : List (StrId, StrId)
+```lean
+inductive PathEquiv : Path Obj a b -> Path Obj a b -> Prop where
+  | refl : PathEquiv p p
+  | idLeft : PathEquiv (Path.trans Path.id p) p
+  | idRight : PathEquiv (Path.trans p Path.id) p
+  | assoc : PathEquiv (Path.trans (Path.trans p q) r)
+                      (Path.trans p (Path.trans q r))
 ```
 
-### Missing: Copatterns
+Certificates should name the equations or rewrite rules they use. The checker
+replays those steps against the accepted `.axi` module closure and compiled
+semantic IR.
 
-For defining coinductive types and infinite structures:
-
-```idris
--- Proposed: Copatterns for streams
-codata Stream a where
-  head : a
-  tail : Stream a
-
--- Definition by observation
-nats : Stream Nat
-head nats = 0
-tail nats = map S nats
-```
-
-**Status:** ❌ Idris 2 has limited codata; no copatterns
+**Status:** `Axiograph.Theory.Finite.PathEquiv` now includes category laws and
+accepted parallel-path equations. `GroupoidPath` is endpoint-indexed and its
+identity, associativity, and inverse laws are proved by denotation into
+mathlib's free groupoid. General rewrite termination/confluence remains a
+non-claim.
 
 ---
 
-## 5. Effect System
+## 5. Probability and Approximation
 
-### Current: IO and Monad Transformers
+Probability-like confidence values need deterministic, checkable arithmetic.
+The trusted fragment should use fixed-point values with explicit bounds, not
+ambient floating-point assumptions.
 
-```idris
-loadPathDB : String -> IO (Either Error PathDB)
+```lean
+structure FixedProb where
+  numerator : Nat
+  bounded : numerator <= precision
+
+def composeConfidence (a b : FixedProb) : FixedProb :=
+  -- fixed-point multiplication plus a proof that the result is bounded
+  sorry
 ```
 
-### Missing: Algebraic Effects
+Rust can use convenient runtime types, but certificate payloads should lower to
+the fixed-point representation that Lean checks.
 
-More principled effect handling:
-
-```idris
--- Proposed: Effect signature
-effect PathDBOps where
-  getEntity : EntityId -> Eff (Maybe Entity)
-  followRel : EntityId -> StrId -> Eff (List EntityId)
-
--- Effect handlers
-runInMemory : Eff a [PathDBOps] -> PathDB -> (a, PathDB)
-runDistributed : Eff a [PathDBOps] -> NetworkConfig -> IO a
-```
-
-### Missing: Graded Monads
-
-Track effect accumulation:
-
-```idris
--- Proposed: Confidence-graded computation
-data Uncertain : Prob -> Type -> Type where
-  Pure : a -> Uncertain 1.0 a
-  Bind : Uncertain p a -> (a -> Uncertain q b) -> Uncertain (p * q) b
-```
-
-**Status:** ⚠️ Basic monads only, no algebraic effects or grading
+**Status:** Current direction for `VProb` and certificate checking.
 
 ---
 
-## 6. Subtyping and Coercion
+## 6. Runtime Type Discipline in Rust
 
-### Current: Explicit Conversion
+Rust is not the trusted dependently typed kernel. It still carries useful type
+discipline at operational boundaries:
 
-```idris
-entityToNode : Entity -> Node
-entityToNode e = MkNode e.entityId (show e.entityType)
-```
+- Phantom brands for snapshot-scoped witnesses
+- Typestate wrappers for checked query IR and normalized paths
+- Checked builders for facts, relations, paths, and certificates
+- Strong enums for certificate kinds and reconciliation outcomes
 
-### Missing: Subtype Polymorphism
+These patterns reduce malformed certificate emission and make runtime behavior
+reviewable. They do not replace Lean.
 
-```idris
--- Proposed: Subtype relation
-interface (:<) (a : Type) (b : Type) where
-  upcast : a -> b
-
--- Material is a subtype of Entity
-Material :< Entity where
-  upcast m = MkEntity m.id "Material" m.attrs
-
--- Contravariant for inputs
-validFor : (e : Entity) -> {auto prf : Material :< Entity} -> Bool
-```
-
-**Status:** ❌ No subtyping, manual conversions
+**Status:** Rust should stay strict and typed, but semantic authority remains in
+Lean.
 
 ---
 
-## 7. Linear and Affine Types
+## 7. Effects and IO
 
-### Missing: Resource Tracking
+The trusted checker should remain small and mostly pure. IO-heavy operations
+belong in Rust:
 
-```idris
--- Proposed: Linear types
-data Linear : Type -> Type where
-  MkLinear : (1 _ : a) -> Linear a
+- Ingestion
+- Query planning
+- Indexing
+- Backend projection
+- LLM-assisted extraction
+- Visualization
 
--- Affine (use at most once)
-data Affine : Type -> Type where
-  MkAffine : (0..1 _ : a) -> Affine a
+Lean-facing certificate checkers should consume explicit inputs and produce
+explicit accept/reject results. If a semantic rule depends on a snapshot,
+module, world, or context, that dependency must be carried by the certificate
+or anchor.
 
--- Session types for protocols
-data Session : Protocol -> Type where
-  Send : (a -> Session s) -> Session (Send a :> s)
-  Recv : (a -> Session s) -> Session (Recv a :> s)
-  End  : Session Done
-```
-
-**Application:** 
-- Machine time allocation
-- Material consumption in manufacturing
-- One-time tokens in security
-
-**Status:** ❌ No linear/affine types in Idris 2
+**Status:** Keep side effects out of trusted semantic kernels.
 
 ---
 
-## 8. Observational Type Theory
+## 8. Modal, Temporal, and Contextual Types
 
-### Missing: Strict Equality with Univalence
+Axiograph needs modalities for real-world claims:
 
-Observational Type Theory (OTT) provides:
-- Definitional equality for canonical forms
-- Propositional equality with UIP (unique identity proofs)
-- Function extensionality
-- Compatible with classical reasoning
+- Time-indexed facts
+- Belief or knowledge by agent
+- Obligations and permissions
+- Context-dependent tacit knowledge
+- Possible worlds and scenario branches
 
-```idris
--- Proposed: Observational equality
-data Obs : a -> a -> Type where
-  -- For functions, pointwise
-  FunObs : ((x : a) -> Obs (f x) (g x)) -> Obs f g
-  -- For records, field-wise
-  RecObs : Obs r1.field r2.field -> ... -> Obs r1 r2
-```
+The design target is Lean semantics for these modalities plus Rust certificate
+emitters for concrete operations. Runtime proposal-adapter or LLM output stays in
+the evidence plane until it passes typed validation, review, and promotion.
 
-**Status:** ❌ Using intensional equality
+**Status:** Finite context-indexed values and proof-carrying context transports
+are implemented in `Axiograph.Theory.Finite`. Modal logic, arbitrary context
+categories, sheaf descent, and proposal-adapter trust remain unimplemented.
 
 ---
 
-## 9. Type-Level Computation
+## 9. Reflection and Code Generation
 
-### Current: Compile-Time Evaluation
+Lean metaprogramming is useful for reducing boilerplate in the trusted checker,
+but generated proof code should still compile to ordinary reviewable Lean
+definitions and theorems.
 
-```idris
--- Type-level natural number arithmetic
-pathConcat : PathSig m -> PathSig n -> PathSig (m + n)
-```
+Rust code generation should target typed runtime surfaces and certificate
+schemas, not a separate proof authority. Generated Rust remains untrusted until
+its emitted certificate checks in Lean.
 
-### Missing: Type Families with Overlap
-
-```idris
--- Proposed: Overlapping type families
-type family Merge (a : Schema) (b : Schema) : Schema where
-  Merge a a = a  -- Overlap: identical schemas
-  Merge a b = UnionSchema a b  -- General case
-```
-
-**Status:** ⚠️ Interface resolution, no true type families
+**Status:** Use generation to reduce repetition, not to widen the trusted base.
 
 ---
 
-## 10. Reflection and Metaprogramming
+## 10. Verified Rust and Local Invariants
 
-### Current: Elaborator Reflection
+Rust verification tools can harden the untrusted engine:
 
-Idris 2 provides `%macro` and elaborator scripts:
+- Verus for local invariants
+- Kani for bounded model checking
+- Miri for undefined-behavior detection
+- Fuzzing for byte parsers and certificate decoders
 
-```idris
-%macro
-deriveShow : (name : Name) -> Elab ()
-deriveShow n = do
-  -- Generate Show instance
-```
+These tools complement Lean. They can show that Rust code is less likely to
+emit malformed data or violate memory/format invariants, but they do not define
+Axiograph's semantic truth.
 
-### Usage in Axiograph
-
-```idris
--- Auto-generate schema validators
-%runElab deriveSchemaValidator "MySchema"
-
--- Generate migration functions
-%runElab deriveMigration "SchemaV1" "SchemaV2"
-```
-
-**Status:** ✅ Elaborator reflection available
+**Status:** Recommended for high-risk runtime surfaces; not a replacement for
+certificate checking.
 
 ---
 
-## 11. Proposed Type System Extensions
+## 11. Current Gaps
 
-### 11.1 Quantitative Type Theory (QTT)
-
-Track resource usage at type level:
-
-```idris
--- 0: erased at runtime
--- 1: used exactly once
--- ω: unrestricted
-
-swap : (1 a : Type) -> (1 b : Type) -> (1 x : a) -> (1 y : b) -> (b, a)
-swap _ _ x y = (y, x)
-```
-
-**Benefit:** Proves linear resource usage
-
-### 11.2 Sized Types
-
-Ensure termination for recursive definitions:
-
-```idris
--- Size-indexed types
-data Nat : Size -> Type where
-  Z : Nat i
-  S : Nat i -> Nat (↑ i)
-
--- Sized streams
-codata Stream : Size -> Type -> Type where
-  head : Stream i a -> a
-  tail : Stream (↑ i) a -> Stream i a
-```
-
-**Benefit:** Coinductive definitions with guaranteed productivity
-
-### 11.3 Self Types
-
-Types that can refer to their own values:
-
-```idris
--- Self type for intrinsic invariants
-Self : (A : Type) -> (A -> Type) -> Type
-Self A P = (x : A) ** P x
-
--- Entity that knows its own type
-SelfTypedEntity : Type
-SelfTypedEntity = Self Entity (\e => ValidType e.entityType)
-```
-
-**Benefit:** More expressive invariants
+| Feature | Importance | Current owner | Status |
+| --------- | ------------ | --------------- | -------- |
+| Finite indexed path/groupoid laws | High | Lean | Implemented as theorem support; not a `VerifyMain` certificate family |
+| `.axi` parser parity | High | Lean + Rust | In progress |
+| Finite category presentation and relation projections | High | Rust canonical IR + Lean finite theory | Implemented finite Lean model; canonical IR serialization into `VerifyMain` remains open |
+| Reconciliation certificates | High | Lean + Rust emitters | Planned |
+| Modal/temporal semantics | Medium | Lean | Planned |
+| Semantic coverage reports | Medium | Rust, checked anchors | Planned |
+| Rust local invariant proofs | Medium | Rust tooling | Selective |
 
 ---
 
-## 12. Verified Compilation Target
+## 12. Recommended Path Forward
 
-### Idris → Verified Rust
+### Phase 1: Tighten the trusted checker
 
-The compilation pipeline should preserve:
+- Keep `lean/Axiograph/VerifyMain.lean` as the trusted import closure.
+- Expand certificate replay for path normalization, reachability, and rewrites.
+- Keep probability and parser claims pinned to actual checked Lean modules.
 
-1. **Type Safety:** Rust's ownership = linear subset
-2. **Invariants:** Verus annotations for runtime checks
-3. **Proofs:** Extract to SMT verification
+### Phase 2: Align runtime emission
 
-```
-Idris Source
-    ↓ type check
-Idris Core (TT)
-    ↓ erase proofs
-Erased Core
-    ↓ emit Rust
-Verified Rust + Verus Annotations
-    ↓ verify
-SMT Proof Obligations
-    ↓ compile
-Native Binary
-```
+- Make Rust emit certificates for the operations users rely on.
+- Use typed Rust builders to prevent malformed certificate payloads.
+- Add golden vectors that Rust emits and Lean verifies.
 
-**Status:** ⚠️ Partial (emit Rust, Verus stubs)
+### Phase 3: Promote richer semantics
 
----
-
-## 13. Summary of Gaps
-
-| Feature | Importance | Difficulty | Status |
-|---------|------------|------------|--------|
-| Explicit universes | High | Medium | ⚠️ Implicit |
-| Copatterns | High | High | ❌ Missing |
-| Algebraic effects | High | High | ❌ Missing |
-| Linear types | Medium | High | ❌ Missing |
-| Graded monads | Medium | Medium | ❌ Missing |
-| Full truncation | Medium | Medium | ⚠️ Partial |
-| Subtyping | Low | Medium | ❌ Missing |
-| Sized types | Medium | High | ❌ Missing |
-| Cubical TT | High | Very High | ❌ Postulated |
-
----
-
-## 14. Recommended Path Forward
-
-### Phase 1: Strengthen Current Foundation
-- Complete `Prop`/`Set` distinction
-- Add systematic proof irrelevance
-- Improve elaborator scripts for automation
-
-### Phase 2: Add Coinduction
-- Implement basic codata with copatterns
-- Add productivity checking
-- Support for infinite structures
-
-### Phase 3: Effect System
-- Design algebraic effect signatures
-- Implement effect handlers
-- Add graded monad support for confidence tracking
-
-### Phase 4: Advanced Features
-- Explore cubical type theory integration
-- Add sized types for termination
-- Consider QTT for resource tracking
+- Add modal, temporal, and contextual kernels in Lean.
+- Require explicit anchors for worlds, snapshots, contexts, and accepted modules.
+- Keep LLM/proposal-adapter output in evidence branches until validated and promoted.
 
 ---
 
 ## References
 
-1. **Type Theory and Functional Programming** - Simon Thompson
-2. **Programming in Martin-Löf's Type Theory** - Nordström, Petersson, Smith
-3. **Quantitative Type Theory** - Atkey, 2018
-4. **Cubical Agda** - Vezzosi, Mörtberg, Abel
-5. **Idris 2: Quantitative Type Theory in Practice** - Brady
+1. **Theorem Proving in Lean 4** - Lean community
+2. **Mathematics in Lean** - Lean community
+3. **Homotopy Type Theory: Univalent Foundations of Mathematics**
+4. **Category Theory in Context** - Emily Riehl
+5. **Quantitative Type Theory** - Atkey, 2018

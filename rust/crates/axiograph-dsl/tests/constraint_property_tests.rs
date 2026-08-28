@@ -13,12 +13,14 @@ fn ident_list(min: usize, max: usize) -> impl Strategy<Value = Vec<String>> {
 }
 
 fn carriers_opt() -> impl Strategy<Value = Option<CarrierFieldsV1>> {
-    proptest::option::of((ident(), ident()).prop_filter("carriers must be distinct", |(a, b)| a != b).prop_map(|(a, b)| {
-        CarrierFieldsV1 {
-            left_field: a,
-            right_field: b,
-        }
-    }))
+    proptest::option::of(
+        (ident(), ident())
+            .prop_filter("carriers must be distinct", |(a, b)| a != b)
+            .prop_map(|(a, b)| CarrierFieldsV1 {
+                left_field: a,
+                right_field: b,
+            }),
+    )
 }
 
 fn params_opt() -> impl Strategy<Value = Option<Vec<String>>> {
@@ -51,12 +53,14 @@ fn closure_constraint() -> impl Strategy<Value = ConstraintV1> {
             carriers_opt(),
             params_opt(),
         )
-            .prop_map(|(relation, field, values, carriers, params)| ConstraintV1::SymmetricWhereIn {
-                relation,
-                field,
-                values,
-                carriers,
-                params,
+            .prop_map(|(relation, field, values, carriers, params)| {
+                ConstraintV1::SymmetricWhereIn {
+                    relation,
+                    field,
+                    values,
+                    carriers,
+                    params,
+                }
             }),
     ]
 }
@@ -74,4 +78,3 @@ proptest! {
         prop_assert_eq!(parsed, c);
     }
 }
-

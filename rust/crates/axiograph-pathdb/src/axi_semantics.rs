@@ -11,7 +11,7 @@
 //! semantics described in:
 //!
 //! - `docs/explanation/TOPOS_THEORY.md` (explanation-level),
-//! - `lean/Axiograph/Topos/Overview.lean` (mathlib-backed semantic scaffold).
+//! - `lean/Axiograph/Topos/Overview.lean` (mathlib-backed semantic support layer).
 //!
 //! In that view:
 //! - a schema presents a category (objects = types, relations-as-objects + projection arrows),
@@ -34,15 +34,18 @@
 //! - and first-class “higher structure” metadata (morphisms, homotopies,
 //!   modalities, migrations) anchored to canonical `.axi`.
 
-use std::collections::{HashMap, HashSet};
 use std::collections::hash_map::Entry;
+use std::collections::{HashMap, HashSet};
 
 use anyhow::Result;
 
 use axiograph_dsl::schema_v1::RewriteVarDeclV1;
 
 use crate::axi_meta::*;
-use crate::PathDB;
+use crate::kernel_ir::{
+    derive_relation_semantics, RelationSemanticsIr, RoleIr, RoleKind, RuntimeSchemaIndex,
+};
+use crate::{ObjectTypeId, PathDB, RoleId, SchemaId};
 
 #[derive(Debug, Clone, Default)]
 pub struct MetaPlaneIndex {
@@ -52,6 +55,7 @@ pub struct MetaPlaneIndex {
 
 #[derive(Debug, Clone)]
 pub struct SchemaIndex {
+    pub schema_name: String,
     pub schema_entity: u32,
     pub module_name: Option<String>,
     pub object_types: HashSet<String>,
@@ -160,6 +164,7 @@ pub struct FieldDecl {
     pub field_entity: u32,
     pub field_name: String,
     pub field_type: String,
+    pub field_kind: RoleKind,
     pub field_index: usize,
 }
 
@@ -184,9 +189,11 @@ impl SchemaIndex {
     /// can attach attributes, provenance, context/world scoping, etc.
     ///
     /// If a schema has both:
+    ///
     /// - `object Foo`, and
     /// - `relation Foo(...)`,
-    /// we use `FooFact` as the tuple type to avoid a name collision with the
+    ///
+    /// We use `FooFact` as the tuple type to avoid a name collision with the
     /// object type.
     pub fn tuple_entity_type_name(&self, relation_name: &str) -> String {
         if self.object_types.contains(relation_name) {
@@ -194,6 +201,100 @@ impl SchemaIndex {
         } else {
             relation_name.to_string()
         }
+    }
+
+    pub fn compiled_relation_semantics(&self, relation_name: &str) -> Option<RelationSemanticsIr> {
+        let relation = self.relation_decls.get(relation_name)?;
+        let roles = relation
+            .fields
+            .iter()
+            .map(|field| RoleIr {
+                role_id: RoleId::new(format!(
+                    "role:{}:{}:{}",
+                    self.schema_name, relation_name, field.field_name
+                )),
+                name: field.field_name.clone(),
+                target_type: field.field_type.clone(),
+                order: field.field_index as u16,
+                kind: field.field_kind,
+            })
+            .collect::<Vec<_>>();
+        Some(derive_relation_semantics(
+            &self.schema_name,
+            relation_name,
+            self.tuple_entity_type_name(relation_name),
+            roles,
+        ))
+    }
+
+    pub fn compiled_schema_ir(&self, schema_name: &str) -> RuntimeSchemaIndex {
+        let object_type_ids = self
+            .object_types
+            .iter()
+            .map(|object_type| {
+                (
+                    object_type.clone(),
+                    ObjectTypeId::new(format!("object:{schema_name}:{object_type}")),
+                )
+            })
+            .collect();
+        let relations = self
+            .relation_decls
+            .keys()
+            .filter_map(|name| {
+                self.compiled_relation_semantics(name)
+                    .map(|rel| (name.clone(), rel))
+            })
+            .collect();
+        let subtypes_of = self
+            .object_types
+            .iter()
+            .map(|expected| {
+                let subtypes = self
+                    .object_types
+                    .iter()
+                    .filter(|candidate| {
+                        self.supertypes_of
+                            .get(*candidate)
+                            .is_some_and(|supers| supers.contains(expected))
+                    })
+                    .cloned()
+                    .collect::<HashSet<_>>();
+                (expected.clone(), subtypes)
+            })
+            .collect::<HashMap<_, _>>();
+        let mut compiled = RuntimeSchemaIndex {
+            schema_id: SchemaId::new(schema_name.to_string()),
+            object_types: self.object_types.clone(),
+            object_type_ids,
+            supertypes_of: self.supertypes_of.clone(),
+            subtypes_of,
+            relations,
+            role_interfaces: HashMap::new(),
+        };
+        compiled.role_interfaces = compiled
+            .relations
+            .values()
+            .flat_map(|relation| {
+                relation.roles.iter().map(|role| {
+                    let scoped_role_name = format!("{}:{}", relation.name, role.name);
+                    (
+                        scoped_role_name.clone(),
+                        crate::kernel_ir::RoleInterfaceIr {
+                            role_id: role.role_id.clone(),
+                            scoped_role_name,
+                            relation_name: relation.name.clone(),
+                            role_name: role.name.clone(),
+                            declared_target_type: role.target_type.clone(),
+                            role_kind: role.kind,
+                            admissible_player_types: compiled
+                                .admissible_player_types(&role.target_type),
+                        },
+                    )
+                })
+            })
+            .collect();
+        compiled
     }
 }
 
@@ -257,6 +358,21 @@ impl MetaPlaneIndex {
                     let Some(field_type) = entity_attr_string(db, fid, ATTR_FIELD_TYPE) else {
                         continue;
                     };
+                    let Some(field_kind) =
+                        entity_attr_string(db, fid, ATTR_FIELD_KIND).and_then(|kind| {
+                            match kind.as_str() {
+                                "data" => Some(RoleKind::Data),
+                                "context" => Some(RoleKind::Context),
+                                "world" => Some(RoleKind::World),
+                                "temporal" => Some(RoleKind::Temporal),
+                                "parameter" => Some(RoleKind::Parameter),
+                                "evidence" => Some(RoleKind::Evidence),
+                                _ => None,
+                            }
+                        })
+                    else {
+                        continue;
+                    };
                     let field_index = entity_attr_string(db, fid, ATTR_FIELD_INDEX)
                         .and_then(|s| s.parse::<usize>().ok())
                         .unwrap_or(0);
@@ -264,6 +380,7 @@ impl MetaPlaneIndex {
                         field_entity: fid,
                         field_name,
                         field_type,
+                        field_kind,
                         field_index,
                     });
                 }
@@ -282,8 +399,10 @@ impl MetaPlaneIndex {
             // Constraints (from theories attached to this schema).
             let mut constraints_by_relation: HashMap<String, Vec<ConstraintDecl>> = HashMap::new();
             let mut rewrite_rules_by_theory: HashMap<String, Vec<RewriteRuleDecl>> = HashMap::new();
-            let mut named_block_constraints_by_theory: HashMap<String, Vec<NamedBlockConstraintDecl>> =
-                HashMap::new();
+            let mut named_block_constraints_by_theory: HashMap<
+                String,
+                Vec<NamedBlockConstraintDecl>,
+            > = HashMap::new();
             for theory_id in db
                 .follow_one(schema_entity, META_REL_SCHEMA_HAS_THEORY)
                 .iter()
@@ -351,9 +470,8 @@ impl MetaPlaneIndex {
                         }
                         "symmetric_where_in" => {
                             let relation = rel_name.clone().unwrap_or_default();
-                            let field =
-                                entity_attr_string(db, cid, ATTR_CONSTRAINT_WHERE_FIELD)
-                                    .unwrap_or_default();
+                            let field = entity_attr_string(db, cid, ATTR_CONSTRAINT_WHERE_FIELD)
+                                .unwrap_or_default();
                             let values_csv =
                                 entity_attr_string(db, cid, ATTR_CONSTRAINT_WHERE_IN_VALUES)
                                     .unwrap_or_default();
@@ -363,14 +481,13 @@ impl MetaPlaneIndex {
                                 .filter(|s| !s.is_empty())
                                 .map(|s| s.to_string())
                                 .collect::<Vec<_>>();
-                            let carriers =
-                                match (
-                                    entity_attr_string(db, cid, ATTR_CONSTRAINT_SRC_FIELD),
-                                    entity_attr_string(db, cid, ATTR_CONSTRAINT_DST_FIELD),
-                                ) {
-                                    (Some(left), Some(right)) => Some((left, right)),
-                                    _ => None,
-                                };
+                            let carriers = match (
+                                entity_attr_string(db, cid, ATTR_CONSTRAINT_SRC_FIELD),
+                                entity_attr_string(db, cid, ATTR_CONSTRAINT_DST_FIELD),
+                            ) {
+                                (Some(left), Some(right)) => Some((left, right)),
+                                _ => None,
+                            };
                             let params = entity_attr_string(db, cid, ATTR_CONSTRAINT_PARAM_FIELDS)
                                 .and_then(|csv| {
                                     let fields = csv
@@ -395,14 +512,13 @@ impl MetaPlaneIndex {
                         }
                         "symmetric" => {
                             let relation = rel_name.clone().unwrap_or_default();
-                            let carriers =
-                                match (
-                                    entity_attr_string(db, cid, ATTR_CONSTRAINT_SRC_FIELD),
-                                    entity_attr_string(db, cid, ATTR_CONSTRAINT_DST_FIELD),
-                                ) {
-                                    (Some(left), Some(right)) => Some((left, right)),
-                                    _ => None,
-                                };
+                            let carriers = match (
+                                entity_attr_string(db, cid, ATTR_CONSTRAINT_SRC_FIELD),
+                                entity_attr_string(db, cid, ATTR_CONSTRAINT_DST_FIELD),
+                            ) {
+                                (Some(left), Some(right)) => Some((left, right)),
+                                _ => None,
+                            };
                             let params = entity_attr_string(db, cid, ATTR_CONSTRAINT_PARAM_FIELDS)
                                 .and_then(|csv| {
                                     let fields = csv
@@ -425,14 +541,13 @@ impl MetaPlaneIndex {
                         }
                         "transitive" => {
                             let relation = rel_name.clone().unwrap_or_default();
-                            let carriers =
-                                match (
-                                    entity_attr_string(db, cid, ATTR_CONSTRAINT_SRC_FIELD),
-                                    entity_attr_string(db, cid, ATTR_CONSTRAINT_DST_FIELD),
-                                ) {
-                                    (Some(left), Some(right)) => Some((left, right)),
-                                    _ => None,
-                                };
+                            let carriers = match (
+                                entity_attr_string(db, cid, ATTR_CONSTRAINT_SRC_FIELD),
+                                entity_attr_string(db, cid, ATTR_CONSTRAINT_DST_FIELD),
+                            ) {
+                                (Some(left), Some(right)) => Some((left, right)),
+                                _ => None,
+                            };
                             let params = entity_attr_string(db, cid, ATTR_CONSTRAINT_PARAM_FIELDS)
                                 .and_then(|csv| {
                                     let fields = csv
@@ -528,15 +643,17 @@ impl MetaPlaneIndex {
                     };
                     let orientation = entity_attr_string(db, rid, ATTR_REWRITE_RULE_ORIENTATION)
                         .unwrap_or_else(|| "forward".to_string());
-                    let vars_text = entity_attr_string(db, rid, ATTR_REWRITE_RULE_VARS)
-                        .unwrap_or_default();
+                    let vars_text =
+                        entity_attr_string(db, rid, ATTR_REWRITE_RULE_VARS).unwrap_or_default();
                     let (vars, vars_parse_error) =
                         match axiograph_dsl::schema_v1::parse_rewrite_var_decl_list_v1(&vars_text) {
                             Ok(v) => (v, None),
                             Err(e) => (Vec::new(), Some(e)),
                         };
-                    let lhs = entity_attr_string(db, rid, ATTR_REWRITE_RULE_LHS).unwrap_or_default();
-                    let rhs = entity_attr_string(db, rid, ATTR_REWRITE_RULE_RHS).unwrap_or_default();
+                    let lhs =
+                        entity_attr_string(db, rid, ATTR_REWRITE_RULE_LHS).unwrap_or_default();
+                    let rhs =
+                        entity_attr_string(db, rid, ATTR_REWRITE_RULE_RHS).unwrap_or_default();
                     let index = entity_attr_string(db, rid, ATTR_REWRITE_RULE_INDEX)
                         .and_then(|s| s.parse::<usize>().ok())
                         .unwrap_or(usize::MAX);
@@ -561,6 +678,7 @@ impl MetaPlaneIndex {
 
             let supertypes_of = compute_supertypes_closure(&object_types, &subtype_decls);
             let schema_index = SchemaIndex {
+                schema_name: schema_name.clone(),
                 schema_entity,
                 module_name,
                 object_types,
@@ -583,6 +701,12 @@ impl MetaPlaneIndex {
         }
 
         Ok(out)
+    }
+
+    pub fn compiled_schema_ir(&self, schema_name: &str) -> Option<RuntimeSchemaIndex> {
+        self.schemas
+            .get(schema_name)
+            .map(|schema| schema.compiled_schema_ir(schema_name))
     }
 
     pub fn typecheck_axi_facts(&self, db: &PathDB) -> AxiTypeCheckReport {
@@ -898,6 +1022,5 @@ fn merge_schema_index(target: &mut SchemaIndex, incoming: SchemaIndex) {
             .append(&mut blocks);
     }
 
-    target.supertypes_of =
-        compute_supertypes_closure(&target.object_types, &target.subtype_decls);
+    target.supertypes_of = compute_supertypes_closure(&target.object_types, &target.subtype_decls);
 }

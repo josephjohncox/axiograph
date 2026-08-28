@@ -1,119 +1,12 @@
 import Std
 import Axiograph.Certificate.Format
-import Axiograph.Axi.PathDBExportV1
 import Axiograph.Axi.ConstraintsCheck
 import Axiograph.Axi.TypeCheck
-import Axiograph.Util.Fnv1a
+import Axiograph.Identity
+import Axiograph.Util.Sha256
 import Mathlib.Computability.RegularExpressions
 
 namespace Axiograph
-
-namespace Reachability
-
-structure ReachabilityResult where
-  start : Nat
-  end_ : Nat
-  pathLen : Nat
-  confidence : Float
-  deriving Repr
-
-def verifyReachabilityProof : ReachabilityProof → Except String ReachabilityResult
-  | .reflexive entity =>
-      pure { start := entity, end_ := entity, pathLen := 0, confidence := 1.0 }
-  | .step src _relType dst relConfidence rest =>
-      match ensureProb relConfidence with
-      | .error msg => .error msg
-      | .ok relConfidence =>
-          match verifyReachabilityProof rest with
-          | .error msg => .error msg
-          | .ok restRes =>
-              if restRes.start != dst then
-                .error s!"invalid proof chain: expected rest.start = {dst}, got {restRes.start}"
-              else
-                .ok {
-                  start := src,
-                  end_ := restRes.end_,
-                  pathLen := restRes.pathLen + 1,
-                  confidence := relConfidence * restRes.confidence
-                }
-
-structure ReachabilityResultV2 where
-  start : Nat
-  end_ : Nat
-  pathLen : Nat
-  confidence : Prob.VProb
-  deriving Repr
-
-def verifyReachabilityProofV2 : ReachabilityProofV2 → Except String ReachabilityResultV2
-  | .reflexive entity =>
-      pure { start := entity, end_ := entity, pathLen := 0, confidence := Prob.vOne }
-  | .step src _relType dst relConfidence _relationId? rest =>
-      match verifyReachabilityProofV2 rest with
-      | .error msg => .error msg
-      | .ok restRes =>
-          if restRes.start != dst then
-            .error s!"invalid proof chain: expected rest.start = {dst}, got {restRes.start}"
-          else
-            .ok {
-              start := src,
-              end_ := restRes.end_,
-              pathLen := restRes.pathLen + 1,
-              confidence := Prob.vMult relConfidence restRes.confidence
-            }
-
-/-!
-### Snapshot-scoped reachability checking (anchored to `.axi`)
-
-`verifyReachabilityProofV2` checks the *internal* structure of a proof but is
-intentionally independent of any particular graph/snapshot.
-
-For end-to-end verification we also want the option to require that a reachability
-witness only uses edges that exist in a canonical `.axi` snapshot (e.g. a
-`PathDBExportV1` export).
-
-This is the first step toward “query certificates anchored to canonical inputs”:
-
-* certificates carry `relation_id` fact IDs,
-* the verifier loads the snapshot and extracts `relation_info`,
-* and we check every step references a real snapshot edge.
--/
-
-open Axiograph.Axi.PathDBExportV1
-
-def verifyReachabilityProofV2Anchored
-    (relationInfo : Std.HashMap Nat RelationInfoRow) :
-    ReachabilityProofV2 → Except String ReachabilityResultV2
-  | .reflexive entity =>
-      pure { start := entity, end_ := entity, pathLen := 0, confidence := Prob.vOne }
-  | .step src relType dst relConfidence relationId? rest =>
-      match relationId? with
-      | none => .error "anchored reachability step is missing `relation_id`"
-      | some rid =>
-          match relationInfo.get? rid with
-          | none =>
-              .error s!"unknown relation_id {rid} (missing from snapshot relation_info)"
-          | some row =>
-              if row.source != src || row.target != dst then
-                .error s!"relation_id {rid} endpoints mismatch: expected ({row.source},{row.target}), got ({src},{dst})"
-              else if row.relTypeId != relType then
-                .error s!"relation_id {rid} rel_type mismatch: expected {row.relTypeId}, got {relType}"
-              else if Prob.toNat row.confidence != Prob.toNat relConfidence then
-                .error s!"relation_id {rid} confidence mismatch: expected {Prob.toNat row.confidence}, got {Prob.toNat relConfidence}"
-              else
-                match verifyReachabilityProofV2Anchored relationInfo rest with
-                | .error msg => .error msg
-                | .ok restRes =>
-                    if restRes.start != dst then
-                      .error s!"invalid proof chain: expected rest.start = {dst}, got {restRes.start}"
-                    else
-                      .ok {
-                        start := src,
-                        end_ := restRes.end_,
-                        pathLen := restRes.pathLen + 1,
-                        confidence := Prob.vMult relConfidence restRes.confidence
-                      }
-
-end Reachability
 
 namespace Resolution
 
@@ -143,7 +36,7 @@ namespace RewriteDerivation
 /-!
 ### v3 rewrite derivations (`rewrite_derivation_v3`)
 
-This is the `.axi`-anchored successor to `rewrite_derivation_v2`.
+This is the only standalone generic rewrite-derivation certificate family.
 
 Key differences from v2:
 
@@ -418,16 +311,16 @@ def parseRuleRefV3 (ruleRef : String) :
   if ruleRef.startsWith "builtin:" then
     let tag := ruleRef.drop "builtin:".length |>.trim
     pure (.inl (← PathRewriteRuleV2.parse tag))
-  else if ruleRef.startsWith "axi:" then
-    let parts := ruleRef.splitOn ":"
-    match parts with
-    | ["axi", "fnv1a64", hex, theoryName, ruleName] =>
-        let digest := s!"fnv1a64:{hex}"
-        pure (.inr (digest, theoryName, ruleName))
+  else if ruleRef.startsWith "axi-rule-v2|" then
+    match ruleRef.splitOn "|" with
+    | ["axi-rule-v2", revisionDigest, theoryName, ruleName] =>
+        if !Axiograph.Identity.validWireFor .revision revisionDigest then
+          throw s!"invalid revision identity in rule_ref: `{revisionDigest}`"
+        pure (.inr (revisionDigest, theoryName, ruleName))
     | _ =>
-        throw s!"invalid axi rule_ref: `{ruleRef}` (expected `axi:fnv1a64:<hex>:<theory>:<rule>`)"
+        throw s!"invalid axi rule_ref: `{ruleRef}` (expected `axi-rule-v2|<revision>|<theory>|<rule>`)"
   else
-    throw s!"unknown rule_ref prefix (expected builtin: or axi:): `{ruleRef}`"
+    throw s!"unknown rule_ref prefix (expected builtin: or axi-rule-v2|): `{ruleRef}`"
 
 partial def runDerivationV3Unanchored (input : PathExprV3) (steps : Array PathRewriteStepV3) :
     Except String PathExprV3 := do
@@ -437,7 +330,7 @@ partial def runDerivationV3Unanchored (input : PathExprV3) (steps : Array PathRe
     | .inl builtinRule =>
         current ← applyAtBuiltinV3 s.pos.toList builtinRule current
     | .inr _axiRef =>
-        throw "rewrite_derivation_v3: axi: rules require an `.axi` anchor context"
+        throw "rewrite_derivation_v3: axi: rules require a canonical `.axi` module context"
   pure current
 
 partial def runDerivationV3Anchored
@@ -487,318 +380,12 @@ end RewriteDerivation
 
 namespace Query
 
-/-!
-## Certified query checking (anchored)
-
-`query_result_v1` certificates are intended to support *conjunctive queries*
-(AxQL / SQL-ish) in a “Rust computes, Lean verifies” pipeline.
-
-Important: this verifier checks **soundness of the returned rows**, not completeness.
-It proves “these rows satisfy the query”, not “these are all the satisfying rows”.
-
-We also intentionally require a `PathDBExportV1` `.axi` anchor context:
-
-* type constraints are checked against `entity_type`,
-* attribute constraints are checked against `entity_attribute`,
-* path witnesses are checked against `relation_info` using `relation_id` fact ids.
--/
-
-open Axiograph.Axi.PathDBExportV1
 open RegularExpression
-
-structure QueryResultV1 where
-  rowCount : Nat
-  truncated : Bool
-  deriving Repr
-
-def resolveTerm (bindings : Std.HashMap String Nat) : QueryTermV1 → Except String Nat
-  | .const entity => pure entity
-  | .var name =>
-      match bindings.get? name with
-      | some entity => pure entity
-      | none => throw s!"missing binding for variable `{name}`"
-
-def toRegularExpression : QueryRegexV1 → RegularExpression Nat
-  | .epsilon => (1 : RegularExpression Nat)
-  | .rel relTypeId => RegularExpression.char relTypeId
-  | .seq parts =>
-      parts.foldl (fun acc p => acc * toRegularExpression p) (1 : RegularExpression Nat)
-  | .alt parts =>
-      parts.foldl (fun acc p => acc + toRegularExpression p) (0 : RegularExpression Nat)
-  | .star inner =>
-      RegularExpression.star (toRegularExpression inner)
-  | .plus inner =>
-      let re := toRegularExpression inner
-      re * RegularExpression.star re
-  | .opt inner =>
-      (1 : RegularExpression Nat) + toRegularExpression inner
-
 /-!
-### Subtyping in anchored snapshots
+## `.axi`-anchored exact finite query checking (v4)
 
-When the anchor snapshot contains the meta-plane, Rust interprets type atoms as:
-
-`?x : T`  means  “x has type T **or any subtype of T**”.
-
-This matches typical query semantics (asking for `Agent` should include `Firm`,
-`Household`, …). For legacy snapshot-anchored certificates we recover the
-subtyping relation from meta-plane edges (`axi_subtype_of`) when present.
-
-If no meta-plane subtype edges exist in the snapshot, we fall back to **exact**
-type matching (subtype = supertype).
--/
-
-structure SubtypeIndexV1 where
-  /-- Subtyping adjacency (sub → immediate supertypes). -/
-  supertypesOf : Std.HashMap Nat (Array Nat) := {}
-  deriving Repr
-
-def findInternedId? (internedString : Std.HashMap Nat String) (needle : String) : Option Nat :=
-  Id.run do
-    for (k, v) in internedString.toList do
-      if v == needle then
-        return some k
-    return none
-
-def buildSubtypeIndexV1
-    (relationInfo : Std.HashMap Nat RelationInfoRow)
-    (entityAttribute : Std.HashMap (Nat × Nat) Nat)
-    (internedString : Std.HashMap Nat String) : SubtypeIndexV1 :=
-  match findInternedId? internedString "axi_subtype_of",
-        findInternedId? internedString "name" with
-  | some subtypeRelTypeId, some nameKeyId =>
-      Id.run do
-        let mut out : Std.HashMap Nat (Array Nat) := {}
-        for (_, row) in relationInfo.toList do
-          if row.relTypeId == subtypeRelTypeId then
-            match entityAttribute.get? (row.source, nameKeyId),
-                  entityAttribute.get? (row.target, nameKeyId) with
-            | some subNameId, some supNameId =>
-                let current := out.getD subNameId #[]
-                out := out.insert subNameId (current.push supNameId)
-            | _, _ => pure ()
-        pure { supertypesOf := out }
-  | _, _ => {}
-
-def isSubtypeV1Fuel (idx : SubtypeIndexV1) (fuel : Nat) (subType superType : Nat) (seen : Std.HashSet Nat) : Bool :=
-  match fuel with
-  | 0 => false
-  | fuel + 1 =>
-      if subType == superType then
-        true
-      else if seen.contains subType then
-        false
-      else
-        let seen := seen.insert subType
-        match idx.supertypesOf.get? subType with
-        | none => false
-        | some sups =>
-            sups.any (fun next => isSubtypeV1Fuel idx fuel next superType seen)
-
-def isSubtypeV1 (idx : SubtypeIndexV1) (subType superType : Nat) : Bool :=
-  isSubtypeV1Fuel idx (idx.supertypesOf.size + 1) subType superType {}
-
-def reachabilityRelTypes : ReachabilityProofV2 → List Nat
-  | .reflexive _ => []
-  | .step _ relType _ _ _ rest => relType :: reachabilityRelTypes rest
-
-partial def ensureReachabilityMinConfidence
-    (proof : ReachabilityProofV2)
-    (minConfidence : Prob.VProb) : Except String Unit := do
-  match proof with
-  | .reflexive _ => pure ()
-  | .step _ _ _ relConfidence _ rest => do
-      if Prob.toNat relConfidence < Prob.toNat minConfidence then
-        throw s!"reachability step below min_confidence_fp: got {Prob.toNat relConfidence}, expected ≥ {Prob.toNat minConfidence}"
-      ensureReachabilityMinConfidence rest minConfidence
-
-def verifyQueryRowV1Anchored
-    (relationInfo : Std.HashMap Nat RelationInfoRow)
-    (entityType : Std.HashMap Nat Nat)
-    (entityAttribute : Std.HashMap (Nat × Nat) Nat)
-    (subtypes : SubtypeIndexV1)
-    (query : QueryV1)
-    (row : QueryRowV1) : Except String Unit := do
-  -- Build a binding map and reject duplicates (fail-closed).
-  let mut bindings : Std.HashMap String Nat := {}
-  for b in row.bindings do
-    if bindings.contains b.var then
-      throw s!"duplicate binding for variable `{b.var}`"
-    bindings := bindings.insert b.var b.entity
-
-  if row.witnesses.size != query.atoms.size then
-    throw s!"witness count mismatch: expected {query.atoms.size}, got {row.witnesses.size}"
-
-  for (atom, witness) in query.atoms.zip row.witnesses do
-    match atom, witness with
-    | .type term typeId, .type entity typeId' => do
-        if typeId != typeId' then
-          throw s!"type witness mismatch: expected type_id={typeId}, got {typeId'}"
-        let entity' ← resolveTerm bindings term
-        if entity != entity' then
-          throw s!"type witness mismatch: expected entity={entity'}, got {entity}"
-        let some actual := entityType.get? entity
-          | throw s!"missing entity_type fact for entity {entity}"
-        if !isSubtypeV1 subtypes actual typeId then
-          throw s!"entity_type mismatch for entity {entity}: expected type_id={typeId} (allowing subtypes), got {actual}"
-
-    | .attrEq term keyId valueId, .attrEq entity keyId' valueId' => do
-        if keyId != keyId' || valueId != valueId' then
-          throw s!"attr witness mismatch: expected (key_id={keyId}, value_id={valueId}), got (key_id={keyId'}, value_id={valueId'})"
-        let entity' ← resolveTerm bindings term
-        if entity != entity' then
-          throw s!"attr witness mismatch: expected entity={entity'}, got {entity}"
-        let some actual := entityAttribute.get? (entity, keyId)
-          | throw s!"missing entity_attribute fact for entity {entity} and key_id {keyId}"
-        if actual != valueId then
-          throw s!"entity_attribute mismatch for entity {entity} and key_id {keyId}: expected value_id={valueId}, got {actual}"
-
-    | .path left regex right, .path proof => do
-        let src ← resolveTerm bindings left
-        let dst ← resolveTerm bindings right
-
-        let res ← Reachability.verifyReachabilityProofV2Anchored relationInfo proof
-        if res.start != src then
-          throw s!"path witness start mismatch: expected {src}, got {res.start}"
-        if res.end_ != dst then
-          throw s!"path witness end mismatch: expected {dst}, got {res.end_}"
-
-        match query.maxHops? with
-        | none => pure ()
-        | some maxHops =>
-            if res.pathLen > maxHops then
-              throw s!"path witness exceeds max_hops={maxHops} (got len={res.pathLen})"
-
-        match query.minConfidence? with
-        | none => pure ()
-        | some minConf => ensureReachabilityMinConfidence proof minConf
-
-        let labels := reachabilityRelTypes proof
-        if labels.length != res.pathLen then
-          throw s!"internal error: relTypes length {labels.length} != pathLen {res.pathLen}"
-
-        let re := toRegularExpression regex
-        if !(labels ∈ re.matches') then
-          throw s!"path witness labels do not match RPQ (labels={labels})"
-
-    | _, _ =>
-        throw "atom/witness kind mismatch"
-
-def verifyQueryResultProofV1Anchored
-    (relationInfo : Std.HashMap Nat RelationInfoRow)
-    (entityType : Std.HashMap Nat Nat)
-    (entityAttribute : Std.HashMap (Nat × Nat) Nat)
-    (internedString : Std.HashMap Nat String)
-    (proof : QueryResultProofV1) : Except String QueryResultV1 := do
-  let subtypes := buildSubtypeIndexV1 relationInfo entityAttribute internedString
-  for row in proof.rows do
-    verifyQueryRowV1Anchored relationInfo entityType entityAttribute subtypes proof.query row
-  pure { rowCount := proof.rows.size, truncated := proof.truncated }
-
-structure QueryResultV2 where
-  rowCount : Nat
-  truncated : Bool
-  deriving Repr
-
-def verifyQueryRowV2Anchored
-    (relationInfo : Std.HashMap Nat RelationInfoRow)
-    (entityType : Std.HashMap Nat Nat)
-    (entityAttribute : Std.HashMap (Nat × Nat) Nat)
-    (subtypes : SubtypeIndexV1)
-    (query : QueryV2)
-    (row : QueryRowV2) : Except String Unit := do
-  -- Build a binding map and reject duplicates (fail-closed).
-  let mut bindings : Std.HashMap String Nat := {}
-  for b in row.bindings do
-    if bindings.contains b.var then
-      throw s!"duplicate binding for variable `{b.var}`"
-    bindings := bindings.insert b.var b.entity
-
-  let mut chosen : Option (Array QueryAtomV1) := none
-  let mut idx : Nat := 0
-  for atoms in query.disjuncts do
-    if idx == row.disjunct then
-      chosen := some atoms
-    idx := idx + 1
-
-  let some atoms := chosen
-    | throw s!"disjunct out of bounds: {row.disjunct} (have {query.disjuncts.size})"
-
-  if row.witnesses.size != atoms.size then
-    throw s!"witness count mismatch: expected {atoms.size}, got {row.witnesses.size}"
-
-  for (atom, witness) in Array.zip atoms row.witnesses do
-    match atom, witness with
-    | .type term typeId, .type entity typeId' => do
-        if typeId != typeId' then
-          throw s!"type witness mismatch: expected type_id={typeId}, got {typeId'}"
-        let entity' ← resolveTerm bindings term
-        if entity != entity' then
-          throw s!"type witness mismatch: expected entity={entity'}, got {entity}"
-        let some actual := entityType.get? entity
-          | throw s!"missing entity_type fact for entity {entity}"
-        if !isSubtypeV1 subtypes actual typeId then
-          throw s!"entity_type mismatch for entity {entity}: expected type_id={typeId} (allowing subtypes), got {actual}"
-
-    | .attrEq term keyId valueId, .attrEq entity keyId' valueId' => do
-        if keyId != keyId' || valueId != valueId' then
-          throw s!"attr witness mismatch: expected (key_id={keyId}, value_id={valueId}), got (key_id={keyId'}, value_id={valueId'})"
-        let entity' ← resolveTerm bindings term
-        if entity != entity' then
-          throw s!"attr witness mismatch: expected entity={entity'}, got {entity}"
-        let some actual := entityAttribute.get? (entity, keyId)
-          | throw s!"missing entity_attribute fact for entity {entity} and key_id {keyId}"
-        if actual != valueId then
-          throw s!"entity_attribute mismatch for entity {entity} and key_id {keyId}: expected value_id={valueId}, got {actual}"
-
-    | .path left regex right, .path proof => do
-        let src ← resolveTerm bindings left
-        let dst ← resolveTerm bindings right
-
-        let res ← Reachability.verifyReachabilityProofV2Anchored relationInfo proof
-        if res.start != src then
-          throw s!"path witness start mismatch: expected {src}, got {res.start}"
-        if res.end_ != dst then
-          throw s!"path witness end mismatch: expected {dst}, got {res.end_}"
-
-        match query.maxHops? with
-        | none => pure ()
-        | some maxHops =>
-            if res.pathLen > maxHops then
-              throw s!"path witness exceeds max_hops={maxHops} (got len={res.pathLen})"
-
-        match query.minConfidence? with
-        | none => pure ()
-        | some minConf => ensureReachabilityMinConfidence proof minConf
-
-        let labels := reachabilityRelTypes proof
-        if labels.length != res.pathLen then
-          throw s!"internal error: relTypes length {labels.length} != pathLen {res.pathLen}"
-
-        let re := toRegularExpression regex
-        if !(labels ∈ re.matches') then
-          throw s!"path witness labels do not match RPQ (labels={labels})"
-
-    | _, _ =>
-        throw "atom/witness kind mismatch"
-
-def verifyQueryResultProofV2Anchored
-    (relationInfo : Std.HashMap Nat RelationInfoRow)
-    (entityType : Std.HashMap Nat Nat)
-    (entityAttribute : Std.HashMap (Nat × Nat) Nat)
-    (internedString : Std.HashMap Nat String)
-    (proof : QueryResultProofV2) : Except String QueryResultV2 := do
-  let subtypes := buildSubtypeIndexV1 relationInfo entityAttribute internedString
-  for row in proof.rows do
-    verifyQueryRowV2Anchored relationInfo entityType entityAttribute subtypes proof.query row
-  pure { rowCount := proof.rows.size, truncated := proof.truncated }
-
-/-!
-## `.axi`-anchored query checking (v3, name-based)
-
-`query_result_v3` removes the dependency on `PathDBExportV1` snapshot tables by
-anchoring reachability witnesses directly to canonical `.axi` tuple facts via
-`axi_fact_id`.
+`query_result_v4` anchors reachability witnesses directly to canonical `.axi`
+tuple facts via `axi_fact_id`; derived query indexes are not checker inputs.
 
 This checker:
 
@@ -831,18 +418,21 @@ structure ObjectInfoV3 where
   objectTypes : Std.HashSet String
   deriving Repr
 
-structure AxiQueryIndexV3 where
+structure AxiFiniteQueryIndexV4 where
   moduleName : String
   schemas : Std.HashMap String SchemaV1Schema
   tupleFacts : Std.HashMap String TupleFactInfoV3
   objects : Std.HashMap String ObjectInfoV3
   deriving Repr
 
-def factIdPrefixV1 : String := Axiograph.Util.Fnv1a.factIdPrefix
+def sameStringMap (left right : Std.HashMap String String) : Bool :=
+  left.size == right.size && left.toList.all (fun (key, value) => right.get? key == some value)
+
+def factIdPrefixV2 : String := "axi:fact:v2:sha256:"
 
 def stripFactPrefixV1 (s : String) : Option String :=
-  if s.startsWith factIdPrefixV1 then
-    some (s.drop factIdPrefixV1.length)
+  if s.startsWith factIdPrefixV2 then
+    some (s.drop factIdPrefixV2.length)
   else
     none
 
@@ -867,7 +457,7 @@ def tupleEntityTypeName (schema : SchemaV1Schema) (relationName : String) : Stri
 /-!
 ## Subtyping (schema-level)
 
-When checking `query_result_v3` certificates, Rust treats a type atom `?x : T`
+When checking `query_result_v4` certificates, a type atom `?x : T`
 as satisfied when `?x` has type `U` and `U <: T` in the schema’s subtyping
 closure (not only when `U = T`).
 
@@ -939,7 +529,7 @@ def deriveBinaryEndpointsV3 (decl : RelationDeclV1) (fields : Std.HashMap String
         | some a, some b => some (a, b)
         | _, _ => none)
 
-def buildAxiQueryIndexV3 (m : Axiograph.Axi.AxiV1.AxiV1Module) : Except String AxiQueryIndexV3 := do
+def buildAxiFiniteQueryIndexV4 (m : Axiograph.Axi.AxiV1.AxiV1Module) : Except String AxiFiniteQueryIndexV4 := do
   let schemas := schemaMapV3 m
   let mut objects : Std.HashMap String ObjectInfoV3 := {}
   let mut tupleFacts : Std.HashMap String TupleFactInfoV3 := {}
@@ -965,13 +555,18 @@ def buildAxiQueryIndexV3 (m : Axiograph.Axi.AxiV1.AxiV1Module) : Except String A
                     }
               | some prev =>
                   if prev.schemaName != schema.name || prev.instanceName != inst.name then
-                    throw s!"ambiguous object name `{name}` across assignments (expected unique names for query_result_v3)"
+                    throw s!"ambiguous object name `{name}` across assignments (query_result_v4 requires unique canonical names)"
                   else
                     objects := objects.insert name { prev with objectTypes := prev.objectTypes.insert a.name }
             else
               -- Not an object assignment in this schema; ignore (fail-closed behavior for non-canonical inputs).
               pure ()
-        | .tuple fieldPairs =>
+        | .tuple _ fieldPairs =>
+            -- Finite query certificates range over relation facts. Canonical
+            -- function/aspect assignments belong to the category instance and
+            -- are checked by module formation, but they are not graph edges.
+            if schema.generators.any (fun generator => generator.name == a.name) then
+              continue
             let relDecl ← findRelationDecl schema a.name
             let mut fm : Std.HashMap String String := {}
             for (k, v) in fieldPairs do
@@ -989,32 +584,83 @@ def buildAxiQueryIndexV3 (m : Axiograph.Axi.AxiV1.AxiV1Module) : Except String A
                 | throw s!"internal error: missing field `{f.field}` after presence check"
               ordered := ordered.push (f.field, v)
             let factId :=
-              Axiograph.Util.Fnv1a.axiFactIdV1 m.moduleName schema.name inst.name a.name ordered
-            tupleFacts := tupleFacts.insert factId { schemaName := schema.name, instanceName := inst.name, relationName := a.name, fields := fm }
+              Axiograph.Identity.runtimeFactIdV2 m.moduleName schema.name inst.name a.name ordered
+            let candidate : TupleFactInfoV3 := {
+              schemaName := schema.name
+              instanceName := inst.name
+              relationName := a.name
+              fields := fm
+            }
+            match tupleFacts.get? factId with
+            | none => tupleFacts := tupleFacts.insert factId candidate
+            | some previous =>
+                if previous.schemaName != candidate.schemaName ||
+                    previous.instanceName != candidate.instanceName ||
+                    previous.relationName != candidate.relationName ||
+                    !sameStringMap previous.fields candidate.fields then
+                  throw s!"ambiguous fact-id collision `{factId}`; query_result_v4 refuses promotion"
+                else
+                  pure ()
 
   pure { moduleName := m.moduleName, schemas, tupleFacts, objects }
 
-def resolveTermV3 (bindings : Std.HashMap String String) : QueryTermV3 → Except String String
+def entityExistsV4 (index : AxiFiniteQueryIndexV4) (entity : String) : Bool :=
+  index.objects.contains entity || index.tupleFacts.contains entity
+
+def freeVarsTermV4 : FiniteQueryTermV4 → Std.HashSet String
+  | .const _ => {}
+  | .var name => ({} : Std.HashSet String).insert name
+
+def freeVarsAtomV4 : FiniteQueryAtomV4 → Std.HashSet String
+  | .type term _ => freeVarsTermV4 term
+  | .attrEq term _ _ => freeVarsTermV4 term
+  | .path left _ right =>
+      (freeVarsTermV4 left).toList.foldl
+        (fun vars name => vars.insert name)
+        (freeVarsTermV4 right)
+
+def freeVarsDisjunctV4 (atoms : Array FiniteQueryAtomV4) : Std.HashSet String :=
+  atoms.foldl
+    (fun vars atom =>
+      (freeVarsAtomV4 atom).toList.foldl (fun acc name => acc.insert name) vars)
+    {}
+
+def validateFiniteQueryV4 (query : FiniteQueryV4) : Except String Unit := do
+  let mut selected : Std.HashSet String := {}
+  for name in query.selectVars do
+    if selected.contains name then
+      throw s!"duplicate select variable `{name}`"
+    selected := selected.insert name
+
+  for atoms in query.disjuncts do
+    let freeVars := freeVarsDisjunctV4 atoms
+    if atoms.isEmpty && (!query.selectVars.isEmpty || !freeVars.isEmpty) then
+      throw "empty disjunct is only valid for a boolean query with no selected or free variables"
+    for name in query.selectVars do
+      if !(freeVars.contains name) then
+        throw s!"selected variable `{name}` is not bound by every query disjunct"
+
+def resolveFiniteTermV4 (bindings : Std.HashMap String String) : FiniteQueryTermV4 → Except String String
   | .const entity => pure entity
   | .var name =>
       match bindings.get? name with
       | some entity => pure entity
       | none => throw s!"missing binding for variable `{name}`"
 
-def toRegularExpressionV3 : QueryRegexV3 → RegularExpression String
+def toFiniteRegularExpressionV4 : FiniteQueryRegexV4 → RegularExpression String
   | .epsilon => (1 : RegularExpression String)
   | .rel rel => RegularExpression.char rel
   | .seq parts =>
-      parts.foldl (fun acc p => acc * toRegularExpressionV3 p) (1 : RegularExpression String)
+      parts.foldl (fun acc p => acc * toFiniteRegularExpressionV4 p) (1 : RegularExpression String)
   | .alt parts =>
-      parts.foldl (fun acc p => acc + toRegularExpressionV3 p) (0 : RegularExpression String)
+      parts.foldl (fun acc p => acc + toFiniteRegularExpressionV4 p) (0 : RegularExpression String)
   | .star inner =>
-      RegularExpression.star (toRegularExpressionV3 inner)
+      RegularExpression.star (toFiniteRegularExpressionV4 inner)
   | .plus inner =>
-      let re := toRegularExpressionV3 inner
+      let re := toFiniteRegularExpressionV4 inner
       re * RegularExpression.star re
   | .opt inner =>
-      (1 : RegularExpression String) + toRegularExpressionV3 inner
+      (1 : RegularExpression String) + toFiniteRegularExpressionV4 inner
 
 def reachabilityRelLabelsV3 : ReachabilityProofV3 → List String
   | .reflexive _ => []
@@ -1038,10 +684,12 @@ structure ReachabilityResultV3 where
   deriving Repr
 
 partial def verifyReachabilityProofV3Anchored
-    (index : AxiQueryIndexV3)
+    (index : AxiFiniteQueryIndexV4)
     (proof : ReachabilityProofV3) : Except String ReachabilityResultV3 := do
   match proof with
   | .reflexive entity =>
+      if !(entityExistsV4 index entity) then
+        throw s!"reachability_v3: unknown reflexive entity `{entity}`"
       pure { start := entity, end_ := entity, pathLen := 0, confidence := Prob.vOne }
   | .step src rel dst relConfidence axiFactId rest => do
       if Prob.toNat relConfidence != Prob.toNat Prob.vOne then
@@ -1079,9 +727,9 @@ partial def verifyReachabilityProofV3Anchored
         confidence := Prob.vMult relConfidence restRes.confidence
       }
 
-def derivedAttrV3 (index : AxiQueryIndexV3) (entity : String) (key : String) :
+def derivedAttrV4 (index : AxiFiniteQueryIndexV4) (entity : String) (key : String) :
     Except String (Option String) := do
-  if entity.startsWith factIdPrefixV1 then
+  if entity.startsWith factIdPrefixV2 then
     let some tuple := index.tupleFacts.get? entity
       | throw s!"unknown tuple fact id `{entity}`"
     match key with
@@ -1105,22 +753,17 @@ def derivedAttrV3 (index : AxiQueryIndexV3) (entity : String) (key : String) :
     | "axi_instance" => pure (some obj.instanceName)
     | _ => pure none
 
-structure QueryResultV3 where
-  rowCount : Nat
-  truncated : Bool
-  deriving Repr
-
-def verifyQueryRowV3Anchored
-    (index : AxiQueryIndexV3)
-    (query : QueryV3)
-    (row : QueryRowV3) : Except String Unit := do
+def verifyFiniteQueryRowV4Anchored
+    (index : AxiFiniteQueryIndexV4)
+    (query : FiniteQueryV4)
+    (row : FiniteQueryRowV4) : Except String Unit := do
   let mut bindings : Std.HashMap String String := {}
   for b in row.bindings do
     if bindings.contains b.var then
       throw s!"duplicate binding for variable `{b.var}`"
     bindings := bindings.insert b.var b.entity
 
-  let mut chosen : Option (Array QueryAtomV3) := none
+  let mut chosen : Option (Array FiniteQueryAtomV4) := none
   let mut idx : Nat := 0
   for atoms in query.disjuncts do
     if idx == row.disjunct then
@@ -1130,6 +773,18 @@ def verifyQueryRowV3Anchored
   let some atoms := chosen
     | throw s!"disjunct out of bounds: {row.disjunct} (have {query.disjuncts.size})"
 
+  let freeVars := freeVarsDisjunctV4 atoms
+  if bindings.size != freeVars.size then
+    throw s!"binding domain mismatch for disjunct {row.disjunct}: expected {freeVars.size} variables, got {bindings.size}"
+  for name in freeVars.toList do
+    if !(bindings.contains name) then
+      throw s!"missing binding for free variable `{name}`"
+  for b in row.bindings do
+    if !(freeVars.contains b.var) then
+      throw s!"extra binding for variable `{b.var}`"
+    if !(entityExistsV4 index b.entity) then
+      throw s!"binding for `{b.var}` references unknown entity `{b.entity}`"
+
   if row.witnesses.size != atoms.size then
     throw s!"witness count mismatch: expected {atoms.size}, got {row.witnesses.size}"
 
@@ -1138,11 +793,11 @@ def verifyQueryRowV3Anchored
     | .type term typeName, .type entity typeName' => do
         if typeName != typeName' then
           throw s!"type witness mismatch: expected type_name={typeName}, got {typeName'}"
-        let entity' ← resolveTermV3 bindings term
+        let entity' ← resolveFiniteTermV4 bindings term
         if entity != entity' then
           throw s!"type witness mismatch: expected entity={entity'}, got {entity}"
 
-        if entity.startsWith factIdPrefixV1 then
+        if entity.startsWith factIdPrefixV2 then
           let some tuple := index.tupleFacts.get? entity
             | throw s!"unknown tuple fact id `{entity}`"
           let some schema := index.schemas.get? tuple.schemaName
@@ -1163,10 +818,10 @@ def verifyQueryRowV3Anchored
     | .attrEq term key value, .attrEq entity key' value' => do
         if key != key' || value != value' then
           throw s!"attr witness mismatch: expected (key={key}, value={value}), got (key={key'}, value={value'})"
-        let entity' ← resolveTermV3 bindings term
+        let entity' ← resolveFiniteTermV4 bindings term
         if entity != entity' then
           throw s!"attr witness mismatch: expected entity={entity'}, got {entity}"
-        let actual? ← derivedAttrV3 index entity key
+        let actual? ← derivedAttrV4 index entity key
         match actual? with
         | none => throw s!"unknown/unsupported derived attribute `{key}` for entity `{entity}`"
         | some actual =>
@@ -1174,8 +829,8 @@ def verifyQueryRowV3Anchored
               throw s!"derived attribute mismatch for `{entity}`.{key}: expected `{value}`, got `{actual}`"
 
     | .path left regex right, .path proof => do
-        let src ← resolveTermV3 bindings left
-        let dst ← resolveTermV3 bindings right
+        let src ← resolveFiniteTermV4 bindings left
+        let dst ← resolveFiniteTermV4 bindings right
 
         let res ← verifyReachabilityProofV3Anchored index proof
         if res.start != src then
@@ -1197,24 +852,470 @@ def verifyQueryRowV3Anchored
         if labels.length != res.pathLen then
           throw s!"internal error: labels length {labels.length} != pathLen {res.pathLen}"
 
-        let re := toRegularExpressionV3 regex
+        let re := toFiniteRegularExpressionV4 regex
         if !(labels ∈ re.matches') then
           throw s!"path witness labels do not match RPQ (labels={labels})"
 
     | _, _ =>
         throw "atom/witness kind mismatch"
 
-def verifyQueryResultProofV3Anchored
-    (digestV1 : String)
+/-!
+## Exact finite decidable query denotation
+
+The V4 checker does not infer global ontology closure. It evaluates the finite
+canonical object/fact universe in the accepted module, under explicit syntax,
+assignment, regex, and hop bounds. Acceptance requires equality between that
+denotation and the certificate rows, in addition to row-witness soundness.
+-/
+
+structure FiniteEdgeV4 where
+  source : String
+  label : String
+  target : String
+  deriving Repr
+
+structure FiniteRowAssignmentV4 where
+  disjunct : Nat
+  bindings : Array FiniteQueryBindingV4
+  deriving Repr
+
+def finiteQueryMaxDisjuncts : Nat := 16
+def finiteQueryMaxAtomsPerDisjunct : Nat := 64
+def finiteQueryMaxRegexNodes : Nat := 128
+def finiteQueryMaxHops : Nat := 32
+def finiteQueryMaxAssignments : Nat := 1000000
+
+def finiteEntityUniverseV4 (index : AxiFiniteQueryIndexV4) : Array String :=
+  Id.run do
+    let mut entities : Array String := #[]
+    for (name, _) in index.objects.toList do
+      entities := entities.push name
+    for (factId, _) in index.tupleFacts.toList do
+      entities := entities.push factId
+    return entities
+
+def buildFiniteEdgesV4 (index : AxiFiniteQueryIndexV4) : Except String (Array FiniteEdgeV4) := do
+  let mut edges : Array FiniteEdgeV4 := #[]
+  for (factId, tuple) in index.tupleFacts.toList do
+    for (field, value) in tuple.fields.toList do
+      edges := edges.push { source := factId, label := field, target := value }
+      if field == "ctx" then
+        edges := edges.push {
+          source := factId
+          label := "axi_fact_in_context"
+          target := value
+        }
+    let some schema := index.schemas.get? tuple.schemaName
+      | throw s!"missing schema `{tuple.schemaName}` while building finite query edges"
+    let relation ← findRelationDecl schema tuple.relationName
+    match deriveBinaryEndpointsV3 relation tuple.fields with
+    | some (source, target) =>
+        edges := edges.push { source, label := tuple.relationName, target }
+    | none => pure ()
+  pure edges
+
+partial def regexProfileV4 : FiniteQueryRegexV4 → Nat × Bool
+  | .epsilon | .rel _ => (1, false)
+  | .seq parts | .alt parts =>
+      parts.foldl
+        (fun profile part =>
+          let nested := regexProfileV4 part
+          (profile.1 + nested.1, profile.2 || nested.2))
+        (1, false)
+  | .star inner | .plus inner =>
+      let nested := regexProfileV4 inner
+      (nested.1 + 1, true)
+  | .opt inner =>
+      let nested := regexProfileV4 inner
+      (nested.1 + 1, nested.2)
+
+partial def regexFiniteMaxLengthV4 : FiniteQueryRegexV4 → Option Nat
+  | .epsilon => some 0
+  | .rel _ => some 1
+  | .seq parts =>
+      parts.foldl
+        (fun total part =>
+          match total, regexFiniteMaxLengthV4 part with
+          | some left, some right => some (left + right)
+          | _, _ => none)
+        (some 0)
+  | .alt parts =>
+      parts.foldl
+        (fun longest part =>
+          match longest, regexFiniteMaxLengthV4 part with
+          | some left, some right => some (max left right)
+          | _, _ => none)
+        (some 0)
+  | .star _ | .plus _ => none
+  | .opt inner => regexFiniteMaxLengthV4 inner
+
+def finitePathBoundV4 (query : FiniteQueryV4) (regex : FiniteQueryRegexV4) : Except String Nat :=
+  match query.maxHops? with
+  | some hops => pure hops
+  | none =>
+      match regexFiniteMaxLengthV4 regex with
+      | some length => pure length
+      | none => throw "finite exact path repetition requires explicit max_hops"
+
+def matchingPathAuxV4
+    (edges : Array FiniteEdgeV4)
+    (expression : RegularExpression String)
+    (target : String) : Nat → String → List String → Bool
+  | 0, current, labels => current == target && labels ∈ expression.matches'
+  | fuel + 1, current, labels =>
+      (current == target && labels ∈ expression.matches') ||
+        edges.any (fun edge =>
+          edge.source == current &&
+            matchingPathAuxV4 edges expression target fuel edge.target
+              (labels ++ [edge.label]))
+
+def finitePathExistsV4
+    (edges : Array FiniteEdgeV4)
+    (query : FiniteQueryV4)
+    (source : String)
+    (regex : FiniteQueryRegexV4)
+    (target : String) : Except String Bool := do
+  let bound ← finitePathBoundV4 query regex
+  pure (matchingPathAuxV4 edges (toFiniteRegularExpressionV4 regex) target bound source [])
+
+def entityHasTypeV4
+    (index : AxiFiniteQueryIndexV4)
+    (entity typeName : String) : Except String Bool := do
+  if entity.startsWith factIdPrefixV2 then
+    let some tuple := index.tupleFacts.get? entity
+      | throw s!"unknown tuple fact id `{entity}`"
+    let some schema := index.schemas.get? tuple.schemaName
+      | throw s!"missing schema `{tuple.schemaName}` in finite query index"
+    pure (isSubtypeInSchema schema (tupleEntityTypeName schema tuple.relationName) typeName)
+  else
+    let some object := index.objects.get? entity
+      | throw s!"unknown object/entity name `{entity}`"
+    let some schema := index.schemas.get? object.schemaName
+      | throw s!"missing schema `{object.schemaName}` in finite query index"
+    pure (object.objectTypes.toList.any (fun actual => isSubtypeInSchema schema actual typeName))
+
+def unaryCandidateEntitiesV4
+    (index : AxiFiniteQueryIndexV4)
+    (atoms : Array FiniteQueryAtomV4)
+    (varName : String) : Except String (Array String) := do
+  let mut candidates : Array String := #[]
+  for entity in finiteEntityUniverseV4 index do
+    let mut accepted := true
+    for atom in atoms do
+      match atom with
+      | .type (.var name) typeName =>
+          if name == varName && !(← entityHasTypeV4 index entity typeName) then
+            accepted := false
+      | .attrEq (.var name) key value =>
+          if name == varName && (← derivedAttrV4 index entity key) != some value then
+            accepted := false
+      | _ => pure ()
+    if accepted then
+      candidates := candidates.push entity
+  pure candidates
+
+def satisfiesFiniteAtomV4
+    (index : AxiFiniteQueryIndexV4)
+    (edges : Array FiniteEdgeV4)
+    (query : FiniteQueryV4)
+    (bindings : Std.HashMap String String) : FiniteQueryAtomV4 → Except String Bool
+  | .type term typeName => do
+      let entity ← resolveFiniteTermV4 bindings term
+      entityHasTypeV4 index entity typeName
+  | .attrEq term key value => do
+      let entity ← resolveFiniteTermV4 bindings term
+      pure ((← derivedAttrV4 index entity key) == some value)
+  | .path left regex right => do
+      let source ← resolveFiniteTermV4 bindings left
+      let target ← resolveFiniteTermV4 bindings right
+      finitePathExistsV4 edges query source regex target
+
+def satisfiesFiniteDisjunctV4
+    (index : AxiFiniteQueryIndexV4)
+    (edges : Array FiniteEdgeV4)
+    (query : FiniteQueryV4)
+    (bindings : Std.HashMap String String)
+    (atoms : Array FiniteQueryAtomV4) : Except String Bool := do
+  for atom in atoms do
+    if !(← satisfiesFiniteAtomV4 index edges query bindings atom) then
+      return false
+  return true
+
+def enumerateBindingsV4
+    (domains : List (String × Array String)) : Array (Array FiniteQueryBindingV4) :=
+  match domains with
+  | [] => #[#[]]
+  | (varName, entities) :: rest =>
+      let tails := enumerateBindingsV4 rest
+      Id.run do
+        let mut out : Array (Array FiniteQueryBindingV4) := #[]
+        for entity in entities do
+          for tail in tails do
+            out := out.push (tail.push { var := varName, entity })
+        return out
+
+def bindingMapV4 (bindings : Array FiniteQueryBindingV4) : Std.HashMap String String :=
+  bindings.foldl (fun out binding => out.insert binding.var binding.entity) {}
+
+def validateFiniteExactFragmentV4
+    (index : AxiFiniteQueryIndexV4)
+    (binding : PreparedQueryBindingV1) : Except String Unit := do
+  if binding.claimKind != "finite_exact_complete" then
+    throw "query_result_v4 requires claim_kind=finite_exact_complete"
+  if binding.query.disjuncts.isEmpty || binding.query.disjuncts.size > finiteQueryMaxDisjuncts then
+    throw s!"finite exact query requires 1..{finiteQueryMaxDisjuncts} disjuncts"
+  match binding.query.maxHops? with
+  | some hops =>
+      if hops > finiteQueryMaxHops then
+        throw s!"finite exact query max_hops exceeds {finiteQueryMaxHops}"
+  | none => pure ()
+
+  let mut assignmentCount := 0
+  for atoms in binding.query.disjuncts do
+    if atoms.size > finiteQueryMaxAtomsPerDisjunct then
+      throw s!"finite exact query disjunct exceeds {finiteQueryMaxAtomsPerDisjunct} atoms"
+    for atom in atoms do
+      match atom with
+      | .path _ regex _ =>
+          let profile := regexProfileV4 regex
+          if profile.1 > finiteQueryMaxRegexNodes then
+            throw s!"finite exact query regex exceeds {finiteQueryMaxRegexNodes} nodes"
+          if profile.2 && binding.query.maxHops?.isNone then
+            throw "finite exact query repetition requires explicit max_hops"
+      | _ => pure ()
+    let mut disjunctAssignments := 1
+    for varName in (freeVarsDisjunctV4 atoms).toList do
+      let domain ← unaryCandidateEntitiesV4 index atoms varName
+      disjunctAssignments := disjunctAssignments * domain.size
+    assignmentCount := assignmentCount + disjunctAssignments
+    if assignmentCount > finiteQueryMaxAssignments then
+      throw s!"finite exact query assignment universe exceeds {finiteQueryMaxAssignments}"
+
+def finiteQueryDenotationV4
+    (index : AxiFiniteQueryIndexV4)
+    (binding : PreparedQueryBindingV1) : Except String (Array FiniteRowAssignmentV4) := do
+  validateFiniteExactFragmentV4 index binding
+  let edges ← buildFiniteEdgesV4 index
+  let mut denotation : Array FiniteRowAssignmentV4 := #[]
+  let mut disjunctIndex := 0
+  for atoms in binding.query.disjuncts do
+    let mut domains : List (String × Array String) := []
+    for varName in (freeVarsDisjunctV4 atoms).toList do
+      domains := (varName, ← unaryCandidateEntitiesV4 index atoms varName) :: domains
+    for bindings in enumerateBindingsV4 domains do
+      if ← satisfiesFiniteDisjunctV4 index edges binding.query (bindingMapV4 bindings) atoms then
+        denotation := denotation.push { disjunct := disjunctIndex, bindings }
+    disjunctIndex := disjunctIndex + 1
+  pure denotation
+
+def sameBindingsV4
+    (left right : Array FiniteQueryBindingV4) : Bool :=
+  left.size == right.size &&
+    left.all (fun binding =>
+      right.any (fun candidate =>
+        candidate.var == binding.var && candidate.entity == binding.entity))
+
+def rowMatchesAssignmentV4
+    (row : FiniteQueryRowV4)
+    (assignment : FiniteRowAssignmentV4) : Bool :=
+  row.disjunct == assignment.disjunct && sameBindingsV4 row.bindings assignment.bindings
+
+def rowsExactlyDenotationV4
+    (expected : Array FiniteRowAssignmentV4)
+    (rows : Array FiniteQueryRowV4) : Bool :=
+  expected.size == rows.size &&
+    expected.all (fun assignment => rows.any (fun row => rowMatchesAssignmentV4 row assignment)) &&
+    rows.all (fun row => expected.any (fun assignment => rowMatchesAssignmentV4 row assignment))
+
+def finiteExactCompleteV4
+    (index : AxiFiniteQueryIndexV4)
+    (binding : PreparedQueryBindingV1)
+    (rows : Array FiniteQueryRowV4) : Bool :=
+  match finiteQueryDenotationV4 index binding with
+  | .ok expected => rowsExactlyDenotationV4 expected rows
+  | .error _ => false
+
+def ExactFiniteCompletenessV4
+    (index : AxiFiniteQueryIndexV4)
+    (binding : PreparedQueryBindingV1)
+    (rows : Array FiniteQueryRowV4) : Prop :=
+  finiteExactCompleteV4 index binding rows = true
+
+def ensureExactFiniteCompletenessV4
+    (index : AxiFiniteQueryIndexV4)
+    (binding : PreparedQueryBindingV1)
+    (rows : Array FiniteQueryRowV4) : Except String Unit :=
+  if finiteExactCompleteV4 index binding rows then
+    pure ()
+  else
+    throw "query_result_v4 rows are not exactly equal to the bounded finite denotation"
+
+theorem ensureExactFiniteCompletenessV4_sound
+    (index : AxiFiniteQueryIndexV4)
+    (binding : PreparedQueryBindingV1)
+    (rows : Array FiniteQueryRowV4)
+    (accepted : ensureExactFiniteCompletenessV4 index binding rows = .ok ()) :
+    ExactFiniteCompletenessV4 index binding rows := by
+  unfold ensureExactFiniteCompletenessV4 at accepted
+  unfold ExactFiniteCompletenessV4
+  cases exactEq : finiteExactCompleteV4 index binding rows with
+  | false => simp [exactEq] at accepted
+  | true => rfl
+
+private def pushTextField (fields : Array ByteArray) (value : String) : Array ByteArray :=
+  fields.push value.toUTF8
+
+private def pushTermFieldsV1 (fields : Array ByteArray) : FiniteQueryTermV4 → Array ByteArray
+  | .var name => pushTextField (pushTextField fields "term_var") name
+  | .const entity => pushTextField (pushTextField fields "term_const") entity
+
+partial def pushRegexFieldsV1 (fields : Array ByteArray) : FiniteQueryRegexV4 → Array ByteArray
+  | .epsilon => pushTextField fields "regex_epsilon"
+  | .rel rel => pushTextField (pushTextField fields "regex_rel") rel
+  | .seq parts =>
+      parts.foldl pushRegexFieldsV1
+        (pushTextField (pushTextField fields "regex_seq") parts.size.repr)
+  | .alt parts =>
+      parts.foldl pushRegexFieldsV1
+        (pushTextField (pushTextField fields "regex_alt") parts.size.repr)
+  | .star inner => pushRegexFieldsV1 (pushTextField fields "regex_star") inner
+  | .plus inner => pushRegexFieldsV1 (pushTextField fields "regex_plus") inner
+  | .opt inner => pushRegexFieldsV1 (pushTextField fields "regex_opt") inner
+
+partial def pushAtomFieldsV1 (fields : Array ByteArray) : FiniteQueryAtomV4 → Array ByteArray
+  | .type term typeName =>
+      pushTextField (pushTermFieldsV1 (pushTextField fields "atom_type") term) typeName
+  | .attrEq term key value =>
+      pushTextField
+        (pushTextField (pushTermFieldsV1 (pushTextField fields "atom_attr_eq") term) key)
+        value
+  | .path left regex right =>
+      pushTermFieldsV1
+        (pushRegexFieldsV1 (pushTermFieldsV1 (pushTextField fields "atom_path") left) regex)
+        right
+
+def preparedQueryDigestFieldsV1 (binding : PreparedQueryBindingV1) : Array ByteArray :=
+  Id.run do
+    let mut fields : Array ByteArray := #[]
+    fields := pushTextField fields "prepared_query_binding_v1"
+    fields := pushTextField fields "1"
+    fields := pushTextField fields "finite_exact_complete"
+    fields := pushTextField fields "select_count"
+    fields := pushTextField fields binding.query.selectVars.size.repr
+    for selected in binding.query.selectVars do
+      fields := pushTextField fields "select"
+      fields := pushTextField fields selected
+    fields := pushTextField fields "disjunct_count"
+    fields := pushTextField fields binding.query.disjuncts.size.repr
+    for index in [0:binding.query.disjuncts.size] do
+      let disjunct := binding.query.disjuncts[index]!
+      fields := pushTextField fields "disjunct"
+      fields := pushTextField fields index.repr
+      fields := pushTextField fields disjunct.size.repr
+      for atom in disjunct do
+        fields := pushAtomFieldsV1 fields atom
+    match binding.query.maxHops? with
+    | some maxHops =>
+        fields := pushTextField fields "max_hops_some"
+        fields := pushTextField fields maxHops.repr
+    | none => fields := pushTextField fields "max_hops_none"
+    match binding.query.minConfidence? with
+    | some minConfidence =>
+        fields := pushTextField fields "min_confidence_some"
+        fields := pushTextField fields (Prob.toNat minConfidence).repr
+    | none => fields := pushTextField fields "min_confidence_none"
+    fields := pushTextField fields "row_limit"
+    fields := pushTextField fields binding.rowLimit.repr
+    return fields
+
+def preparedQueryDigestV1 (binding : PreparedQueryBindingV1) : Except String String :=
+  Axiograph.Identity.derive .query (preparedQueryDigestFieldsV1 binding)
+
+def selectedProjectionV1 (query : FiniteQueryV4) (row : FiniteQueryRowV4) : Except String (Array FiniteQueryBindingV4) := do
+  let mut projection : Array FiniteQueryBindingV4 := #[]
+  for selected in query.selectVars do
+    let matching := row.bindings.filter (fun binding => binding.var == selected)
+    if matching.size != 1 then
+      throw s!"selected projection requires exactly one `{selected}` binding"
+    let some selectedBinding := matching[0]?
+      | throw s!"selected projection is missing `{selected}`"
+    projection := projection.push selectedBinding
+  pure projection
+
+def answerDigestV1
+    (binding : PreparedQueryBindingV1)
+    (preparedQueryDigest : String)
+    (rows : Array FiniteQueryRowV4)
+    (runtimeTruncated : Bool) : Except String String := do
+  let mut fields : Array ByteArray := #[]
+  fields := pushTextField fields "query_answer_v1"
+  fields := pushTextField fields preparedQueryDigest
+  fields := pushTextField fields "select_count"
+  fields := pushTextField fields binding.query.selectVars.size.repr
+  for selected in binding.query.selectVars do
+    fields := pushTextField fields selected
+  fields := pushTextField fields "row_count"
+  fields := pushTextField fields rows.size.repr
+  let mut rowIndex := 0
+  for row in rows do
+    fields := pushTextField fields "row"
+    fields := pushTextField fields rowIndex.repr
+    for projection in (← selectedProjectionV1 binding.query row) do
+      fields := pushTextField fields projection.var
+      fields := pushTextField fields projection.entity
+    rowIndex := rowIndex + 1
+  fields := pushTextField fields <|
+    if runtimeTruncated then "runtime_truncated_true" else "runtime_truncated_false"
+  Axiograph.Identity.derive .answer fields
+
+def isLowerHex (value : String) : Bool :=
+  value.toList.all (fun char =>
+    ('0' ≤ char && char ≤ '9') || ('a' ≤ char && char ≤ 'f'))
+
+def isWellFormedV2Identity (domain : Axiograph.Identity.Domain) (value : String) : Bool :=
+  Axiograph.Identity.validWireFor domain value
+
+structure QueryResultV4 where
+  rowCount : Nat
+  exactComplete : Bool
+  preparedQueryDigest : String
+  answerDigest : String
+  claimKind : String
+  deriving Repr
+
+def verifyQueryResultProofV4Anchored
     (module : Axiograph.Axi.AxiV1.AxiV1Module)
-    (proof : QueryResultProofV3) : Except String QueryResultV3 := do
-  let index ← buildAxiQueryIndexV3 module
+    (expectedPreparedQueryDigest expectedAnswerDigest : String)
+    (proof : QueryResultProofV4) : Except String QueryResultV4 := do
+  if !isWellFormedV2Identity .query expectedPreparedQueryDigest then
+    throw "expected prepared-query digest is malformed"
+  if !isWellFormedV2Identity .answer expectedAnswerDigest then
+    throw "expected answer digest is malformed"
+  if proof.runtimeTruncated then
+    throw "query_result_v4 exact finite completeness rejects truncated answers"
+  validateFiniteQueryV4 proof.binding.query
+  let preparedQueryDigest ← preparedQueryDigestV1 proof.binding
+  if proof.preparedQueryDigest != preparedQueryDigest ||
+      expectedPreparedQueryDigest != preparedQueryDigest then
+    throw "prepared-query digest mismatch"
+  if proof.rows.size > proof.binding.rowLimit then
+    throw s!"certificate rows exceed row_limit: {proof.rows.size} > {proof.binding.rowLimit}"
+  let index ← buildAxiFiniteQueryIndexV4 module
+  validateFiniteExactFragmentV4 index proof.binding
   for row in proof.rows do
-    verifyQueryRowV3Anchored index proof.query row
-  -- Optional: verify elaboration rewrite derivations, if present.
-  for rw in proof.elaborationRewrites do
-    let _ ← RewriteDerivation.verifyRewriteDerivationProofV3Anchored digestV1 module rw
-  pure { rowCount := proof.rows.size, truncated := proof.truncated }
+    verifyFiniteQueryRowV4Anchored index proof.binding.query row
+  ensureExactFiniteCompletenessV4 index proof.binding proof.rows
+  let answerDigest ← answerDigestV1
+    proof.binding preparedQueryDigest proof.rows proof.runtimeTruncated
+  if proof.answerDigest != answerDigest || expectedAnswerDigest != answerDigest then
+    throw "answer digest mismatch"
+  pure {
+    rowCount := proof.rows.size
+    exactComplete := true
+    preparedQueryDigest
+    answerDigest
+    claimKind := proof.binding.claimKind
+  }
 
 end Query
 
@@ -1459,7 +1560,9 @@ def applyAt (pos : List Nat) (rule : PathRewriteRuleV2) (expr : PathExprV2) : Ex
                 else
                   runDerivationCore start end_ next rest
 
-  /-- Replay a derivation from an input expression. -/
+  /-- Replay a derivation from an endpoint-indexed input expression. The
+  verifier's global certificate-byte and JSON-depth bounds provide the finite
+  resource boundary; every successful step must preserve the same endpoints. -/
   def runDerivation (input : PathExprV2) (steps : Array PathRewriteStepV2) : Except String PathExprV2 :=
     match endpoints input with
     | .error msg => .error msg
@@ -1481,17 +1584,13 @@ def verifyNormalizePathProofV2 (proof : NormalizePathProofV2) : Except String No
           if inputStart != normStart || inputEnd != normEnd then
             .error s!"normalized endpoints mismatch: input=({inputStart},{inputEnd}) normalized=({normStart},{normEnd})"
           else
-            -- Optional explicit derivation replay.
-            match proof.derivation? with
-            | none => finish inputStart inputEnd
-            | some steps =>
-                match runDerivation proof.input steps with
-                | .error msg => .error msg
-                | .ok derived =>
-                    if derived != proof.normalized then
-                      .error "rewrite derivation does not produce the claimed normalized expression"
-                    else
-                      finish inputStart inputEnd
+            match runDerivation proof.input proof.derivation with
+            | .error msg => .error msg
+            | .ok derived =>
+                if derived != proof.normalized then
+                  .error "rewrite derivation does not produce the claimed normalized expression"
+                else
+                  finish inputStart inputEnd
 where
   finish (inputStart inputEnd : Nat) : Except String NormalizePathResultV2 :=
     let expected := normalize proof.input
@@ -1537,6 +1636,7 @@ end RewriteDerivation
 namespace PathEquivalence
 
 open PathNormalization
+open RewriteDerivation
 
 structure PathEquivResultV2 where
   start : Nat
@@ -1544,25 +1644,26 @@ structure PathEquivResultV2 where
   normalized : PathExprV2
   deriving Repr
 
-def verifyPathEquivProofV2 (proof : PathEquivProofV2) : Except String PathEquivResultV2 := do
-  let (leftStart, leftEnd) ← endpoints proof.left
-  let (rightStart, rightEnd) ← endpoints proof.right
-  if leftStart != rightStart || leftEnd != rightEnd then
-    throw s!"path_equiv: endpoint mismatch: left=({leftStart},{leftEnd}) right=({rightStart},{rightEnd})"
+def PathEquivProofV2.leftRewriteProof (proof : PathEquivProofV2) : RewriteDerivationProofV2 := {
+  input := proof.left
+  output := proof.normalized
+  derivation := proof.leftDerivation
+}
 
-  let (normStart, normEnd) ← endpoints proof.normalized
-  if leftStart != normStart || leftEnd != normEnd then
-    throw s!"path_equiv: normalized endpoints mismatch: input=({leftStart},{leftEnd}) normalized=({normStart},{normEnd})"
+def PathEquivProofV2.rightRewriteProof (proof : PathEquivProofV2) : RewriteDerivationProofV2 := {
+  input := proof.right
+  output := proof.normalized
+  derivation := proof.rightDerivation
+}
 
-  if let some steps := proof.leftDerivation? then
-    let derived ← runDerivation proof.left steps
-    if derived != proof.normalized then
-      throw "path_equiv: left_derivation does not produce the claimed normalized expression"
+abbrev leftRewriteProof := PathEquivProofV2.leftRewriteProof
+abbrev rightRewriteProof := PathEquivProofV2.rightRewriteProof
 
-  if let some steps := proof.rightDerivation? then
-    let derived ← runDerivation proof.right steps
-    if derived != proof.normalized then
-      throw "path_equiv: right_derivation does not produce the claimed normalized expression"
+private def finishPathEquivProofV2
+    (proof : PathEquivProofV2)
+    (leftReplay rightReplay : RewriteDerivationResultV2) : Except String PathEquivResultV2 := do
+  if leftReplay.start != rightReplay.start || leftReplay.end_ != rightReplay.end_ then
+    throw s!"path_equiv: endpoint mismatch: left=({leftReplay.start},{leftReplay.end_}) right=({rightReplay.start},{rightReplay.end_})"
 
   let expectedLeft := normalize proof.left
   let expectedRight := normalize proof.right
@@ -1573,7 +1674,15 @@ def verifyPathEquivProofV2 (proof : PathEquivProofV2) : Except String PathEquivR
   if !(isNormalized proof.normalized) then
     throw "path_equiv: claimed normal form is not normalized"
 
-  pure { start := leftStart, end_ := leftEnd, normalized := proof.normalized }
+  pure { start := leftReplay.start, end_ := leftReplay.end_, normalized := proof.normalized }
+
+def verifyPathEquivProofV2 (proof : PathEquivProofV2) : Except String PathEquivResultV2 :=
+  match verifyRewriteDerivationProofV2 (PathEquivProofV2.leftRewriteProof proof) with
+  | .error msg => .error msg
+  | .ok leftReplay =>
+      match verifyRewriteDerivationProofV2 (PathEquivProofV2.rightRewriteProof proof) with
+      | .error msg => .error msg
+      | .ok rightReplay => finishPathEquivProofV2 proof leftReplay rightReplay
 
 end PathEquivalence
 
@@ -1678,48 +1787,100 @@ def verifyDeltaFMigrationProofV1 (proof : DeltaFMigrationProofV1) :
 
 end Migration
 
+namespace CategoryKernelCertificate
+
+structure ResultV3 where
+  schemaName : String
+  objectCount : Nat
+  arrowCount : Nat
+  equationCount : Nat
+  congruenceCertificateCount : Nat
+  groupoidNormalizationCount : Nat
+  reachabilityEntryCount : Nat
+  lifecycle : Theory.Finite.CheckedLifecycleState
+  deriving Repr
+
+def verifyV3 (module : Axiograph.Axi.AxiV1.AxiV1Module)
+    (proof : CategoryKernelProofV3) :
+    Except String ResultV3 := do
+  let schemas := module.schemas.filter (fun schema => schema.name == proof.schemaName)
+  if schemas.size != 1 then
+    throw s!"category_kernel_v3: anchored module must contain exactly one schema `{proof.schemaName}`"
+  let schema ←
+    match schemas[0]? with
+    | some schema => pure schema
+    | none =>
+        throw s!"category_kernel_v3: internal schema selection failure for `{proof.schemaName}`"
+  let presentation ←
+    match Theory.Finite.compileAxiSchemaPresentation module schema with
+    | .ok presentation => pure presentation
+    | .error residuals =>
+        throw s!"category_kernel_v3: category formation failed: {repr residuals}"
+  let expected ←
+    match Theory.Finite.categoryKernelPresentationV3 presentation with
+    | .ok expected => pure expected
+    | .error residuals =>
+        throw s!"category_kernel_v3: presentation export failed: {repr residuals}"
+  if proof.presentation != expected then
+    throw "category_kernel_v3: compiler presentation does not equal exact-byte Lean formation"
+  match Theory.Finite.verifyCategoryKernelCongruenceV3
+      expected proof.congruenceCertificates with
+  | .ok _ => pure ()
+  | .error residual =>
+      throw s!"category_kernel_v3: congruence replay failed: {repr residual}"
+  match Theory.Finite.verifyCategoryKernelGroupoidNormalizationsV3
+      expected proof.groupoidNormalizations with
+  | .ok _ => pure ()
+  | .error residual =>
+      throw s!"category_kernel_v3: groupoid normalization replay failed: {repr residual}"
+  let checked ←
+    match Theory.Finite.checkSaturationCertificate presentation proof.certificate with
+    | .ok checked => pure checked
+    | .error residual =>
+        throw s!"category_kernel_v3: explanation replay failed: {repr residual}"
+  pure {
+    schemaName := proof.schemaName
+    objectCount := presentation.core.objectNames.size
+    arrowCount := presentation.core.arrows.size
+    equationCount := presentation.equations.size
+    congruenceCertificateCount := proof.congruenceCertificates.size
+    groupoidNormalizationCount := proof.groupoidNormalizations.size
+    reachabilityEntryCount := checked.certificate.entries.size
+    lifecycle := checked.lifecycle
+  }
+
+end CategoryKernelCertificate
+
 inductive CertificateResult where
-  | reachabilityV1 (res : Reachability.ReachabilityResult)
-  | reachabilityV2 (res : Reachability.ReachabilityResultV2)
+  | reachabilityV3 (res : Query.ReachabilityResultV3)
+  | categoryKernelV3 (res : CategoryKernelCertificate.ResultV3)
   | resolutionV2 (res : Resolution.ResolutionResultV2)
   | axiWellTypedV1 (res : AxiWellTypedProofV1)
   | axiConstraintsOkV1 (res : AxiConstraintsOkProofV1)
-  | queryResultV1 (res : Query.QueryResultV1)
-  | queryResultV2 (res : Query.QueryResultV2)
-  | queryResultV3 (res : Query.QueryResultV3)
+  | queryResultV4 (res : Query.QueryResultV4)
   | normalizePathV2 (res : PathNormalization.NormalizePathResultV2)
-  | rewriteDerivationV2 (res : RewriteDerivation.RewriteDerivationResultV2)
   | rewriteDerivationV3 (res : RewriteDerivation.RewriteDerivationResultV3)
   | pathEquivV2 (res : PathEquivalence.PathEquivResultV2)
   | deltaFV1 (res : Migration.DeltaFMigrationResultV1)
   deriving Repr
 
 def verifyCertificate : Certificate → Except String CertificateResult
-  | .reachabilityV1 proof => do
-      let res ← Reachability.verifyReachabilityProof proof
-      pure (.reachabilityV1 res)
-  | .reachabilityV2 proof => do
-      let res ← Reachability.verifyReachabilityProofV2 proof
-      pure (.reachabilityV2 res)
+  | .reachabilityV3 _ =>
+      throw "reachability_v3 requires a canonical `.axi` module context; run `axiograph_verify <module.axi> <certificate.json>`"
+  | .categoryKernelV3 _ =>
+      throw "category_kernel_v3 requires an exact canonical `.axi` module anchor"
   | .resolutionV2 proof => do
       let res ← Resolution.verifyResolutionProofV2 proof
       pure (.resolutionV2 res)
   | .axiWellTypedV1 _ =>
-      throw "axi_well_typed_v1 requires a `.axi` anchor context; run `axiograph_verify <anchor.axi> <certificate.json>`"
+      throw "axi_well_typed_v1 requires a canonical `.axi` module context; run `axiograph_verify <module.axi> <certificate.json>`"
   | .axiConstraintsOkV1 _ =>
-      throw "axi_constraints_ok_v1 requires a `.axi` anchor context; run `axiograph_verify <anchor.axi> <certificate.json>`"
-  | .queryResultV1 _ =>
-      throw "query_result_v1 requires a `.axi` anchor context; run `axiograph_verify <anchor.axi> <certificate.json>`"
-  | .queryResultV2 _ =>
-      throw "query_result_v2 requires a `.axi` anchor context; run `axiograph_verify <anchor.axi> <certificate.json>`"
-  | .queryResultV3 _ =>
-      throw "query_result_v3 requires a `.axi` anchor context; run `axiograph_verify <anchor.axi> <certificate.json>`"
+      throw "axi_constraints_ok_v1 requires a canonical `.axi` module context; run `axiograph_verify <module.axi> <certificate.json>`"
+  | .queryResultV4 _ =>
+      throw "query_result_v4 requires a canonical `.axi` module plus caller-supplied prepared-query and answer expectations"
   | .normalizePathV2 proof => do
       let res ← PathNormalization.verifyNormalizePathProofV2 proof
       pure (.normalizePathV2 res)
-  | .rewriteDerivationV2 proof => do
-      let res ← RewriteDerivation.verifyRewriteDerivationProofV2 proof
-      pure (.rewriteDerivationV2 res)
   | .rewriteDerivationV3 proof => do
       let res ← RewriteDerivation.verifyRewriteDerivationProofV3 proof
       pure (.rewriteDerivationV3 res)

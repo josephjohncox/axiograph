@@ -6,8 +6,8 @@
 //! - gradual promotion into canonical `.axi`.
 //!
 //! The output is the generic Evidence/Proposals schema (`ProposalsFileV1`) from
-//! `axiograph-ingest-docs`, plus optional `Chunk` evidence suitable for loading
-//! into the PathDB WAL.
+//! `axiograph-ingest-docs`, plus optional `Chunk` evidence retained in the
+//! review bundle. These helpers never persist or mutate `.axpd`.
 
 use std::collections::{HashMap, HashSet};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -15,9 +15,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 
-use axiograph_ingest_docs::{Chunk, EvidencePointer, ProposalMetaV1, ProposalSourceV1, ProposalV1, ProposalsFileV1};
-use axiograph_pathdb::PathDB;
+use axiograph_ingest_docs::{
+    Chunk, EvidencePointer, ProposalMetaV1, ProposalSourceV1, ProposalV1, ProposalsFileV1,
+};
 use axiograph_pathdb::axi_semantics::{MetaPlaneIndex, RelationDecl};
+use axiograph_pathdb::PathDB;
 
 use crate::axql::AxqlContextSpec;
 use crate::relation_resolution::{EndpointOrientation, ResolvedSchemaRelation};
@@ -55,7 +57,7 @@ pub struct ProposeRelationInputV1 {
     pub confidence: Option<f64>,
     pub schema_hint: Option<String>,
     pub public_rationale: Option<String>,
-    /// Optional evidence text to store as a `DocChunk` (WAL overlay).
+    /// Optional evidence text to retain as a review-bundle `DocChunk`.
     pub evidence_text: Option<String>,
     /// Optional source locator for the evidence chunk (e.g. "viz_ui").
     pub evidence_locator: Option<String>,
@@ -91,7 +93,7 @@ pub struct ProposeRelationSummaryV1 {
     #[serde(default)]
     pub target_name_input: Option<String>,
     pub target_name: String,
-    /// Whether the relation canonicalization swapped endpoints (e.g. `parent_of` → `Parent(child,parent)`).
+    /// Whether an explicit endpoint mapping swapped source/target fields.
     #[serde(default)]
     pub swapped_endpoints: bool,
     pub context: Option<String>,
@@ -136,8 +138,8 @@ pub struct ProposeRelationsInputV1 {
     pub confidence: Option<f64>,
     pub schema_hint: Option<String>,
     pub public_rationale: Option<String>,
-    /// Optional evidence text to store as a single `DocChunk` (WAL overlay) and
-    /// attach to every generated proposal.
+    /// Optional evidence text to retain as a single review-bundle `DocChunk`
+    /// and attach to every generated proposal.
     pub evidence_text: Option<String>,
     /// Optional source locator for the evidence chunk (e.g. "viz_ui").
     pub evidence_locator: Option<String>,
@@ -153,7 +155,8 @@ pub struct ProposeFactInputV1 {
     /// multiple schemas share the same relation name).
     pub rel_type: String,
     /// Field-value map for the fact (typed record). Values are entity names
-    /// (or external ids) and will be resolved/stubbed during import.
+    /// or external ids that must resolve to imported proposal entities or
+    /// accepted canonical `.axi` objects during import.
     pub fields: HashMap<String, String>,
     #[serde(default)]
     pub schema_hint: Option<String>,
@@ -161,7 +164,7 @@ pub struct ProposeFactInputV1 {
     pub confidence: Option<f64>,
     #[serde(default)]
     pub public_rationale: Option<String>,
-    /// Optional evidence text to store as a `DocChunk` (WAL overlay).
+    /// Optional evidence text to retain as a review-bundle `DocChunk`.
     #[serde(default)]
     pub evidence_text: Option<String>,
     /// Optional source locator for the evidence chunk (e.g. "viz_ui").
@@ -216,7 +219,9 @@ pub fn propose_relation_proposals_v1(
 ) -> Result<ProposeRelationOutputV1> {
     let rel_type_input = input.rel_type.trim().to_string();
     if rel_type_input.is_empty() {
-        return Err(anyhow!("propose_relation_proposals: rel_type must be non-empty"));
+        return Err(anyhow!(
+            "propose_relation_proposals: rel_type must be non-empty"
+        ));
     }
     let source_name_input = input.source_name.trim().to_string();
     if source_name_input.is_empty() {
@@ -237,7 +242,9 @@ pub fn propose_relation_proposals_v1(
 
     let confidence = input.confidence.unwrap_or(0.9).clamp(0.0, 1.0);
 
-    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
     let now_secs = now.as_secs();
     let nonce = now.as_nanos();
 
@@ -314,15 +321,11 @@ pub fn propose_relation_proposals_v1(
             }
         }
 
-        for id in candidates.iter() {
-            if want_type
+        candidates.iter().find(|&id| {
+            want_type
                 .map(|t| matches_type_hint(db, id, t))
                 .unwrap_or(true)
-            {
-                return Some(id);
-            }
-        }
-        None
+        })
     }
 
     fn sanitize_external_id(raw: &str) -> String {
@@ -348,7 +351,9 @@ pub fn propose_relation_proposals_v1(
         let spec = ctxs.first()?;
         match spec {
             AxqlContextSpec::Name(name) => Some(name.clone()),
-            AxqlContextSpec::EntityId(id) => attr_string(db, *id, "name").or_else(|| Some(id.to_string())),
+            AxqlContextSpec::EntityId(id) => {
+                attr_string(db, *id, "name").or_else(|| Some(id.to_string()))
+            }
         }
     }
 
@@ -422,7 +427,8 @@ pub fn propose_relation_proposals_v1(
             }
         }
 
-        best.map(|(_, name)| name).unwrap_or_else(|| format!("T{now_secs}"))
+        best.map(|(_, name)| name)
+            .unwrap_or_else(|| format!("T{now_secs}"))
     }
 
     let mut context = input
@@ -455,7 +461,6 @@ pub fn propose_relation_proposals_v1(
     let mut target_type_hint: Option<String> = input.target_type.clone();
     let mut schema_hint: Option<String> = input.schema_hint.clone();
     let mut swapped_endpoints = false;
-    let mut rel_alias_used: Option<String> = None;
 
     let extra_fields_input: HashMap<String, String> = input
         .extra_fields
@@ -466,36 +471,9 @@ pub fn propose_relation_proposals_v1(
             if key.is_empty() || val.is_empty() {
                 return None;
             }
-            let key = if key.eq_ignore_ascii_case("context") {
-                "ctx"
-            } else {
-                key
-            };
             Some((key.to_string(), val.to_string()))
         })
         .collect();
-
-    // Allow callers to pass context/time via `extra_fields` for convenience.
-    // Top-level `context`/`time` still take precedence.
-    if context.is_none() {
-        if let Some(ctx) = extra_fields_input.get("ctx") {
-            if !ctx.trim().is_empty() {
-                context = Some(ctx.trim().to_string());
-                // Canonicalize common structured values so "family tree" resolves to "FamilyTree"
-                // when a `Context` entity exists.
-                if let Some(ctx2) = context.clone() {
-                    context = canonicalize_name_of_type(db, "Context", &ctx2).or(Some(ctx2));
-                }
-            }
-        }
-    }
-    if time_name.is_none() {
-        if let Some(t) = extra_fields_input.get("time") {
-            if !t.trim().is_empty() {
-                time_name = Some(t.trim().to_string());
-            }
-        }
-    }
 
     let meta = MetaPlaneIndex::from_db(db).unwrap_or_default();
     if !meta.schemas.is_empty() {
@@ -512,10 +490,7 @@ pub fn propose_relation_proposals_v1(
                 rel_decl,
                 rel_name,
                 orientation,
-                alias_used,
             } = resolved;
-
-            rel_alias_used = alias_used;
 
             // If the caller explicitly pins source/target fields, do not apply
             // endpoint swapping: the mapping is already explicit.
@@ -569,7 +544,8 @@ pub fn propose_relation_proposals_v1(
                             "relation `{rel_type}`: source_field and target_field must be different (got {sf:?})"
                         ));
                     }
-                    let has_field = |name: &str| rel_decl.fields.iter().any(|f| f.field_name == name);
+                    let has_field =
+                        |name: &str| rel_decl.fields.iter().any(|f| f.field_name == name);
                     if !has_field(sf) {
                         return Err(anyhow!(
                             "relation `{rel_type}`: unknown source_field `{sf}`"
@@ -657,6 +633,16 @@ pub fn propose_relation_proposals_v1(
         }
     }
 
+    if axi_schema.is_none() {
+        let hint = schema_hint
+            .as_deref()
+            .map(|s| format!(" with schema_hint `{s}`"))
+            .unwrap_or_default();
+        return Err(anyhow!(
+            "propose_relation_proposals: relation `{rel_type}`{hint} did not resolve to a compiled .axi relation; proposals are fail-closed instead of emitting untyped relation overlays. Import/review a .axi schema first, use a schema-qualified relation name, or switch to an advisory definition/coverage query for discovery."
+        ));
+    }
+
     let public_rationale = input.public_rationale.unwrap_or_else(|| {
         format!("Proposed relation assertion: {source_name} -{rel_type}-> {target_name}.")
     });
@@ -678,7 +664,10 @@ pub fn propose_relation_proposals_v1(
         .unwrap_or_else(|| target_name.to_string());
 
     // Optional evidence chunk (conversation / UI).
-    let evidence_text = input.evidence_text.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+    let evidence_text = input
+        .evidence_text
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
     let evidence_locator = input
         .evidence_locator
         .map(|s| s.trim().to_string())
@@ -718,6 +707,7 @@ pub fn propose_relation_proposals_v1(
         proposals: Vec::new(),
     };
 
+    #[allow(clippy::too_many_arguments)]
     fn push_entity_proposal(
         file: &mut ProposalsFileV1,
         confidence: f64,
@@ -751,8 +741,15 @@ pub fn propose_relation_proposals_v1(
     let mut src_entity_id: Option<String> = None;
     if src_existing.is_none() {
         let entity_type = source_type_hint
-            .clone()
-            .unwrap_or_else(|| "UnknownEntity".to_string());
+            .as_deref()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| {
+                anyhow!(
+                    "propose_relation_proposals: source endpoint `{source_name}` has no resolved object type; proposals are fail-closed instead of emitting an untyped endpoint placeholder. Import/review a canonical .axi schema or provide source_type."
+                )
+            })?
+            .to_string();
         let entity_id = format!(
             "entity::{entity_type}::{}",
             sanitize_external_id(&source_name)
@@ -773,8 +770,15 @@ pub fn propose_relation_proposals_v1(
     let mut dst_entity_id: Option<String> = None;
     if dst_existing.is_none() {
         let entity_type = target_type_hint
-            .clone()
-            .unwrap_or_else(|| "UnknownEntity".to_string());
+            .as_deref()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| {
+                anyhow!(
+                    "propose_relation_proposals: target endpoint `{target_name}` has no resolved object type; proposals are fail-closed instead of emitting an untyped endpoint placeholder. Import/review a canonical .axi schema or provide target_type."
+                )
+            })?
+            .to_string();
         let entity_id = format!(
             "entity::{entity_type}::{}",
             sanitize_external_id(&target_name)
@@ -808,9 +812,6 @@ pub fn propose_relation_proposals_v1(
     let mut attributes = std::collections::HashMap::<String, String>::new();
     // Preserve the original user/LLM surface relation label for UX/debugging.
     attributes.insert("axi_rel_type_input".to_string(), rel_type_input.clone());
-    if let Some(alias) = rel_alias_used.as_ref() {
-        attributes.insert("axi_rel_alias".to_string(), alias.clone());
-    }
     if swapped_endpoints {
         attributes.insert("axi_rel_swapped".to_string(), "true".to_string());
     }
@@ -877,7 +878,11 @@ pub fn propose_relation_proposals_v1(
 }
 
 fn infer_endpoint_fields(rel_decl: &RelationDecl) -> Result<(String, String)> {
-    let names: Vec<&str> = rel_decl.fields.iter().map(|f| f.field_name.as_str()).collect();
+    let names: Vec<&str> = rel_decl
+        .fields
+        .iter()
+        .map(|f| f.field_name.as_str())
+        .collect();
     if names.contains(&"from") && names.contains(&"to") {
         return Ok(("from".to_string(), "to".to_string()));
     }
@@ -909,7 +914,9 @@ pub fn propose_relations_proposals_v1(
 ) -> Result<ProposeRelationsOutputV1> {
     let rel_type = input.rel_type.trim();
     if rel_type.is_empty() {
-        return Err(anyhow!("propose_relations_proposals: rel_type must be non-empty"));
+        return Err(anyhow!(
+            "propose_relations_proposals: rel_type must be non-empty"
+        ));
     }
 
     let sources: Vec<String> = input
@@ -968,7 +975,9 @@ pub fn propose_relations_proposals_v1(
 
     let confidence = input.confidence.unwrap_or(0.9).clamp(0.0, 1.0);
 
-    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
     let now_secs = now.as_secs();
     let nonce = now.as_nanos();
 
@@ -1106,7 +1115,9 @@ pub fn propose_fact_proposals_v1(
 
     let mut rel_type = input.rel_type.trim().to_string();
     if rel_type.is_empty() {
-        return Err(anyhow!("propose_fact_proposals: rel_type must be non-empty"));
+        return Err(anyhow!(
+            "propose_fact_proposals: rel_type must be non-empty"
+        ));
     }
 
     let mut schema_hint = input
@@ -1147,32 +1158,24 @@ pub fn propose_fact_proposals_v1(
 
     let (src_field, dst_field) = infer_endpoint_fields(resolved.rel_decl)?;
 
-    // Normalize fields: trim values, and accept "context" as an alias for "ctx".
     let mut fields: HashMap<String, String> = HashMap::new();
-    for (k, v) in input.fields.into_iter() {
-        let key = k.trim();
-        let val = v.trim();
-        if key.is_empty() || val.is_empty() {
+    for (key, value) in input.fields {
+        let key = key.trim();
+        let value = value.trim();
+        if key.is_empty() || value.is_empty() {
             continue;
         }
-        let key = if key.eq_ignore_ascii_case("context") {
-            "ctx"
-        } else {
-            key
-        };
-        fields.insert(key.to_string(), val.to_string());
+        fields.insert(key.to_string(), value.to_string());
     }
 
     let Some(src_name) = fields.get(&src_field).cloned() else {
         return Err(anyhow!(
-            "propose_fact_proposals: missing required endpoint field `{}`",
-            src_field
+            "propose_fact_proposals: missing required endpoint field `{src_field}`"
         ));
     };
     let Some(dst_name) = fields.get(&dst_field).cloned() else {
         return Err(anyhow!(
-            "propose_fact_proposals: missing required endpoint field `{}`",
-            dst_field
+            "propose_fact_proposals: missing required endpoint field `{dst_field}`"
         ));
     };
 
@@ -1211,14 +1214,22 @@ pub fn propose_fact_proposals_v1(
         .iter()
         .find(|f| f.field_name == src_field)
         .map(|f| f.field_type.clone())
-        .unwrap_or_else(|| "UnknownEntity".to_string());
+        .ok_or_else(|| {
+            anyhow!(
+                "propose_fact_proposals: endpoint field `{src_field}` has no resolved object type"
+            )
+        })?;
     let dst_type_hint = resolved
         .rel_decl
         .fields
         .iter()
         .find(|f| f.field_name == dst_field)
         .map(|f| f.field_type.clone())
-        .unwrap_or_else(|| "UnknownEntity".to_string());
+        .ok_or_else(|| {
+            anyhow!(
+                "propose_fact_proposals: endpoint field `{dst_field}` has no resolved object type"
+            )
+        })?;
 
     let out = propose_relation_proposals_v1(
         db,
@@ -1257,4 +1268,40 @@ pub fn propose_fact_proposals_v1(
             evidence_chunk_id,
         },
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn relation_proposals_fail_closed_without_compiled_relation() {
+        let db = PathDB::new();
+        let err = propose_relation_proposals_v1(
+            &db,
+            &[],
+            ProposeRelationInputV1 {
+                rel_type: "Knows".to_string(),
+                source_name: "Alice".to_string(),
+                target_name: "Bob".to_string(),
+                source_type: Some("Person".to_string()),
+                target_type: Some("Person".to_string()),
+                source_field: None,
+                target_field: None,
+                context: None,
+                time: None,
+                confidence: None,
+                schema_hint: None,
+                public_rationale: None,
+                evidence_text: None,
+                evidence_locator: None,
+                extra_fields: HashMap::new(),
+            },
+        )
+        .expect_err("untyped relation proposal should fail closed");
+
+        assert!(err
+            .to_string()
+            .contains("did not resolve to a compiled .axi relation"));
+    }
 }

@@ -1,9 +1,11 @@
-# Axiograph Book: Verifiable Knowledge Graphs with Proofs, Modalities, and Approximation
+# Axiograph Book: Typed Ontology Workbench With Proof-Carrying Claims
 
 **Diataxis:** Explanation (longform)  
 **Audience:** contributors
 
-This document is an end-to-end, math-first description of what `axiograph_v6/` is building: a **generalized verifiable knowledge graph** that supports:
+This document is an end-to-end, math-first description of what `axiograph_v6/`
+is building: a **typed ontology workbench** with selected proof-carrying
+claims. It supports:
 
 - Proof-carrying answers: queries return answers plus a machine-checkable explanation.
 - Approximation: heuristic/incomplete inference is allowed, but must be bounded and auditable.
@@ -17,9 +19,10 @@ The core system idea is:
 
 In this repo:
 
-- Rust is the untrusted runtime engine (ingestion, indexing, search, reconciliation, certificate emission).
-- Lean is the trusted checker/spec (mathlib-backed).
-- Idris2 was used historically as a prototype proof layer; the initial Rust+Lean release removes Idris/FFI compatibility.
+- Rust is the runtime engine for ingestion, indexing, search, reconciliation,
+  typed reports, and certificate emission.
+- Lean is the trusted checker for the currently supported certificate and gate
+  fragments imported by `Axiograph.VerifyMain`.
 
 This book focuses on the mathematics and semantics, then maps those semantics onto the codebase and production concerns.
 
@@ -32,7 +35,9 @@ This book focuses on the mathematics and semantics, then maps those semantics on
 ## Status conventions used here
 
 - Implemented: exists today in code and/or `make verify-lean*` targets.
-- Prototype: partially implemented or only in one layer (Lean or Rust).
+- Research/support surface: implemented outside the shipped verifier boundary,
+  implemented in only one layer, or used only for conformance/experimentation;
+  not a shipped trust claim.
 - Planned: design direction; not in code yet.
 
 ---
@@ -40,6 +45,7 @@ This book focuses on the mathematics and semantics, then maps those semantics on
 ## Table of Contents
 
 **Part I — Semantics**
+
 1. [Goals and non-goals](#1-goals-and-non-goals)
 2. [Core objects: entities, relations, facts](#2-core-objects-entities-relations-facts)
 3. [Paths, groupoids, and rewriting](#3-paths-groupoids-and-rewriting)
@@ -72,6 +78,7 @@ This book focuses on the mathematics and semantics, then maps those semantics on
 20. [LLM memory + grounding](#20-llm-memory--grounding)
 
 **Appendices**
+
 - [Appendix A: Code map](#appendix-a-code-map)
 - [Appendix B: Glossary and notation](#appendix-b-glossary-and-notation)
 - [Appendix C: Related work and literature](#appendix-c-related-work-and-literature)
@@ -87,7 +94,10 @@ This book focuses on the mathematics and semantics, then maps those semantics on
 1. Auditable inference
    - Every high-value inference can be accompanied by a certificate that a trusted checker validates.
 2. Stable semantics
-   - “What does this mean?” is defined in Lean (eventually fully), not by “whatever the runtime currently does”.
+   - “What does this mean?” is anchored in accepted canonical `.axi` plus the
+     compiled semantic IR. Lean checks the strongest supported fragments; Rust
+     runtime reports state their anchors, closure tier, assumptions, and
+     non-claims.
 3. Approximation with explicit bounds
    - We permit heuristic search, approximate ranking, and uncertainty, but we must not conflate them with truth.
 4. Explicit provenance
@@ -179,7 +189,7 @@ We distinguish:
 
 Implemented (parsing parity direction):
 
-- Canonical corpus: `examples/canonical/corpus.json`
+- Canonical corpus: `fixtures/canonical/corpus.json`
 - Rust unified parser entrypoint: `rust/crates/axiograph-dsl/src/axi_v1.rs`
 - Lean unified parser entrypoint: `lean/Axiograph/Axi/AxiV1.lean`
 
@@ -236,19 +246,25 @@ inductive KGPathEquiv : KGPath kg a b → KGPath kg a b → Type where
   | KGPEAssoc : KGPathEquiv (KGTrans (KGTrans p q) r) (KGTrans p (KGTrans q r))
 ```
 
-Implemented: `lean/Axiograph/HoTT/KnowledgeGraph.lean`.
+`KGPathEquiv` in `lean/Axiograph/HoTT/KnowledgeGraph.lean` is an
+explanation-level generated relation, not the trusted groupoid model. The
+trusted supported syntax is the endpoint-indexed `PathExpr`/`GroupoidPath`
+layer in `Axiograph.HoTT.FreeGroupoid` and `Axiograph.Theory.Finite`.
+Denotation into mathlib proves unit, inverse, associativity, composition
+congruence, and inverse congruence.
 
-This is a deliberately small generating set. The long-term direction is to:
+Implemented certificates use formal inverses and cancellation:
 
-- Add inverse/cancellation laws (groupoid completion),
-- Add congruence (equivalence preserved under composition),
-- And quotient paths by this equivalence where appropriate.
+- `normalize_path_v2`: recomputation plus a **mandatory** replayable derivation
+  (rule + position),
+- `rewrite_derivation_v3`: an anchored replayable derivation using builtin or
+  accepted `.axi` rule references,
+- `path_equiv_v2`: mandatory derivations from both sides to one normal form,
+- `category_kernel_v3`: exact signed inverse-cancellation traces for every
+  presented generator under an exact `.axi` anchor.
 
-Implemented (certificates): the certificate-side path expression language supports formal inverses and cancellation, and the checker supports:
-
-- `normalize_path_v2`: recompute-and-compare normalization **plus optional replayable derivations** (rule + position),
-- `rewrite_derivation_v2`: a generic “replay this derivation” certificate (rule + position),
-- `path_equiv_v2`: equivalence via common normalization, with optional derivations from both sides.
+`Certificate.Invariants`, imported by `VerifyMain`, proves that accepted builtin
+traces preserve free-groupoid denotation.
 
 Planned: extend beyond these **local groupoid rules** into domain-specific rewrite systems (unit conversions, schema migration rewrites), and reuse the same derivation mechanism for reconciliation explanations.
 
@@ -261,12 +277,14 @@ Conceptually, you can think of:
 3. Add inverses formally (free groupoid) if you want reversible reasoning.
 4. Quotient by the rewrite/equivalence relation generated by your semantics.
 
-Mathlib already contains structures that are close to this direction:
+The implementation uses mathlib's free construction:
 
 - `Mathlib.CategoryTheory.Groupoid.FreeGroupoid`
 - `Quiver.Paths`
 
-Planned: rebase more of `lean/Axiograph/HoTT/*` onto mathlib’s free constructions to avoid re-proving standard results, and relate certificate syntax to those canonical semantics.
+`lean/Axiograph/HoTT/FreeGroupoid.lean` supplies the denotation bridge, and
+`lean/Axiograph/Certificate/PathRewriteSoundness.lean` relates certificate
+rewrite syntax to that semantics.
 
 ### 3.3 Rewriting as a congruence
 
@@ -281,8 +299,8 @@ This is what lets you rewrite a subpath inside a larger path.
 
 Implemented: the certificate checker supports congruence-aware rewriting via explicit **positions** (`pos`) in rewrite steps:
 
-- `normalize_path_v2`: recompute-and-compare normalization, plus optional replayable derivations (rule + position)
-- `rewrite_derivation_v2`: generic replayable derivations (rule + position)
+- `normalize_path_v2`: recompute-and-compare normalization plus a mandatory replayable derivation (rule + position)
+- `rewrite_derivation_v3`: anchored replayable derivations (rule reference + position)
 
 Planned: reuse this derivation style for domain rewrites and reconciliation proofs (policy explanations), not just local groupoid normalization.
 
@@ -297,13 +315,15 @@ Why normalize?
 - To make caching and hashing stable,
 - To reduce certificate size by canonicalization.
 
-Implementation note (engine-side): equality saturation with **e-graphs** is a practical way for Rust to do rewrite search and normalization while keeping the meaning stable in Lean. Axiograph can treat e-graphs as an *untrusted optimizer* that must emit either replayable rewrite-step certificates or a normal form that the checker validates (recompute-and-compare as a scaffold). See Appendix C.17.
+Implementation note (engine-side): equality saturation with **e-graphs** is a practical way for Rust to do rewrite search and normalization while keeping the meaning stable in Lean. Axiograph can treat e-graphs as an *untrusted optimizer* that must emit either replayable rewrite-step certificates or a normal form that the checker validates as a temporary parity check over the supported normalization fragment. See Appendix C.17.
 
 Implemented: `normalize_path_v2` certificates:
 
 - Rust emits an input path expression and a purported normalized form.
 - Lean re-computes normalization and checks the result matches the claimed normal form.
-- If a derivation is included, Lean also replays every rewrite step (rule + position) and checks it reaches the claimed normalized form.
+- Lean requires and replays every rewrite step (rule + position), checks that
+  it reaches the claimed normal form, and uses an imported theorem to connect
+  accepted replay to equal free-groupoid denotation.
 
 See:
 
@@ -444,9 +464,9 @@ Axiograph needs both:
 - Proof-relevant data (certificates, derivation witnesses),
 - Proof-irrelevant propositions (bounds proofs that should erase at runtime).
 
-In Lean, many proofs live in `Prop` and erase automatically; certificates and witnesses live in `Type` and are data.
-
-Historically, an Idris prototype used similar patterns; we aim to keep:
+In Lean, many proofs live in `Prop` and erase automatically; certificates and
+witnesses live in `Type` and are data. In the current system, Lean owns the
+trusted version of this story:
 
 - Proofs for invariants erased where possible,
 - And proof objects only where they are part of the auditable story.
@@ -503,9 +523,7 @@ Operators:
 - `□φ` (“box”): φ holds in all accessible worlds.
 - `◇φ` (“diamond”): φ holds in some accessible world.
 
-Prototype (historical): an Idris proof-layer explored modal modules alongside the math notes (`docs/explanation/MATHEMATICAL_FOUNDATIONS.md` section “Modal Logics”).
-
-Planned: port the modal/tacit/temporal semantics into Lean as part of the trusted checker.
+Planned: encode modal/tacit/temporal semantics in Lean as part of the trusted checker.
 
 ### 6.2 Temporal modalities
 
@@ -514,8 +532,6 @@ Temporal reasoning is foundational for “as of X” claims and evolving corpora
 - Facts can expire,
 - Guidelines supersede older guidance,
 - Policies have effective dates.
-
-Prototype (historical): an Idris temporal logic module explored interval reasoning and temporal operators.
 
 Planned: a Lean temporal kernel plus certificates for time-indexed inferences.
 
@@ -536,8 +552,6 @@ Representation strategy:
    - Revision hooks (they can be overridden by stronger evidence).
 2. Use a modality to mark tacitness, e.g. a type former like `Tacit φ` or a modal operator “in practice”.
 3. Let reconciliation compute how tacit evidence interacts with encoded rules (see §4.3).
-
-Prototype (historical): an Idris tacit-knowledge module explored typed provenance + heuristics.
 
 Planned: Lean port and certificate-backed reconciliation for tacit-vs-encoded conflicts.
 
@@ -639,7 +653,8 @@ The key is: coercions must be semantics-preserving and, when they reflect a know
 
 ## 8. Linear/quantitative types (future)
 
-Linear and quantitative typing are not required to build a verifiable KG, but they become extremely valuable in production, especially around:
+Linear and quantitative typing are not required to build the typed ontology
+workbench, but they become extremely valuable in production, especially around:
 
 - Resource tracking,
 - Privacy and data-use governance,
@@ -822,47 +837,93 @@ Lean parses them here:
 
 - `lean/Axiograph/Certificate/Format.lean`
 
-Two generations exist:
+The active public certificate surface is canonical `.axi` anchored:
 
-- v1: reachability with float confidences (still bounded).
-- v2: fixed-point confidences (`Precision = 1_000_000`) and additional proof kinds:
-  - anchored reachability (optional `.axi` anchor + snapshot `relation_id` fact IDs),
-  - resolution decisions,
-  - path normalization (with optional replayable derivations),
-  - generic rewrite derivations (rule + position),
-  - path equivalence via normalization,
-  - and a Δ_F migration scaffold (`delta_f_v1`).
+- envelope V3 / `query_result_v4`: typed query witnesses bound to exact
+  canonical `.axi` bytes, prepared queries, and returned answers.
+- `reachability_v3`: canonical path witnesses whose steps cite stable
+  `axi_fact_id` values derived from tuple facts.
+- `axi_well_typed_v1`: Lean-side re-checking for supported canonical `.axi`
+  module typing.
+- rewrite/path/equivalence and Δ_F migration certificate families remain
+  supported where their verifier fragments are explicitly documented.
 
 For running and schema details, see:
 
 - `docs/reference/CERTIFICATES.md`
 - `docs/howto/FORMAL_VERIFICATION.md`
 
-### 11.3 A representative v2 reachability certificate (shape)
+### 11.3 Representative anchored query/reachability certificates
 
 ```json
 {
   "version": 2,
-  "kind": "reachability_v2",
+  "anchor": { "revision_digest_v2": "axi:revision:v2:sha256:..." },
+  "kind": "reachability_v3",
   "proof": {
     "type": "step",
-    "from": 1,
-    "rel_type": 7,
-    "to": 9,
-    "rel_confidence_fp": 850000,
-    "rest": {
-      "type": "reflexive",
-      "entity": 9
-    }
+    "from": "Alice",
+    "rel": "Parent",
+    "to": "Bob",
+    "rel_confidence_fp": 1000000,
+    "axi_fact_id": "axi:fact:...",
+    "rest": { "type": "reflexive", "entity": "Bob" }
   }
 }
 ```
 
 Meaning:
 
-- This claims a path from entity 1 to entity 9 by a single step of relation type 7.
-- The step has confidence 0.85 (fixed-point numerator 850000).
-- The checker computes path confidence by multiplying step confidences along the chain.
+- This claims a path from `Alice` to `Bob` under a canonical `.axi` digest.
+- The step cites a stable `axi_fact_id`, not a PathDB snapshot relation id.
+- The checker replays the step against the anchored canonical module.
+
+For normal query answering, use the query-bound witness family:
+
+```json
+{
+  "version": 3,
+  "kind": "query_result_v4",
+  "anchor": {
+    "revision_digest_v2": "axi:revision:v2:sha256:..."
+  },
+  "proof": {
+    "binding": {
+      "version": 1,
+      "query": {
+        "select_vars": ["?to"],
+        "disjuncts": [[{
+          "type": "attr_eq",
+          "term": { "type": "var", "name": "?to" },
+          "key": "name",
+          "value": "Bob"
+        }]]
+      },
+      "row_limit": 10,
+      "claim_kind": "finite_exact_complete"
+    },
+    "prepared_query_digest_v1": "axi:query:v2:sha256:...",
+    "rows": [{
+      "disjunct": 0,
+      "bindings": [{ "var": "?to", "entity": "Bob" }],
+      "witnesses": [{
+        "type": "attr_eq",
+        "entity": "Bob",
+        "key": "name",
+        "value": "Bob"
+      }]
+    }],
+    "runtime_truncated": false,
+    "answer_digest_v1": "axi:answer:v2:sha256:..."
+  }
+}
+```
+
+`query_result_v4` proves witness soundness and exact completeness for the
+bounded finite denotation of the embedded compiled query. It does not claim
+open-world ontology closure, evidence or approximate-search completeness, or
+unrestricted dependent/HoTT semantics. No legacy query certificate family is
+accepted.
 
 ### 11.4 The “untrusted engine, trusted checker” loop
 
@@ -907,12 +968,13 @@ When adding a new certificate kind:
 - Canonical `.axi` parsing:
   - `lean/Axiograph/Axi/*` and Rust equivalents in `rust/crates/axiograph-dsl/src/*`
 - Certificates:
-  - Reachability v1 + v2 (including optional `.axi` anchoring via `axi_digest_v1` and snapshot `relation_id` fact IDs)
+  - `query_result_v4` query-and-answer-bound witnesses over canonical `.axi`
+  - `reachability_v3` path witnesses over stable `axi_fact_id`
   - Resolution v2 (decision re-check)
-  - Normalize-path v2 (recompute normalization, plus optional replayable derivation replay)
+  - Normalize-path v2 (recompute normalization plus mandatory replayable derivation)
   - Rewrite-derivation v2 (replayable rewrite traces: rule + position)
-  - Path-equivalence v2 (equivalence via shared normalization, plus optional derivations)
-  - Δ_F migration cert (`delta_f_v1`, recompute-and-compare scaffold)
+  - Path-equivalence v2 (equivalence via shared normalization plus mandatory derivations)
+  - Δ_F migration cert (`delta_f_v1`, recomputed parity check over a bounded migration fragment)
 
 To run:
 
@@ -925,10 +987,13 @@ To run:
    - Extend the rewrite-step machinery from local groupoid normalization to domain rewrite systems (unit conversions, schema migration rewrites, reconciliation explanations).
 2. Reconciliation proofs
    - Not only “decision was X”, but “decision is justified by a derivation under the policy”.
-3. Query certificates
-   - Every “certified” query answer from the PathDB executor carries a certificate, not just reachability demos.
-4. Anchoring certificates to canonical inputs
-   - Expand beyond the current `axi_digest_v1` + `relation_id` anchoring: introduce stable fact ids for canonical domain `.axi` (module digest + local id, or content addressing).
+3. Query certificate coverage
+   - Broaden `query_result_v4` fragment coverage while keeping
+     `require_verified` fail closed across CLI, server, CQ, MCP, and agents.
+4. Anchoring coverage
+   - Keep pushing all proof-carrying surfaces to the immutable
+     `CompiledKernelSnapshot` handle plus typed fact ids; treat `RuntimeIrRef`
+     only as a derived citation; use accepted AxiStore anchors as authority.
 5. Trusted kernels for modalities/temporal logic
    - A small Lean core for modal/temporal semantics with certificates for inferences involving time and obligation.
 
@@ -982,7 +1047,7 @@ This project only works if we are honest about what is being guaranteed. Common 
    - Recommendation: track acceptance tiers explicitly (e.g., proposed vs accepted vs certified derivation), and require provenance for all promoted facts.
 2. **Verifying the engine instead of the meaning**
    - If the checker merely recomputes the same algorithm as the engine, you can accidentally “prove equivalence to the algorithm” rather than correctness relative to a stable spec.
-   - Recommendation: keep Lean meaning functions small and stable; treat “recompute-and-compare” as a scaffold, and move toward replayable derivation steps where it matters.
+   - Recommendation: keep Lean meaning functions small and stable; use recompute-and-compare only as a bounded parity check for migration/normalization fragments, and move toward replayable derivation steps where it matters.
 3. **Inconsistency blowups and “silent unknown”**
    - Real KGs contain contradictions and incompleteness. Classical logic can explode under inconsistency; closed-world assumptions can silently turn “unknown” into “false”.
    - Recommendation: make open-world vs closed-world assumptions explicit (layering + shapes); decide early whether conflict handling is fail-closed, paraconsistent, or context-indexed.
@@ -1022,7 +1087,7 @@ Actionable production TODOs (trust tiers, anchoring, certificate ubiquity, harde
 
 ### 14.2 Versioning and migrations
 
-- `.axi` dialects: keep parsers in Rust and Lean in lockstep; maintain `examples/canonical/corpus.json` as the compatibility contract.
+- `.axi` dialects: keep parsers in Rust and Lean in lockstep; maintain `fixtures/canonical/corpus.json` as the conformance contract.
 - Certificates: never change meaning without bumping `version` or `kind`.
 - PathDB: maintain a stable on-disk format version (`FORMAT_VERSION` etc in `rust/crates/axiograph-pathdb/src/verified.rs`).
 
@@ -1117,10 +1182,11 @@ For a normalization procedure `norm : Path → Path`, we want at least:
 3. Congruence: normalization respects composition appropriately
 4. Optionally: completeness for the chosen rewrite theory (hard; domain-dependent)
 
-The current `normalize_path_v2` certificate is a scaffold: Lean recomputes normalization and checks it matches the
-claimed normal form. The next tightening step is to add explicit rewrite-step derivations (rule + position),
-prove those steps sound against the chosen semantics (ideally reusing mathlib’s free constructions), and extend the
-pattern to domain rewrites.
+The current `normalize_path_v2` certificate requires derivation replay and
+checks output parity with Lean normalization over the supported rewrite
+fragment. `Certificate.Invariants` proves those accepted steps sound against
+mathlib's free-groupoid denotation. Completeness for domain rewrite systems
+remains outside the claim.
 
 ### 15.4 Make probability laws explicit and scoped
 
@@ -1337,22 +1403,22 @@ This is naturally a reachability/path problem with uncertainty.
 - Logs and alerts (noisy),
 - Analyst notes (tacit).
 
-### 18.3 Path certificates are immediately useful here
+### 18.3 Anchored path/query certificates are immediately useful here
 
 A reachability certificate can literally be an exploit chain:
 
 - `Internet → WebServer → RCE(vuln) → LateralMove → DB`
 
-The certificate includes:
-
-- Node ids and relation types,
-- Confidence per step (scanner confidence, exploit reliability, telemetry trust),
-- A computed confidence for the chain.
+The certificate includes canonical node labels, relation names, stable
+`axi_fact_id` references, fixed-point confidence where supported, and the
+canonical `.axi` digest anchor.
 
 Implemented pieces:
 
-- Rust: `ReachabilityProofV2` in `rust/crates/axiograph-pathdb/src/certificate.rs`
-- Lean: parsing and confidence recomputation in `lean/Axiograph/Certificate/Format.lean`
+- Rust: `ReachabilityProofV3` path witnesses inside `QueryResultProofV4` in
+  `rust/crates/axiograph-pathdb/src/certificate.rs`
+- Lean: canonical `.axi`-anchored replay in
+  `lean/Axiograph/Certificate/Check.lean`
 
 ### 18.4 Approximate search, verified answers
 
@@ -1465,27 +1531,20 @@ This appendix points to where the math described above lives in the repo.
 - Verified probabilities:
   - `lean/Axiograph/Prob/Verified.lean` (`VProb`, `Precision`, `vMult`, Bayes update)
 - Certificate parsing (the bridge):
-  - `lean/Axiograph/Certificate/Format.lean` (v1/v2 parsing, normalize_path scaffold)
+  - `lean/Axiograph/Certificate/Format.lean` (active JSON certificate families)
 - `.axi` parsing:
   - `lean/Axiograph/Axi/*`
 
 ## A.2 Rust (untrusted runtime engine)
 
-- PathDB verified layer scaffolding + proof-shaped data:
+- PathDB typed runtime witness layer and proof-shaped data:
   - `rust/crates/axiograph-pathdb/src/verified.rs` (`VerifiedProb`, `ReachabilityProof`, `ProvenQueryResult`)
 - Certificates emitted to Lean:
-  - `rust/crates/axiograph-pathdb/src/certificate.rs` (`CertificateV2`, `ReachabilityProofV2`, `ResolutionProofV2`, `NormalizePathProofV2`)
+  - `rust/crates/axiograph-pathdb/src/certificate.rs` (`CertificateV3`, `QueryResultProofV4`, `ReachabilityProofV3`, `ResolutionProofV2`, `NormalizePathProofV2`)
 - LLM sync and typed path validation patterns:
   - `rust/crates/axiograph-llm-sync/src/path_verification.rs`
 - DSL parsing and canonical `.axi` entrypoint:
   - `rust/crates/axiograph-dsl/src/axi_v1.rs`
-
-## A.3 Historical Idris2 prototype (removed)
-
-An early Idris2 proof-layer prototype informed several Lean ports (HoTT/path algebra, probability, etc.).
-The initial Rust+Lean release removes Idris/FFI compatibility; refer to git history if you need the original Idris sources.
-
----
 
 # Appendix B: Glossary and notation
 
@@ -1522,7 +1581,6 @@ This appendix is a curated reading list plus “what it implies for Axiograph”
 
 - Nordström, Petersson, Smith — *Programming in Martin-Löf’s Type Theory*.
 - Harper — *Practical Foundations for Programming Languages*.
-- Brady — *Type-Driven Development with Idris* (and Idris2 / QTT materials).
 - Avigad, de Moura, Kong, et al. — *Theorem Proving in Lean* (Lean4 book).
 - Pientka and collaborators — *Beluga* and contextual type theory (useful background for “contexts/worlds as first-class”):
   - Boespflug & Pientka — “Multi-Level Contextual Type Theory”.
@@ -1677,58 +1735,58 @@ Rust is the untrusted engine in Axiograph, so “Rust literature” matters in t
 ### C.12.1 Foundations: what Rust safety means (and how it fails)
 
 - RustBelt (POPL 2018): formal (machine-checked) safety proof for a realistic Rust subset, and a method for stating verification conditions for unsafe libraries.
-  - Project page: https://plv.mpi-sws.org/rustbelt/popl18/
-  - Publication record: https://doi.org/10.1145/3158154
+  - Project page: <https://plv.mpi-sws.org/rustbelt/popl18/>
+  - Publication record: <https://doi.org/10.1145/3158154>
 - Oxide (2019): a core formalization of Rust’s ownership/borrowing model (“the essence” of borrow checking).
-  - https://arxiv.org/abs/1903.00982
+  - <https://arxiv.org/abs/1903.00982>
 - Polonius: a Datalog-style model of borrow checking with a “book” explaining the analysis.
-  - Repo: https://github.com/rust-lang/polonius
-  - Book: https://rust-lang.github.io/polonius/
+  - Repo: <https://github.com/rust-lang/polonius>
+  - Book: <https://rust-lang.github.io/polonius/>
 - Unsafe guidance (practical + operational semantics discussion):
-  - Rustonomicon: https://doc.rust-lang.org/nomicon/
-  - Rust Unsafe Code Guidelines repo + glossary: https://github.com/rust-lang/unsafe-code-guidelines and https://rust-lang.github.io/unsafe-code-guidelines/glossary.html
-  - Rust Reference (`unsafe` keyword): https://doc.rust-lang.org/reference/unsafe-keyword.html
+  - Rustonomicon: <https://doc.rust-lang.org/nomicon/>
+  - Rust Unsafe Code Guidelines repo + glossary: <https://github.com/rust-lang/unsafe-code-guidelines> and <https://rust-lang.github.io/unsafe-code-guidelines/glossary.html>
+  - Rust Reference (`unsafe` keyword): <https://doc.rust-lang.org/reference/unsafe-keyword.html>
 
 Why this matters for Axiograph:
 
-- Any use of `unsafe` (FFI, packed I/O formats, custom indexing) must establish and re-establish invariants at module boundaries. This maps directly to our “untrusted engine” discipline: unsafe blocks must be locally auditable and covered by tests/analysis, while *semantic correctness* is ensured by certificates checked in Lean.
+- Any use of `unsafe` (packed I/O formats, custom indexing, or other low-level boundaries) must establish and re-establish invariants at module boundaries. This maps directly to our “untrusted engine” discipline: unsafe blocks must be locally auditable and covered by tests/analysis, while *semantic correctness* is ensured by certificates checked in Lean.
 
 ### C.12.2 Verification tools for Rust (beyond the compiler)
 
 Model checking / symbolic tools:
 
 - Kani (CBMC-based): model checking for Rust code via proof harnesses (good for panics, overflows, many UB patterns).
-  - https://model-checking.github.io/kani/
+  - <https://model-checking.github.io/kani/>
 - Verify Rust Std effort (Rust stdlib verification contest and tool ecosystem): Kani, ESBMC, Flux, VeriFast, etc.
-  - https://model-checking.github.io/verify-rust-std/
-  - https://github.com/model-checking/verify-rust-std
+  - <https://model-checking.github.io/verify-rust-std/>
+  - <https://github.com/model-checking/verify-rust-std>
 
 Deductive verifiers:
 
 - Prusti (Viper-based): contracts/specs to prove functional properties, absence of panics/overflows, etc.
-  - https://github.com/viperproject/prusti-dev
+  - <https://github.com/viperproject/prusti-dev>
 - Creusot (Why3-based): deductive verification; used for nontrivial verified Rust projects.
-  - https://github.com/creusot-rs/creusot
+  - <https://github.com/creusot-rs/creusot>
 
 “Verified Rust” / SMT-assisted subsets:
 
 - Verus (SMT-based): verify Rust-like code with specs/proofs, including low-level invariants; supports reasoning about pointers/concurrency via ghost state.
-  - Tool: https://github.com/verus-lang/verus
-  - Paper (extended): https://arxiv.org/abs/2303.05491
+  - Tool: <https://github.com/verus-lang/verus>
+  - Paper (extended): <https://arxiv.org/abs/2303.05491>
 
 Translation to theorem provers:
 
 - Aeneas (ICFP 2022): translates safe Rust into a functional form for proof assistants; includes a Lean backend.
-  - Paper: https://arxiv.org/abs/2206.07185
-  - Tool: https://github.com/AeneasVerif/aeneas
-  - Background work on LLBC soundness (2024): https://arxiv.org/abs/2404.02680
+  - Paper: <https://arxiv.org/abs/2206.07185>
+  - Tool: <https://github.com/AeneasVerif/aeneas>
+  - Background work on LLBC soundness (2024): <https://arxiv.org/abs/2404.02680>
 
 Static analysis / UB detection:
 
 - Miri: interpreter for Rust MIR that detects many UB classes in executions and isolates nondeterminism by default.
-  - https://github.com/rust-lang/miri
+  - <https://github.com/rust-lang/miri>
 - MIRAI: abstract interpreter for MIR; can find panics and check user-encoded contracts; also supports taint analysis.
-  - https://github.com/endorlabs/MIRAI
+  - <https://github.com/endorlabs/MIRAI>
 
 How this relates:
 
@@ -1739,29 +1797,29 @@ How this relates:
 Concurrency testing:
 
 - Loom: exhaustive concurrency permutation testing for small tests (C11 memory model).
-  - https://github.com/tokio-rs/loom
+  - <https://github.com/tokio-rs/loom>
 - Shuttle: randomized scheduler testing inspired by Loom (scales to larger tests; not exhaustive).
-  - https://github.com/awslabs/shuttle
+  - <https://github.com/awslabs/shuttle>
 
 Fuzzing:
 
 - cargo-fuzz (libFuzzer): practical fuzzing harness support for Rust crates.
-  - https://github.com/rust-fuzz/cargo-fuzz
+  - <https://github.com/rust-fuzz/cargo-fuzz>
 - AFL.rs / honggfuzz-rs: alternative fuzzing backends in the Rust fuzz ecosystem.
-  - https://github.com/rust-fuzz/afl.rs
-  - https://github.com/rust-fuzz/honggfuzz-rs
+  - <https://github.com/rust-fuzz/afl.rs>
+  - <https://github.com/rust-fuzz/honggfuzz-rs>
 
 Why this matters:
 
-- PathDB parsers, certificate serialization/deserialization, and FFI boundaries are classic “fuzz me” surfaces.
+- PathDB parsers, certificate serialization/deserialization, and external byte/string boundaries are classic “fuzz me” surfaces.
 - Concurrency tests matter if we introduce background indexing, async ingestion, or concurrent PathDB reads/writes.
 
 ### C.12.4 Rust semantics research (optional, but helpful for deep assurance)
 
 Executable semantics work (useful to understand edge cases and for tool building):
 
-- KRust (K Framework): https://arxiv.org/abs/1804.10806
-- RustSEM (K Framework): https://arxiv.org/abs/1804.07608
+- KRust (K Framework): <https://arxiv.org/abs/1804.10806>
+- RustSEM (K Framework): <https://arxiv.org/abs/1804.07608>
 
 These are not necessary for day-to-day Axiograph development, but they’re relevant if we ever want “semantics-aware” analysis of Rust engine code or if we need to reason about tricky lifetime/aliasing corner cases at the semantic level.
 
@@ -1770,14 +1828,14 @@ These are not necessary for day-to-day Axiograph development, but they’re rele
 These are prioritized steps that fit the “untrusted engine, trusted checker” architecture:
 
 1. **Minimize and isolate `unsafe`**
-   - Keep `unsafe` code localized (FFI + binary parsing); document invariants per module boundary; prefer safe parsing patterns over transmutes/packed reads.
+   - Keep `unsafe` code localized (binary parsing and genuinely low-level boundaries); document invariants per module boundary; prefer safe parsing patterns over transmutes/packed reads.
 2. **Fuzz the untrusted surfaces**
-   - Add fuzz targets for: PathDB parsing/reading, certificate JSON parsing/serialization, `.axi` parsing, and any FFI entrypoints that accept bytes/strings.
+   - Add fuzz targets for: PathDB parsing/reading, certificate JSON parsing/serialization, `.axi` parsing, and any external byte/string entrypoints.
 3. **Run Miri on core crates**
    - Use Miri to detect UB in tests (especially around `unsafe`, pointer aliasing assumptions, and tricky lifetime patterns).
 4. **Use model checking for small but critical functions**
    - Apply Kani to: fixed-point arithmetic (`FixedPointProbability`), bounds-checked parsing, path/certificate constructors, and “no panic/overflow” guarantees.
-5. **Use Verus (already scaffolded) for invariants that matter**
+5. **Use existing Verus integration points for invariants that matter**
    - Prove local invariants like: binary offsets within bounds; index consistency; probability bounds; “endpoints match” conditions for witness chains; determinism where feasible.
 6. **Add concurrency schedule testing only where concurrency exists**
    - If/when PathDB or sync pipelines become concurrent, add Loom tests for the smallest concurrency kernels; use Shuttle for larger randomized schedules.
@@ -1827,9 +1885,9 @@ There is a deep database literature on “why did I get this answer?” and “w
 
 Selected entry points:
 
-- Buneman, Khanna, Tan — “Why and Where: A Characterization of Data Provenance” (ICDT 2001). https://www.cs.cornell.edu/~bkhanna/papers/whywhere.pdf
-- Green, Karvounarakis, Tannen — “Provenance Semirings” (PODS 2007). https://doi.org/10.1145/1265530.1265535
-- Amsterdamer et al. — “Putting Lipstick on Pig: Enabling Database Provenance for Datalog” (VLDB 2018). https://doi.org/10.14778/3229863.3229866
+- Buneman, Khanna, Tan — “Why and Where: A Characterization of Data Provenance” (ICDT 2001). <https://www.cs.cornell.edu/~bkhanna/papers/whywhere.pdf>
+- Green, Karvounarakis, Tannen — “Provenance Semirings” (PODS 2007). <https://doi.org/10.1145/1265530.1265535>
+- Amsterdamer et al. — “Putting Lipstick on Pig: Enabling Database Provenance for Datalog” (VLDB 2018). <https://doi.org/10.14778/3229863.3229866>
 
 How this relates:
 
@@ -1847,7 +1905,7 @@ Production insight:
 
 If we want automation and optimization for a decidable query/inference fragment, Datalog and its typed variants are a strong candidate.
 
-- Arntzenius, Krishnaswami, Greenberg, et al. — “Datafun: A Functional Datalog” (ICFP 2016). https://doi.org/10.1145/2951913.2951948
+- Arntzenius, Krishnaswami, Greenberg, et al. — “Datafun: A Functional Datalog” (ICFP 2016). <https://doi.org/10.1145/2951913.2951948>
 
 How this relates:
 
@@ -1864,8 +1922,8 @@ Proof-carrying answers can be approached at multiple layers:
 
 Representative pointers:
 
-- Benzaken, Contejean, Dumbrava, et al. — Q\*cert: a Coq query compiler (paper + artifact). https://dl.acm.org/doi/10.1145/3563323
-- ZKP-based SQL (research direction): PoneglyphDB “Verifiable Query Execution for Blockchain-based Databases” (preprint). https://kira.cs.umd.edu/papers/poneglyphdb_preprint.pdf
+- Benzaken, Contejean, Dumbrava, et al. — Q\*cert: a Coq query compiler (paper + artifact). <https://dl.acm.org/doi/10.1145/3563323>
+- ZKP-based SQL (research direction): PoneglyphDB “Verifiable Query Execution for Blockchain-based Databases” (preprint). <https://kira.cs.umd.edu/papers/poneglyphdb_preprint.pdf>
 
 How this relates:
 
@@ -1878,8 +1936,8 @@ E-graphs provide a high-performance way to explore and apply equational rewrite 
 
 Key references:
 
-- Tate, Stepp, Tatlock, Lerner — “Equality Saturation: A New Approach to Optimization” (PLDI 2009). https://dl.acm.org/doi/10.1145/1542476.1542528
-- Willsey et al. — “egg: Fast and Extensible Equality Saturation” (POPL 2021). https://doi.org/10.1145/3434304
+- Tate, Stepp, Tatlock, Lerner — “Equality Saturation: A New Approach to Optimization” (PLDI 2009). <https://dl.acm.org/doi/10.1145/1542476.1542528>
+- Willsey et al. — “egg: Fast and Extensible Equality Saturation” (POPL 2021). <https://doi.org/10.1145/3434304>
 
 How this relates:
 

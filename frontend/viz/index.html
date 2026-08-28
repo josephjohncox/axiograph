@@ -128,7 +128,7 @@ a.link:hover { text-decoration: underline; }
   <button class="tabbtn active" data-tab="explore" type="button">explore</button>
   <button class="tabbtn" data-tab="query" type="button">query</button>
   <button class="tabbtn" data-tab="llm" type="button">llm</button>
-  <button class="tabbtn" data-tab="world_model" type="button">world model</button>
+  <button class="tabbtn" data-tab="predictive_proposals" type="button">predictive proposals</button>
   <button class="tabbtn" data-tab="review" type="button">review</button>
   <button class="tabbtn" data-tab="add" type="button">add</button>
 </div>
@@ -191,7 +191,7 @@ a.link:hover { text-decoration: underline; }
       <label><input type="checkbox" id="show_entity" checked/>entity</label>
       <label><input type="checkbox" id="show_fact" checked/>fact</label>
       <label><input type="checkbox" id="show_morphism" checked/>morphism</label>
-      <label><input type="checkbox" id="show_homotopy" checked/>homotopy</label>
+      <label><input type="checkbox" id="show_homotopy" checked/>path equivalence</label>
       <label><input type="checkbox" id="show_meta" checked/>meta</label>
     </div>
     <div class="row"><span class="muted">edges:</span>
@@ -284,56 +284,56 @@ a.link:hover { text-decoration: underline; }
   <details style="margin-top:8px;"><summary class="muted">llm debug</summary><pre id="llm_debug" style="white-space:pre-wrap; max-height:240px; overflow:auto; margin:8px 0 0 0;"></pre></details>
 </div>
 
-<div id="tab_world_model" class="filters tabpanel">
-  <div class="row"><strong style="font-size:13px;">World Model</strong> <span class="muted">(propose / plan)</span></div>
+<div id="tab_predictive_proposals" class="filters tabpanel">
+  <div class="row"><strong style="font-size:13px;">Predictive Proposals</strong> <span class="muted">(propose / plan)</span></div>
   <div class="row" style="margin-top:8px;">
-    <textarea id="wm_goals" rows="3" style="width:100%; padding:8px 10px; font-size:12px; border:1px solid #ddd; border-radius:8px; resize:vertical; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;" placeholder="goals (one per line)"></textarea>
+    <textarea id="proposal_goals" rows="3" style="width:100%; padding:8px 10px; font-size:12px; border:1px solid #ddd; border-radius:8px; resize:vertical; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;" placeholder="goals (one per line)"></textarea>
   </div>
   <div class="row" style="margin-top:8px; gap:8px; flex-wrap: wrap;">
-    <input id="wm_max_new" type="number" min="0" step="1" placeholder="max new proposals (0 = no cap)" style="flex:1; min-width:150px; padding:6px 8px; font-size:12px; border:1px solid #ddd; border-radius:8px;"/>
-    <input id="wm_seed" type="number" min="0" step="1" placeholder="seed (optional)" style="flex:1; min-width:120px; padding:6px 8px; font-size:12px; border:1px solid #ddd; border-radius:8px;"/>
+    <input id="proposal_max_new" type="number" min="0" step="1" placeholder="max new proposals (0 = no cap)" style="flex:1; min-width:150px; padding:6px 8px; font-size:12px; border:1px solid #ddd; border-radius:8px;"/>
+    <input id="proposal_seed" type="number" min="0" step="1" placeholder="seed (optional)" style="flex:1; min-width:120px; padding:6px 8px; font-size:12px; border:1px solid #ddd; border-radius:8px;"/>
   </div>
   <div class="row" style="margin-top:8px; gap:8px; flex-wrap: wrap;">
-    <input id="wm_steps" type="number" min="1" step="1" value="2" placeholder="steps" style="flex:1; min-width:120px; padding:6px 8px; font-size:12px; border:1px solid #ddd; border-radius:8px;"/>
-    <input id="wm_rollouts" type="number" min="1" step="1" value="2" placeholder="rollouts" style="flex:1; min-width:120px; padding:6px 8px; font-size:12px; border:1px solid #ddd; border-radius:8px;"/>
+    <input id="proposal_steps" type="number" min="1" step="1" value="2" placeholder="steps" style="flex:1; min-width:120px; padding:6px 8px; font-size:12px; border:1px solid #ddd; border-radius:8px;"/>
+    <input id="proposal_rollouts" type="number" min="1" step="1" value="2" placeholder="rollouts" style="flex:1; min-width:120px; padding:6px 8px; font-size:12px; border:1px solid #ddd; border-radius:8px;"/>
   </div>
   <div class="row" style="margin-top:8px; gap:8px; flex-wrap: wrap;">
-    <select id="wm_guardrail_profile">
+    <select id="proposal_guardrail_profile">
       <option value="fast" selected>guardrail: fast</option>
       <option value="strict">guardrail: strict</option>
       <option value="off">guardrail: off</option>
     </select>
-    <select id="wm_guardrail_plane">
+    <select id="proposal_guardrail_plane">
       <option value="both" selected>plane: both</option>
       <option value="meta">plane: meta</option>
       <option value="data">plane: data</option>
     </select>
     <label class="muted" style="display:flex; align-items:center; gap:8px;">
-      <input id="wm_include_guardrail" type="checkbox" checked/>
+      <input id="proposal_include_guardrail" type="checkbox" checked/>
       include guardrail
     </label>
   </div>
   <div class="row" style="margin-top:8px;">
-    <textarea id="wm_task_costs" rows="2" style="width:100%; padding:8px 10px; font-size:12px; border:1px solid #ddd; border-radius:8px; resize:vertical; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;" placeholder="task costs (name=value[:weight[:unit]], one per line)"></textarea>
+    <textarea id="proposal_task_costs" rows="2" style="width:100%; padding:8px 10px; font-size:12px; border:1px solid #ddd; border-radius:8px; resize:vertical; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;" placeholder="task costs (name=value[:weight[:unit]], one per line)"></textarea>
   </div>
   <div class="row" style="margin-top:8px;">
     <label class="muted" style="display:flex; align-items:center; gap:8px;">
-      <input id="wm_auto_commit" type="checkbox"/>
+      <input id="proposal_auto_commit" type="checkbox"/>
       auto-commit to WAL (requires admin token)
     </label>
   </div>
   <div class="row" style="margin-top:8px;">
     <label class="muted" style="display:flex; align-items:center; gap:8px;">
-      <input id="wm_commit_stepwise" type="checkbox"/>
+      <input id="proposal_commit_stepwise" type="checkbox"/>
       commit stepwise (plan only)
     </label>
   </div>
   <div class="row" style="margin-top:8px;">
-    <button id="wm_propose" class="btn">propose</button>
-    <button id="wm_plan" class="btn">plan</button>
-    <span id="wm_status" class="muted"></span>
+    <button id="proposal_propose" class="btn">propose</button>
+    <button id="proposal_plan" class="btn">plan</button>
+    <span id="proposal_status" class="muted"></span>
   </div>
-  <details style="margin-top:8px;"><summary class="muted">response</summary><pre id="wm_output" style="white-space:pre-wrap; max-height:240px; overflow:auto; margin:8px 0 0 0;"></pre></details>
+  <details style="margin-top:8px;"><summary class="muted">response</summary><pre id="proposal_output" style="white-space:pre-wrap; max-height:240px; overflow:auto; margin:8px 0 0 0;"></pre></details>
 </div>
 
 <div id="tab_review" class="filters tabpanel">

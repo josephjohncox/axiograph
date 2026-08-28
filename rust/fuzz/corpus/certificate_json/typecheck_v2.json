@@ -1,0 +1,15 @@
+{
+  "version": 2,
+  "anchor": {
+    "revision_digest_v2": "axi:revision:v2:sha256:6cebde99564a0f32653064786b3c190378ca3f7a2abb7f590507f45d63ecdb4c"
+  },
+  "kind": "axi_well_typed_v1",
+  "proof": {
+    "module_name": "Family",
+    "schema_count": 1,
+    "theory_count": 1,
+    "instance_count": 1,
+    "assignment_count": 6,
+    "tuple_count": 12
+  }
+}

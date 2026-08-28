@@ -51,7 +51,9 @@ fn main() {
         right: Box::new(right),
     };
 
-    let (normalized, derivation) = input.normalize_with_derivation();
+    let (normalized, derivation) = input
+        .normalize_with_derivation()
+        .expect("well-typed path must produce a replay trace");
     let proof = NormalizePathProofV2 {
         input,
         normalized,

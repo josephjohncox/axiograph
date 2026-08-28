@@ -1,0 +1,131 @@
+{
+  "version": "tooling_overlay_bundle_v1",
+  "fddd_context_map": {
+    "context_id": "bounded-context:regulated-shipment-release",
+    "label": "Regulated shipment release",
+    "summary": "Maps the canonical shipment-release slice to one implementation-facing dispatch gate.",
+    "scopes": [
+      {"kind": "relation", "schema": "RegulatedShipment", "name": "ShipmentContainsBatch"},
+      {"kind": "relation", "schema": "RegulatedShipment", "name": "BatchHasCertificate"},
+      {"kind": "relation", "schema": "RegulatedShipment", "name": "ShipmentHasCertificate"},
+      {"kind": "relation", "schema": "RegulatedShipment", "name": "BatchReleasedBy"},
+      {"kind": "relation", "schema": "RegulatedShipment", "name": "ShipmentReleasedBy"},
+      {"kind": "relation", "schema": "RegulatedShipment", "name": "ShipmentHasTemperatureRecord"},
+      {"kind": "relation", "schema": "RegulatedShipment", "name": "ShipmentUsesLane"},
+      {"kind": "relation", "schema": "RegulatedShipment", "name": "ShipmentDeclaredIn"},
+      {"kind": "relation", "schema": "RegulatedShipment", "name": "DispatchReview"},
+      {"kind": "equation", "schema": "RegulatedShipment", "name": "shipment_certificate_trace"},
+      {"kind": "rewrite", "schema": "RegulatedShipment", "name": "contained_batch_certificate_to_shipment_certificate"}
+    ],
+    "bounded_contexts": [
+      {
+        "binding_id": "bounded-context:regulated-shipment-release",
+        "label": "Shipment release",
+        "summary": "Owns release evidence, dispatch review, and the blocked-shipment decision.",
+        "ontology_refs": [
+          {"kind": "schema", "schema": "RegulatedShipment", "name": "RegulatedShipment"}
+        ]
+      }
+    ],
+    "aggregates": [
+      {
+        "binding_id": "aggregate:regulated-shipment",
+        "label": "Regulated shipment aggregate",
+        "ontology_refs": [
+          {"kind": "object", "schema": "RegulatedShipment", "name": "Shipment"},
+          {"kind": "object", "schema": "RegulatedShipment", "name": "Batch"}
+        ]
+      }
+    ],
+    "processes": [
+      {
+        "binding_id": "process:release-dispatch",
+        "label": "Release and dispatch review",
+        "summary": "Trace batch evidence, validate cold-chain and customs records, and retain a typed dispatch decision.",
+        "ontology_refs": [
+          {"kind": "relation", "schema": "RegulatedShipment", "name": "ShipmentContainsBatch"},
+          {"kind": "relation", "schema": "RegulatedShipment", "name": "BatchHasCertificate"},
+          {"kind": "relation", "schema": "RegulatedShipment", "name": "DispatchReview"}
+        ]
+      }
+    ],
+    "functions": [
+      {
+        "binding_id": "function:evaluate-dispatch",
+        "label": "Evaluate dispatch",
+        "summary": "Application function that consumes the finite typed release slice.",
+        "ontology_refs": [
+          {"kind": "relation", "schema": "RegulatedShipment", "name": "DispatchReview"}
+        ]
+      }
+    ],
+    "business_rules": [
+      {
+        "binding_id": "rule:certificate-trace",
+        "label": "Shipment certificate trace",
+        "summary": "A shipment certificate path must agree with the contained-batch certificate path in the supported finite presentation.",
+        "ontology_refs": [
+          {"kind": "equation", "schema": "RegulatedShipment", "name": "shipment_certificate_trace"},
+          {"kind": "rewrite", "schema": "RegulatedShipment", "name": "contained_batch_certificate_to_shipment_certificate"}
+        ]
+      }
+    ],
+    "notes": [
+      "This is a tooling overlay over compiled IR refs, not accepted domain meaning."
+    ]
+  },
+  "implementation_surfaces": {
+    "surfaces": [
+      {
+        "surface_id": "service:regulated-shipment:dispatch-gate",
+        "kind": "endpoint",
+        "label": "Regulated shipment dispatch gate",
+        "ontology_refs": [
+          {"kind": "relation", "schema": "RegulatedShipment", "name": "ShipmentContainsBatch"},
+          {"kind": "relation", "schema": "RegulatedShipment", "name": "BatchHasCertificate"},
+          {"kind": "relation", "schema": "RegulatedShipment", "name": "ShipmentHasCertificate"},
+          {"kind": "relation", "schema": "RegulatedShipment", "name": "BatchReleasedBy"},
+          {"kind": "relation", "schema": "RegulatedShipment", "name": "ShipmentReleasedBy"},
+          {"kind": "relation", "schema": "RegulatedShipment", "name": "ShipmentHasTemperatureRecord"},
+          {"kind": "relation", "schema": "RegulatedShipment", "name": "ShipmentUsesLane"},
+          {"kind": "relation", "schema": "RegulatedShipment", "name": "ShipmentDeclaredIn"},
+          {"kind": "relation", "schema": "RegulatedShipment", "name": "DispatchReview"}
+        ],
+        "code_refs": [],
+        "test_refs": [
+          "generated/tests/behavior_cases/regulated_shipment_release_dispatch.rs"
+        ],
+        "languages": ["rust"],
+        "notes": [
+          "The canonical proof-carrying workflow compiles and runs the generated Rust test skeleton."
+        ]
+      }
+    ],
+    "coverage_edges": [
+      {"surface_id": "service:regulated-shipment:dispatch-gate", "rule_id": "schema/regulatedshipment/relation/shipmentcontainsbatch/rule/key/0", "status": "tested"},
+      {"surface_id": "service:regulated-shipment:dispatch-gate", "rule_id": "schema/regulatedshipment/relation/batchhascertificate/rule/key/0", "status": "tested"},
+      {"surface_id": "service:regulated-shipment:dispatch-gate", "rule_id": "schema/regulatedshipment/relation/shipmenthascertificate/rule/key/0", "status": "tested"},
+      {"surface_id": "service:regulated-shipment:dispatch-gate", "rule_id": "schema/regulatedshipment/relation/batchreleasedby/rule/key/0", "status": "tested"},
+      {"surface_id": "service:regulated-shipment:dispatch-gate", "rule_id": "schema/regulatedshipment/relation/shipmentreleasedby/rule/key/0", "status": "tested"},
+      {"surface_id": "service:regulated-shipment:dispatch-gate", "rule_id": "schema/regulatedshipment/relation/shipmenthastemperaturerecord/rule/key/0", "status": "tested"},
+      {"surface_id": "service:regulated-shipment:dispatch-gate", "rule_id": "schema/regulatedshipment/relation/shipmentuseslane/rule/key/0", "status": "tested"},
+      {"surface_id": "service:regulated-shipment:dispatch-gate", "rule_id": "schema/regulatedshipment/relation/shipmentdeclaredin/rule/key/0", "status": "tested"},
+      {"surface_id": "service:regulated-shipment:dispatch-gate", "rule_id": "schema/regulatedshipment/relation/dispatchreview/rule/key/0", "status": "tested"}
+    ]
+  },
+  "coverage_policy": {
+    "coverage_mode": "advisory",
+    "require_codegen_languages": ["rust"],
+    "strict_coverage": false,
+    "require_code_refs": false,
+    "require_runtime_theory": false,
+    "fail_on_unresolved_obligations": false
+  },
+  "codegen_plan": {
+    "languages": ["rust"],
+    "test_name": "regulated_shipment_release_dispatch",
+    "notes": [
+      "The generated test binds an implementation seam to typed receipt anchors; it is not generated business logic."
+    ]
+  }
+}

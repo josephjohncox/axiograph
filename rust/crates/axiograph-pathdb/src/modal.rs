@@ -7,10 +7,9 @@
 //! - Deontic logic (obligation/permission)
 //! - Temporal logic
 //!
-//! All structures are designed to be:
-//! - Serializable to the shared binary format
-//! - Compatible with the PathDB `.axpd` schema and certificate checker model
-//! - Efficiently queryable via PathDB indexes
+//! The structures are serializable as current modal runtime payloads and can be
+//! queried through PathDB indexes. Certificate claims must cite explicit checked
+//! inputs; this module is not itself the trusted modal semantics.
 
 #![allow(unused_imports, unused_mut)]
 
@@ -58,10 +57,7 @@ impl AccessibilityRelation {
 
     /// Add an accessibility edge
     pub fn add_edge(&mut self, from: u32, to: u32) {
-        self.edges
-            .entry(from)
-            .or_insert_with(RoaringBitmap::new)
-            .insert(to);
+        self.edges.entry(from).or_default().insert(to);
     }
 
     /// Get accessible worlds from a given world
@@ -71,7 +67,7 @@ impl AccessibilityRelation {
 
     /// Check if world is accessible
     pub fn is_accessible(&self, from: u32, to: u32) -> bool {
-        self.edges.get(&from).map_or(false, |ws| ws.contains(to))
+        self.edges.get(&from).is_some_and(|ws| ws.contains(to))
     }
 }
 
@@ -174,7 +170,7 @@ impl ModalFrame {
         if let Some(acc) = self.accessibility.get(&rel_type) {
             if let Some(accessible) = acc.accessible(w) {
                 // Some accessible world must be in phi_worlds
-                !(&*accessible & phi_worlds).is_empty()
+                !(accessible & phi_worlds).is_empty()
             } else {
                 false
             }
@@ -252,7 +248,7 @@ impl ModalFrame {
         if let Some(acc) = self.accessibility.get(&rel_type) {
             self.worlds
                 .keys()
-                .all(|&w| acc.accessible(w).map_or(false, |ws| !ws.is_empty()))
+                .all(|&w| acc.accessible(w).is_some_and(|ws| !ws.is_empty()))
         } else {
             false
         }
@@ -278,7 +274,7 @@ impl ModalFrame {
     // Serialization
     // ========================================================================
 
-    /// Convert to binary-compatible encoding
+    /// Convert to the current runtime encoding used by PathDB payloads.
     pub fn to_encoded(&self) -> EncodedModalFrame {
         let frame_type = match self.frame_type {
             ModalFrameTypeTag::Kripke => ModalFrameType::Kripke,
@@ -341,7 +337,7 @@ impl EpistemicFrame {
         // Create accessibility relation for each agent
         for agent in &agents {
             let agent_name = interner.lookup(*agent).unwrap_or_default();
-            let rel_name = interner.intern(&format!("knows_{}", agent_name));
+            let rel_name = interner.intern(&format!("knows_{agent_name}"));
             agent_relations.insert(*agent, rel_name);
         }
 

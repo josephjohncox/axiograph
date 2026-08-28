@@ -1,0 +1,15 @@
+error[E0308]: mismatched types
+  --> tests/ui/review_rejects_already_reviewed_module.rs:24:9
+   |
+23 |     let _ = review_axi_v1_module(
+   |             -------------------- arguments to this function are incorrect
+24 |         reviewed,
+   |         ^^^^^^^^ expected `Module<Validated>`, found `Module<Reviewed>`
+   |
+   = note: expected struct `axiograph_pathdb::Module<Validated>`
+              found struct `axiograph_pathdb::Module<Reviewed>`
+note: function defined here
+  --> src/axi_module_typecheck.rs
+   |
+   | pub fn review_axi_v1_module(module: Module<Validated>, stamp: ReviewStamp) -> Module<Reviewed> {
+   |        ^^^^^^^^^^^^^^^^^^^^

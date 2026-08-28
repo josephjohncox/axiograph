@@ -23,7 +23,7 @@ schema Modal:
   object Proposition
 
   -- A proposition holds at a world (extensional truth-at-world relation).
-  relation Holds(world: World, prop: Proposition)
+  relation Holds(world: World @world, prop: Proposition)
 
   -- Accessibility between worlds (what worlds are considered possible).
   --
@@ -47,7 +47,7 @@ schema Modal:
   relation Ideal(from: World, to: World)
 
   -- Precomputed obligations (again: can be certificate-backed in the future).
-  relation Obligatory(world: World, obl: Obligation)
+  relation Obligatory(world: World @world, obl: Obligation)
 
   relation PolicySays(policy: Policy, obl: Obligation, text: Text)
 
@@ -106,7 +106,7 @@ instance ModalitiesDemo of Modal:
 
   Evidence = {PolicyDoc_0, SensorTrace_0}
 
-  -- Epistemic model (toy):
+  -- Compact epistemic model:
   --
   -- In both worlds SafeCutting holds; HighSpeedOk only holds in W1.
   Holds = {
@@ -140,7 +140,7 @@ instance ModalitiesDemo of Modal:
     (ev=SensorTrace_0, text=Text_Evidence_SensorChatter)
   }
 
-  -- Deontic model (toy):
+  -- Compact deontic model:
   --
   -- W1 is ideal relative to W0 (e.g. "idealized shop conditions").
   Ideal = {(from=W0, to=W1), (from=W1, to=W1)}
@@ -166,6 +166,8 @@ instance ModalitiesDemo of Modal:
   }
 
   JustificationEquiv = {
-    (path1=Path_Policy, path2=Path_Sensor, witness=Text_Justification_Equiv)
+    (path1=Path_Policy, path2=Path_Sensor, witness=Text_Justification_Equiv),
+    (path1=Path_Sensor, path2=Path_Policy, witness=Text_Justification_Equiv),
+    (path1=Path_Policy, path2=Path_Policy, witness=Text_Justification_Equiv),
+    (path1=Path_Sensor, path2=Path_Sensor, witness=Text_Justification_Equiv)
   }
-

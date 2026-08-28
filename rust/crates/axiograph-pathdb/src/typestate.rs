@@ -35,8 +35,9 @@ impl UnnormalizedPathExprV2 {
         self.0
     }
 
-    pub fn normalize(self) -> NormalizedPathExprV2 {
-        NormalizedPathExprV2(self.0.normalize())
+    pub fn normalize(self) -> Result<NormalizedPathExprV2> {
+        self.0.checked_endpoints().map_err(|error| anyhow!(error))?;
+        Ok(NormalizedPathExprV2(self.0.normalize()))
     }
 }
 
@@ -53,6 +54,7 @@ impl NormalizedPathExprV2 {
 
     /// Construct a `NormalizedPathExprV2` by checking the normal-form invariant.
     pub fn new_checked(expr: PathExprV2) -> Result<Self> {
+        expr.checked_endpoints().map_err(|error| anyhow!(error))?;
         if expr.normalize() != expr {
             return Err(anyhow!("path expression is not normalized"));
         }

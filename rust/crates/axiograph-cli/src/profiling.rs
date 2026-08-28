@@ -7,7 +7,7 @@ mod enabled {
     use pprof::protos::Message;
     use std::collections::{BTreeMap, HashMap};
     use std::fs;
-    use std::io::{BufWriter, Write};
+    use std::io::Write;
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::mpsc;
@@ -19,9 +19,7 @@ mod enabled {
     pub enum ProfileFormat {
         Off,
         Flamegraph,
-        #[value(alias = "profile")]
         Pprof,
-        #[value(alias = "callstack", alias = "stacks")]
         Folded,
         All,
     }
@@ -30,9 +28,10 @@ mod enabled {
     pub struct ProfileArgs {
         /// Enable CPU profiling (feature `profiling`).
         ///
-        /// Values: off|flamegraph|pprof|folded|all. `--profile` alone defaults to flamegraph.
+        /// Values: off|flamegraph|pprof|folded|all. `--cpu-profile` alone defaults to flamegraph.
         #[arg(
-            long,
+            id = "cpu_profile",
+            long = "cpu-profile",
             value_enum,
             default_value_t = ProfileFormat::Off,
             default_missing_value = "flamegraph",
@@ -43,7 +42,7 @@ mod enabled {
 
         /// Output path for the profile artifact (file or base path).
         ///
-        /// If `--profile=all`, extensions are added per output kind.
+        /// If `--cpu-profile=all`, extensions are added per output kind.
         #[arg(long, global = true)]
         pub profile_out: Option<PathBuf>,
 
@@ -113,8 +112,7 @@ mod enabled {
                 return Ok(None);
             }
 
-            let hz = i32::try_from(args.profile_hz.max(1))
-                .unwrap_or(i32::MAX);
+            let hz = i32::try_from(args.profile_hz.max(1)).unwrap_or(i32::MAX);
             let guard = pprof::ProfilerGuard::new(hz)
                 .map_err(|e| anyhow!("failed to start profiler: {e}"))?;
 
@@ -175,9 +173,13 @@ mod enabled {
         }
 
         fn spawn_worker(&mut self, args: &ProfileArgs) -> Result<()> {
-            let interval = args
-                .profile_interval
-                .and_then(|secs| if secs > 0 { Some(Duration::from_secs(secs)) } else { None });
+            let interval = args.profile_interval.and_then(|secs| {
+                if secs > 0 {
+                    Some(Duration::from_secs(secs))
+                } else {
+                    None
+                }
+            });
             let want_signal = args.profile_signal;
 
             if self.live_format == ProfileFormat::Off || (interval.is_none() && !want_signal) {
@@ -199,41 +201,39 @@ mod enabled {
             let format = self.live_format;
             let counter = Arc::clone(&self.counter);
 
-            let worker = thread::spawn(move || {
-                loop {
-                    let recv_result = match interval {
-                        Some(dur) => rx.recv_timeout(dur),
-                        None => rx.recv().map_err(|_| mpsc::RecvTimeoutError::Disconnected),
-                    };
+            let worker = thread::spawn(move || loop {
+                let recv_result = match interval {
+                    Some(dur) => rx.recv_timeout(dur),
+                    None => rx.recv().map_err(|_| mpsc::RecvTimeoutError::Disconnected),
+                };
 
-                    match recv_result {
-                        Ok(SnapshotRequest::Stop) => break,
-                        Ok(SnapshotRequest::Signal) => {
+                match recv_result {
+                    Ok(SnapshotRequest::Stop) => break,
+                    Ok(SnapshotRequest::Signal) => {
+                        if let Err(err) = write_snapshot(
+                            &guard,
+                            &out_base,
+                            format,
+                            &counter,
+                            SnapshotKind::Signal,
+                        ) {
+                            eprintln!("profile: {err}");
+                        }
+                    }
+                    Err(mpsc::RecvTimeoutError::Timeout) => {
+                        if interval.is_some() {
                             if let Err(err) = write_snapshot(
                                 &guard,
                                 &out_base,
                                 format,
                                 &counter,
-                                SnapshotKind::Signal,
+                                SnapshotKind::Interval,
                             ) {
                                 eprintln!("profile: {err}");
                             }
                         }
-                        Err(mpsc::RecvTimeoutError::Timeout) => {
-                            if interval.is_some() {
-                                if let Err(err) = write_snapshot(
-                                    &guard,
-                                    &out_base,
-                                    format,
-                                    &counter,
-                                    SnapshotKind::Interval,
-                                ) {
-                                    eprintln!("profile: {err}");
-                                }
-                            }
-                        }
-                        Err(mpsc::RecvTimeoutError::Disconnected) => break,
                     }
+                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
                 }
             });
 
@@ -299,10 +299,8 @@ mod enabled {
     }
 
     fn output_path(base: &Path, kind: OutputKind, force_ext: bool) -> PathBuf {
-        if !force_ext {
-            if base.extension().is_some() {
-                return base.to_path_buf();
-            }
+        if !force_ext && base.extension().is_some() {
+            return base.to_path_buf();
         }
         let mut path = base.to_path_buf();
         path.set_extension(kind.ext());
@@ -341,9 +339,12 @@ mod enabled {
             return Ok(Vec::new());
         }
 
-        let need_profile = outputs
-            .iter()
-            .any(|k| matches!(k, OutputKind::Pprof | OutputKind::Folded));
+        let need_profile = outputs.iter().any(|kind| {
+            matches!(
+                kind,
+                OutputKind::Flamegraph | OutputKind::Pprof | OutputKind::Folded
+            )
+        });
         let mut profile: Option<pprof::protos::Profile> = None;
 
         if need_profile {
@@ -361,36 +362,39 @@ mod enabled {
             if let Some(parent) = path.parent() {
                 let _ = fs::create_dir_all(parent);
             }
-            match kind {
+            let bytes = match kind {
                 OutputKind::Flamegraph => {
-                    let mut file = fs::File::create(&path)
-                        .map_err(|e| anyhow!("failed to create {}: {e}", path.display()))?;
-                    report
-                        .flamegraph(&mut file)
-                        .map_err(|e| anyhow!("failed to write flamegraph: {e}"))?;
+                    let profile = profile
+                        .as_ref()
+                        .ok_or_else(|| anyhow!("pprof profile missing (unexpected state)"))?;
+                    let folded = render_folded(profile)?;
+                    let mut bytes = Vec::new();
+                    inferno::flamegraph::from_reader(
+                        &mut inferno::flamegraph::Options::default(),
+                        folded.as_slice(),
+                        &mut bytes,
+                    )
+                    .map_err(|error| anyhow!("failed to render flamegraph: {error}"))?;
+                    bytes
                 }
                 OutputKind::Pprof => {
                     let profile = profile
                         .as_ref()
                         .ok_or_else(|| anyhow!("pprof profile missing (unexpected state)"))?;
-                    let file = fs::File::create(&path)
-                        .map_err(|e| anyhow!("failed to create {}: {e}", path.display()))?;
-                    let mut buf = Vec::new();
+                    let mut bytes = Vec::new();
                     profile
-                        .encode(&mut buf)
+                        .encode(&mut bytes)
                         .map_err(|e| anyhow!("failed to encode pprof: {e}"))?;
-                    let mut writer = BufWriter::new(file);
-                    writer
-                        .write_all(&buf)
-                        .map_err(|e| anyhow!("failed to write pprof: {e}"))?;
+                    bytes
                 }
                 OutputKind::Folded => {
                     let profile = profile
                         .as_ref()
                         .ok_or_else(|| anyhow!("pprof profile missing (unexpected state)"))?;
-                    write_folded(profile, &path)?;
+                    render_folded(profile)?
                 }
-            }
+            };
+            crate::security::write_output_bounded(&path, bytes, "profiling output")?;
             written.push(path);
         }
 
@@ -412,7 +416,7 @@ mod enabled {
         Ok(())
     }
 
-    fn write_folded(profile: &pprof::protos::Profile, path: &Path) -> Result<()> {
+    fn render_folded(profile: &pprof::protos::Profile) -> Result<Vec<u8>> {
         let mut func_names: HashMap<u64, String> = HashMap::new();
         for func in &profile.function {
             let name = profile
@@ -438,7 +442,7 @@ mod enabled {
 
         let mut stacks: BTreeMap<String, i64> = BTreeMap::new();
         for sample in &profile.sample {
-            let value = sample.value.get(0).copied().unwrap_or(1);
+            let value = sample.value.first().copied().unwrap_or(1);
             if value <= 0 {
                 continue;
             }
@@ -457,14 +461,12 @@ mod enabled {
             *stacks.entry(key).or_insert(0) += value;
         }
 
-        let file = fs::File::create(path)
-            .map_err(|e| anyhow!("failed to create {}: {e}", path.display()))?;
-        let mut writer = BufWriter::new(file);
+        let mut bytes = Vec::new();
         for (stack, value) in stacks {
-            writeln!(writer, "{} {}", stack, value)
-                .map_err(|e| anyhow!("failed to write folded stacks: {e}"))?;
+            writeln!(bytes, "{stack} {value}")
+                .map_err(|e| anyhow!("failed to render folded stacks: {e}"))?;
         }
-        Ok(())
+        Ok(bytes)
     }
 }
 
@@ -490,7 +492,7 @@ mod disabled {
     }
 }
 
-#[cfg(feature = "profiling")]
-pub use enabled::*;
 #[cfg(not(feature = "profiling"))]
 pub use disabled::*;
+#[cfg(feature = "profiling")]
+pub use enabled::*;

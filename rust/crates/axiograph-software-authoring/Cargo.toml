@@ -1,0 +1,25 @@
+[package]
+name = "axiograph-software-authoring"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Software authoring, semantic coverage, codegen, and editor/tool integration surfaces for Axiograph"
+publish = false
+
+[[bin]]
+name = "axiograph-software-authoring"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow.workspace = true
+axiograph-pathdb = { path = "../axiograph-pathdb" }
+axiograph-security = { path = "../axiograph-security" }
+axiograph-tooling-overlays = { path = "../axiograph-tooling-overlays" }
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true

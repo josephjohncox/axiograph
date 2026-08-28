@@ -1,0 +1,13 @@
+version competency_question_bundle_v1
+
+question batch_has_certified_material:
+  ask: Can lot certification be seen at the batch level?
+  expect: exists ProcessControl.BatchHasCertifiedMaterial(batch=Batch_42, certificate=Cert_17, ctx=Accepted, time=T1)
+  min_rows: 1
+  weight: 1.0
+
+question batch_cleared_for_charge:
+  ask: Is the batch cleared for reactor charge under accepted evidence?
+  expect: exists ProcessControl.BatchClearedForCharge(batch=Batch_42, reactor=Reactor_A, ctx=Accepted, time=T1)
+  min_rows: 1
+  weight: 1.0

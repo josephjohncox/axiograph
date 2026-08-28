@@ -1,10 +1,9 @@
 import Std
 
 -- =============================================================================
--- Axiograph.AST - Serializable surface AST (Lean port)
+-- Axiograph.AST - Serializable surface AST
 -- =============================================================================
 --
--- Direct port of `idris/Axiograph/AST.idr`.
 -- This is the named, serializable representation used for interchange and
 -- (later) `.axi` parsing in the trusted Lean checker.
 

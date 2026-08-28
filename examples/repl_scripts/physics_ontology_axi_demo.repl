@@ -39,6 +39,3 @@ q select ?deg where ?f = FormDegree(form=Form_Maxwell_F, degree=?deg) limit 10
 
 # Concept graph: what does QuantumFieldTheoryConcept require?
 q select ?p where name("QuantumFieldTheoryConcept") -requires-> ?p limit 20
-
-export_axi build/physics_ontology_axi_export_v1.axi
-save build/physics_ontology_axi.axpd

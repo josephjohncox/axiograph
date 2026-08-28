@@ -1,0 +1,33 @@
+# Axiograph REPL script: canonical regulated production line example
+#
+# Demonstrates:
+# - canonical `.axi` import for a plant/business co-evolution slice
+# - typed queries over order/work order/recipe lineage
+# - implementation-surface linkage through PLC/HMI/SOP relations
+# - certification and delivery/pricing lineage
+# - typed visualization from process-local derived query state
+
+import_axi examples/industrial/RegulatedProductionLine.axi
+
+schema RegulatedLine
+constraints RegulatedLine
+validate_axi
+stats
+
+ctx list
+ctx use Plan
+
+q --elaborate select ?wo ?recipe where ?f = WorkOrderForSalesOrder(work_order=?wo, order=SalesOrder_1001, recipe=?recipe, ctx=Plan, time=T0) limit 10
+q --elaborate select ?step ?plc ?hmi ?sop where StepControlledBy(step=?step, plc=?plc), StepDisplayedOn(step=?step, hmi=?hmi), StepGovernedBy(step=?step, sop=?sop) limit 10
+
+ctx use Released
+q select ?lot where ?f = WorkOrderConsumesLot(work_order=WorkOrder_5001, lot=?lot, ctx=Released, time=T1) limit 10
+q select ?shipment where ?f = ShipmentFulfills(shipment=?shipment, order=SalesOrder_1001, work_order=WorkOrder_5001, ctx=Released, time=T1) limit 10
+
+ctx use Audit
+q select ?decision where ?f = InspectionDecision(inspection=Inspection_9001, decision=?decision, ctx=Audit, time=T1) limit 10
+
+ctx use Plan
+q select ?window ?price where ?f = DeliveryCommitment(order=SalesOrder_1001, window=?window, price=?price, ctx=Plan, time=T0) limit 10
+
+viz build/regulated_production_line_typed.json format json plane both focus_name WorkOrder_5001 hops 2 max_nodes 280 typed_overlay

@@ -88,10 +88,9 @@ pub fn suggest_mentions_symbol_trace_v1(
     let ident_re = regex::Regex::new(r"\b[A-Za-z_][A-Za-z0-9_]*\b")?;
 
     // (from_file, symbol) -> (confidence, evidence pointers, rationale, metadata)
-    let mut proposals: BTreeMap<
-        (String, String),
-        (f64, Vec<EvidencePointer>, String, HashMap<String, String>),
-    > = BTreeMap::new();
+    type ProposalKey = (String, String);
+    type ProposalAggregate = (f64, Vec<EvidencePointer>, String, HashMap<String, String>);
+    let mut proposals: BTreeMap<ProposalKey, ProposalAggregate> = BTreeMap::new();
 
     for chunk in chunks {
         let Some(file) = chunk.metadata.get("path").cloned() else {
@@ -125,8 +124,7 @@ pub fn suggest_mentions_symbol_trace_v1(
             };
 
             let public_rationale = format!(
-                "Chunk mentions `{}`; it is defined as a `{}` in `{}` (language: {}).",
-                ident, symbol_kind, defined_in, language
+                "Chunk mentions `{ident}`; it is defined as a `{symbol_kind}` in `{defined_in}` (language: {language})."
             );
 
             let mut metadata = HashMap::new();

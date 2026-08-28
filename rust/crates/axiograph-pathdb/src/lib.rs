@@ -1,24 +1,23 @@
-//! PathDB: Efficient Binary Path-Indexed Knowledge Graph Storage
+//! PathDB: in-memory path-indexed query engine hydrated from authenticated
+//! SQLite materializations.
 //!
-//! Based on research from:
-//! - Graph database path query optimization (Gubichev et al.)
-//! - Roaring Bitmaps for set operations (Lemire et al.)
-//! - Succinct data structures for compact representation
-//! - Zero-copy deserialization (rkyv)
+//! Accepted `.axi` and compiled kernel IR remain semantic authority. Durable
+//! query state is owned by `axiograph_store::AxiStore`; this crate exposes no
+//! standalone persistence codec.
 //!
 //! Key innovations:
 //! 1. **String Interning**: All strings stored once, referenced by u32 ID
 //! 2. **Path Indexing**: Pre-computed path signatures for fast traversal
 //! 3. **Bitmap Joins**: Set operations on entity IDs using Roaring bitmaps
-//! 4. **Memory Mapping**: Large KGs accessed via mmap without full load
-//! 5. **Columnar Storage**: Relations stored column-wise for cache efficiency
+//! 4. **Columnar Storage**: Relations stored column-wise for cache efficiency
 //!
 //! ## Verification
 //!
 //! This crate is designed for provable correctness:
 //! - **Lean**: trusted checker/spec for certificates (`lean/Axiograph/*`)
 //! - **Verus**: additive runtime invariant hardening (`rust/verus/` + `verified.rs`)
-//! - **Shared binary format**: v2 `.axpd` with modal/probabilistic extensions
+//! - **SQLite materialization**: exact/logical digests and semantic anchors are
+//!   verified by `axiograph_store` before this crate hydrates runtime indexes.
 //!
 //! ## Module Organization
 //!
@@ -28,26 +27,28 @@
 
 #![allow(unused_variables)]
 
-pub mod axi_export;
 pub mod axi_meta;
 pub mod axi_module_constraints;
-pub mod axi_module_export;
 pub mod axi_module_import;
 pub mod axi_module_typecheck;
 pub mod axi_semantics;
 pub mod axi_type;
 pub mod axi_typed;
 pub mod branding;
-pub mod checked_db;
 pub mod certificate;
+pub mod checked_db;
 pub mod fact_index;
-mod index_sidecar;
 pub mod guardrails;
+pub mod kernel_ir;
 pub mod learning;
+pub mod lifecycle;
+pub mod materialization;
 pub mod migration;
 pub mod modal;
 pub mod optimizer;
 pub mod proof_mode;
+pub mod runtime_handle;
+pub mod runtime_theory_checker;
 pub mod text_index;
 pub mod typestate;
 pub mod verified;
@@ -56,39 +57,76 @@ pub mod witness;
 use ahash::AHashMap;
 use anyhow::Result;
 use dashmap::DashMap;
+use parking_lot::Mutex;
 use roaring::RoaringBitmap;
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
-use std::sync::{mpsc, Arc, Mutex, Weak};
+use std::sync::{mpsc, Arc, Weak};
 use std::time::Duration;
 
 // Re-export key types
-pub use branding::{DbBranded, DbToken, DbTokenMismatch};
-pub use certificate::{
-    AxiAnchorV1, AxiConstraintsOkProofV1, AxiWellTypedProofV1, Certificate, CertificateV2,
-    FixedPointProbability, FixedProb, NormalizePathProofV2, PathEquivProofV2, PathExprV2,
-    PathRewriteStepV3, ReachabilityProofV2, ResolutionDecisionV2, ResolutionProofV2,
-    RewriteDerivationProofV2, RewriteDerivationProofV3, VProb, CERTIFICATE_VERSION,
-    CERTIFICATE_VERSION_V2, FIXED_POINT_DENOMINATOR, FIXED_PROB_PRECISION,
+pub use axi_module_typecheck::{
+    review_axi_v1_module, validate_axi_v1_module, Module, ReviewStamp, WellTypedModuleState,
 };
 pub use axi_type::{AxiType, TypingEnv};
-pub use index_sidecar::{
-    read_sidecar_file, write_sidecar_file, IndexSidecarWriter, LruSnapshot, PathDbIndexSidecarV1,
-    PATHDB_INDEX_SIDECAR_VERSION_V1,
+pub use branding::{DbBranded, DbToken, DbTokenMismatch};
+pub use certificate::{
+    answer_digest_v1, certificate_digest_v2, selected_rows_v1, AxiAnchorV1,
+    AxiConstraintsOkProofV1, AxiWellTypedProofV1, CertificateAnchorV2, CertificateV2,
+    CertificateV3, FixedPointProbability, NormalizePathProofV2, PathEquivProofV2, PathExprV2,
+    PathRewriteStepV3, PreparedQueryBindingV1, PreparedQueryClaimKindV1, QueryResultProofV4,
+    ResolutionDecisionV2, ResolutionProofV2, RewriteDerivationProofV3, StableSelectedRowV1,
+    CERTIFICATE_VERSION_V2, CERTIFICATE_VERSION_V3, FIXED_POINT_DENOMINATOR,
+    PREPARED_QUERY_BINDING_VERSION_V1,
 };
-pub use checked_db::{CheckedDb, CheckedDbMut, CheckedDbReport, TypedFactBuilder};
+pub use checked_db::{
+    stable_fact_id_v1_for_declared_fields, CheckedDb, CheckedDbMut, CheckedDbReport,
+    TypedFactBuilder,
+};
 pub use guardrails::{GuardrailEngine, GuardrailRule, GuardrailViolation, Severity};
+pub use kernel_ir::{
+    build_runtime_semantic_index, derive_runtime_instance_index, derive_runtime_module_index,
+    derive_runtime_package_index, derive_runtime_schema_index, validate_runtime_package_adapter,
+    CanonicalKernelCitationIr, InstanceIr, ObjectMembershipIr, RelationFactIr, RoleValueIr,
+    RuntimeIrRef, RuntimeModuleIndex, RuntimeSchemaIndex, RuntimeSemanticIndex,
+    RuntimeTheoryFragmentSummaryV1, RuntimeTheoryObligationFragmentStatusV1,
+    RuntimeTheoryObligationStatusV1, RuntimeTheoryObligationTrustClassV1, TheoryObligationKindIr,
+    TheoryObligationRefIr, TheorySubjectKindIr, TheorySubjectRefIr, RUNTIME_SEMANTIC_INDEX_VERSION,
+    RUNTIME_THEORY_FRAGMENT_SUMMARY_VERSION_V1,
+};
+pub use lifecycle::{
+    Accepted, CertificateEmitted, Certified, LeanVerified, LifecycleState, Parsed, Reviewed,
+    Validated,
+};
+pub use materialization::{load_verified_pathdb, publish_kernel_pathdb, MaterializedPathDb};
 pub use migration::{
-    ArrowDeclV1, ArrowMapV1, ArrowMappingV1, DeltaFMigrationProofV1, InstanceV1, Name,
-    ObjectElementsV1, ObjectMappingV1, SchemaMorphismV1, SchemaV1, SigmaFMigrationProofV1,
-    SubtypeDeclV1,
+    ArrowDeclV1, ArrowMapV1, ArrowMappingV1, DeltaFMigrationProofV1, InstanceV1,
+    MigrationFunctorKindV1, Name, ObjectElementsV1, ObjectMappingV1, SchemaMorphismV1, SchemaV1,
+    SigmaFMigrationProofV1, SubtypeDeclV1,
 };
 pub use modal::{ModalFrame, ModalPathDB, ModalWorld, Modality};
 pub use optimizer::{MigrationOperatorV1, OptimizerRuleV1, ProofProducingOptimizer};
 pub use proof_mode::{NoProof, ProofJournal, ProofMode, Proved, WithProof};
+pub use runtime_handle::{
+    AcceptedAxiAnchor, AcceptedSnapshotId, AnswerIdV2, AxiDigest, CertificateIdV2, CommitIdV2,
+    ConstraintId, ConstraintIdV2, ContextId, EquationId, EquationIdV2, FactIdV2, InstanceId,
+    InstanceIdV2, KernelRefV2, MaterializationIdV2, ObjectBlobIdV2, ObjectTypeId, ObjectTypeIdV2,
+    ProposalAdapterRunId, ProposalDigest, QueryIdV2, ReconciliationIdV2, RelationId, RelationIdV2,
+    RevisionDigestV2, RewriteRuleId, RewriteRuleIdV2, RoleId, RoleIdV2, SchemaId, SchemaIdV2,
+    SnapshotIdV2, StableFactId, TheoryId, TheoryIdV2,
+};
+pub use runtime_theory_checker::{
+    check_runtime_theory_v1, check_runtime_theory_with_options_v1, default_evidence_policy_v1,
+    default_world_assumption_v1, EvidencePolicyV1, EvidenceWeightSemanticsV1,
+    RuntimeTheoryAdmissibilityScanV1, RuntimeTheoryAxisRoleV1, RuntimeTheoryCheckReportV1,
+    RuntimeTheoryCheckSeverityV1, RuntimeTheoryCheckStatusV1, RuntimeTheoryClosureStepKindV1,
+    RuntimeTheoryClosureStepV1, RuntimeTheoryClosureTierV1, RuntimeTheoryFragmentV1,
+    RuntimeTheoryJudgmentV1, RuntimeTheoryNonClaimV1, RuntimeTheoryTypedEndpointV1,
+    WorldAssumptionV1, RUNTIME_THEORY_CHECK_REPORT_VERSION_V1,
+};
 pub use typestate::{NormalizedPathExprV2, UnnormalizedPathExprV2};
-pub use verified::{BinaryHeader, ReachabilityProof, VerifiedPathSig, VerifiedProb};
+pub use verified::{ReachabilityProof, VerifiedPathSig, VerifiedProb};
 
 use fact_index::FactIndexCache;
 use text_index::TextIndexCache;
@@ -128,6 +166,8 @@ pub struct StringInterner {
     id_to_str: DashMap<StrId, String>,
     /// Next available ID
     next_id: AtomicU32,
+    /// Serializes allocation so `str_to_id`, `id_to_str`, and `next_id` stay bijective.
+    allocation_lock: Mutex<()>,
 }
 
 impl StringInterner {
@@ -136,11 +176,17 @@ impl StringInterner {
             str_to_id: DashMap::new(),
             id_to_str: DashMap::new(),
             next_id: AtomicU32::new(0),
+            allocation_lock: Mutex::new(()),
         }
     }
 
     /// Intern a string, returning its ID
     pub fn intern(&self, s: &str) -> StrId {
+        if let Some(id) = self.str_to_id.get(s) {
+            return *id;
+        }
+
+        let _guard = self.allocation_lock.lock();
         if let Some(id) = self.str_to_id.get(s) {
             return *id;
         }
@@ -156,27 +202,19 @@ impl StringInterner {
         self.str_to_id.get(s).map(|id| *id)
     }
 
-    /// Look up string by ID
+    /// Look up string by ID.
     pub fn lookup(&self, id: StrId) -> Option<String> {
         self.id_to_str.get(&id).map(|s| s.clone())
     }
 
-    /// Serialize to bytes
-    pub fn to_bytes(&self) -> Vec<u8> {
-        let strings: Vec<String> = (0..self.next_id.load(Ordering::SeqCst))
-            .filter_map(|i| self.id_to_str.get(&StrId(i)).map(|s| s.clone()))
-            .collect();
-        bincode::serialize(&strings).unwrap_or_default()
-    }
-
-    /// Deserialize from bytes
-    pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
-        let strings: Vec<String> = bincode::deserialize(bytes)?;
-        let interner = Self::new();
-        for s in strings {
-            interner.intern(&s);
-        }
-        Ok(interner)
+    /// Use an interned string without cloning it.
+    ///
+    /// The callback runs while the interner shard is read-locked and must not
+    /// call an operation that mutates this interner.
+    pub fn with_lookup<R>(&self, id: StrId, use_value: impl FnOnce(&str) -> R) -> Option<R> {
+        self.id_to_str
+            .get(&id)
+            .map(|value| use_value(value.as_str()))
     }
 }
 
@@ -213,6 +251,8 @@ pub struct EntityStore {
     types: Vec<StrId>,
     /// Attribute columns: attr_name -> (entity_id -> value)
     attrs: HashMap<StrId, HashMap<u32, StrId>>,
+    /// Entity-local attribute rows used by degree-bounded traversal.
+    entity_attrs: Vec<Vec<(StrId, StrId)>>,
     /// Type index: type_id -> bitmap of entity IDs
     type_index: HashMap<StrId, RoaringBitmap>,
     /// Next entity ID
@@ -245,18 +285,26 @@ impl EntityStore {
         self.types[id as usize] = type_id;
 
         // Update type index
-        self.type_index
-            .entry(type_id)
-            .or_insert_with(RoaringBitmap::new)
-            .insert(id);
+        self.type_index.entry(type_id).or_default().insert(id);
 
-        // Store attributes
+        // Store attributes in both columnar and entity-local indexes. Duplicate
+        // names retain the last value, matching the columnar representation.
+        let mut entity_attrs = Vec::new();
         for (attr_name, attr_value) in attrs {
             self.attrs
                 .entry(attr_name)
-                .or_insert_with(HashMap::new)
+                .or_default()
                 .insert(id, attr_value);
+            if let Some((_, stored_value)) = entity_attrs
+                .iter_mut()
+                .find(|(stored_name, _)| *stored_name == attr_name)
+            {
+                *stored_value = attr_value;
+            } else {
+                entity_attrs.push((attr_name, attr_value));
+            }
         }
+        self.entity_attrs.push(entity_attrs);
 
         id
     }
@@ -274,6 +322,30 @@ impl EntityStore {
     /// Get attribute value
     pub fn get_attr(&self, entity_id: u32, attr_name: StrId) -> Option<StrId> {
         self.attrs.get(&attr_name)?.get(&entity_id).copied()
+    }
+
+    /// Get one entity's attributes without scanning unrelated attribute columns.
+    pub fn attrs_for_entity(&self, entity_id: u32) -> Option<&[(StrId, StrId)]> {
+        self.entity_attrs.get(entity_id as usize).map(Vec::as_slice)
+    }
+
+    fn upsert_attr(&mut self, entity_id: u32, attr_name: StrId, attr_value: StrId) -> bool {
+        let Some(entity_attrs) = self.entity_attrs.get_mut(entity_id as usize) else {
+            return false;
+        };
+        self.attrs
+            .entry(attr_name)
+            .or_default()
+            .insert(entity_id, attr_value);
+        if let Some((_, stored_value)) = entity_attrs
+            .iter_mut()
+            .find(|(stored_name, _)| *stored_name == attr_name)
+        {
+            *stored_value = attr_value;
+        } else {
+            entity_attrs.push((attr_name, attr_value));
+        }
+        true
     }
 
     /// Find all entities where `attr_name == value`.
@@ -314,6 +386,10 @@ pub struct RelationStore {
     forward_index: HashMap<(u32, StrId), Vec<u32>>,
     /// Backward index: (target, rel_type) -> relation IDs
     backward_index: HashMap<(u32, StrId), Vec<u32>>,
+    /// Source-only adjacency index used by bounded extension-layer traversal.
+    outgoing_index: HashMap<u32, Vec<u32>>,
+    /// Target-only adjacency index used by bounded extension-layer traversal.
+    incoming_index: HashMap<u32, Vec<u32>>,
     /// Type index: rel_type -> relation IDs
     type_index: HashMap<StrId, RoaringBitmap>,
 }
@@ -347,18 +423,17 @@ impl RelationStore {
         // Update indexes
         self.forward_index
             .entry((rel.source, rel.rel_type))
-            .or_insert_with(Vec::new)
+            .or_default()
             .push(id);
 
         self.backward_index
             .entry((rel.target, rel.rel_type))
-            .or_insert_with(Vec::new)
+            .or_default()
             .push(id);
 
-        self.type_index
-            .entry(rel.rel_type)
-            .or_insert_with(RoaringBitmap::new)
-            .insert(id);
+        self.outgoing_index.entry(rel.source).or_default().push(id);
+        self.incoming_index.entry(rel.target).or_default().push(id);
+        self.type_index.entry(rel.rel_type).or_default().insert(id);
 
         self.relations.push(rel);
         id
@@ -376,35 +451,44 @@ impl RelationStore {
             .unwrap_or_default()
     }
 
-    /// Get outgoing relations from source (any type).
-    ///
-    /// This is primarily intended for lightweight tooling (FFI, debugging).
-    /// Performance-sensitive callers should use `outgoing(source, rel_type)` or
-    /// a query plan that fixes `rel_type`.
-    pub fn outgoing_any(&self, source: u32) -> Vec<&Relation> {
-        let mut out = Vec::new();
-        for ((src, _), ids) in &self.forward_index {
-            if *src != source {
-                continue;
-            }
-            out.extend(ids.iter().filter_map(|&id| self.relations.get(id as usize)));
-        }
-        out
+    /// Iterate outgoing relations from `source` without scanning unrelated
+    /// relation types or sources. Relations retain insertion order.
+    pub fn outgoing_any_iter(&self, source: u32) -> impl Iterator<Item = &Relation> {
+        self.outgoing_index
+            .get(&source)
+            .into_iter()
+            .flatten()
+            .filter_map(|&id| self.relations.get(id as usize))
     }
 
-    /// Get incoming relations to target (any type).
-    ///
-    /// This is primarily intended for lightweight tooling (REPL, debugging).
-    /// Performance-sensitive callers should fix `rel_type` and use `incoming(...)`.
+    /// Number of outgoing relations from `source` across all relation types.
+    pub fn outgoing_any_len(&self, source: u32) -> usize {
+        self.outgoing_index.get(&source).map_or(0, Vec::len)
+    }
+
+    /// Collect outgoing relations from `source` across all relation types.
+    pub fn outgoing_any(&self, source: u32) -> Vec<&Relation> {
+        self.outgoing_any_iter(source).collect()
+    }
+
+    /// Iterate incoming relations to `target` without scanning unrelated
+    /// relation types or targets. Relations retain insertion order.
+    pub fn incoming_any_iter(&self, target: u32) -> impl Iterator<Item = &Relation> {
+        self.incoming_index
+            .get(&target)
+            .into_iter()
+            .flatten()
+            .filter_map(|&id| self.relations.get(id as usize))
+    }
+
+    /// Number of incoming relations to `target` across all relation types.
+    pub fn incoming_any_len(&self, target: u32) -> usize {
+        self.incoming_index.get(&target).map_or(0, Vec::len)
+    }
+
+    /// Collect incoming relations to `target` across all relation types.
     pub fn incoming_any(&self, target: u32) -> Vec<&Relation> {
-        let mut out = Vec::new();
-        for ((dst, _), ids) in &self.backward_index {
-            if *dst != target {
-                continue;
-            }
-            out.extend(ids.iter().filter_map(|&id| self.relations.get(id as usize)));
-        }
-        out
+        self.incoming_any_iter(target).collect()
     }
 
     /// Get incoming relations to target with given type
@@ -628,11 +712,11 @@ enum IndexUpdate {
         start: u32,
         targets: RoaringBitmap,
     },
-    Touch { path_sig: PathSig },
+    Touch {
+        path_sig: PathSig,
+    },
     SetCapacity(usize),
-    Load { capacity: usize, order: Vec<PathSig> },
     Clear,
-    Snapshot(mpsc::Sender<LruWorkerSnapshot>),
     Flush(mpsc::Sender<()>),
 }
 
@@ -640,12 +724,6 @@ enum IndexUpdate {
 struct LruWorkerState {
     capacity: usize,
     order: VecDeque<PathSig>,
-}
-
-#[derive(Debug, Clone)]
-struct LruWorkerSnapshot {
-    capacity: usize,
-    order: Vec<PathSig>,
 }
 
 impl LruWorkerState {
@@ -656,7 +734,11 @@ impl LruWorkerState {
         }
     }
 
-    fn set_capacity(&mut self, capacity: usize, entries: &DashMap<PathSig, AHashMap<u32, RoaringBitmap>>) {
+    fn set_capacity(
+        &mut self,
+        capacity: usize,
+        entries: &DashMap<PathSig, AHashMap<u32, RoaringBitmap>>,
+    ) {
         self.capacity = capacity;
         if self.capacity == 0 {
             entries.clear();
@@ -689,7 +771,7 @@ impl LruWorkerState {
             return;
         }
         {
-            let mut entry = entries.entry(sig.clone()).or_insert_with(AHashMap::new);
+            let mut entry = entries.entry(sig.clone()).or_default();
             entry.insert(start, targets);
         }
         self.touch(&sig);
@@ -702,23 +784,6 @@ impl LruWorkerState {
                 break;
             };
             entries.remove(&oldest);
-        }
-    }
-
-    fn load_order(&mut self, order: Vec<PathSig>, entries: &DashMap<PathSig, AHashMap<u32, RoaringBitmap>>) {
-        self.order.clear();
-        for sig in order {
-            if entries.contains_key(&sig) {
-                self.order.push_back(sig);
-            }
-        }
-        self.evict_if_needed(entries);
-    }
-
-    fn snapshot(&self) -> LruWorkerSnapshot {
-        LruWorkerSnapshot {
-            capacity: self.capacity,
-            order: self.order.iter().cloned().collect(),
         }
     }
 }
@@ -739,9 +804,6 @@ pub struct PathIndex {
     /// Optional async update channel for LRU inserts.
     #[serde(skip, default)]
     async_tx: Mutex<Option<mpsc::SyncSender<IndexUpdate>>>,
-    /// Optional sidecar writer (to persist LRU state).
-    #[serde(skip, default)]
-    sidecar: Mutex<Option<Arc<IndexSidecarWriter>>>,
 }
 
 impl Default for PathIndex {
@@ -758,7 +820,6 @@ impl PathIndex {
             lru_entries: Arc::new(DashMap::new()),
             lru_capacity: AtomicUsize::new(0),
             async_tx: Mutex::new(None),
-            sidecar: Mutex::new(None),
         }
     }
 
@@ -768,17 +829,6 @@ impl PathIndex {
 
     pub fn set_max_depth(&mut self, max_depth: usize) {
         self.max_depth = max_depth;
-    }
-
-    pub fn attach_sidecar_writer(&self, writer: Arc<IndexSidecarWriter>) {
-        let mut guard = self.sidecar.lock().expect("path index sidecar poisoned");
-        *guard = Some(writer);
-    }
-
-    fn mark_sidecar_dirty(&self) {
-        if let Some(writer) = self.sidecar.lock().expect("path index sidecar poisoned").as_ref() {
-            writer.mark_dirty();
-        }
     }
 
     pub fn lru_capacity(&self) -> usize {
@@ -795,21 +845,15 @@ impl PathIndex {
 
     pub fn set_lru_capacity(&self, capacity: usize) {
         self.lru_capacity.store(capacity, Ordering::Relaxed);
-        if let Some(tx) = self
-            .async_tx
-            .lock()
-            .expect("path index async poisoned")
-            .as_ref()
-        {
+        if let Some(tx) = self.async_tx.lock().as_ref() {
             let _ = tx.try_send(IndexUpdate::SetCapacity(capacity));
         } else if capacity == 0 {
             self.lru_entries.clear();
         }
-        self.mark_sidecar_dirty();
     }
 
     pub fn enable_async_updates(&self, queue_size: usize) {
-        let mut tx_guard = self.async_tx.lock().expect("path index async poisoned");
+        let mut tx_guard = self.async_tx.lock();
         if tx_guard.is_some() {
             return;
         }
@@ -822,7 +866,7 @@ impl PathIndex {
         let (tx, rx) = mpsc::sync_channel(queue_size);
         let lru_entries = Arc::clone(&self.lru_entries);
         let initial_capacity = self.lru_capacity.load(Ordering::Relaxed);
-        std::thread::Builder::new()
+        let spawn = std::thread::Builder::new()
             .name("axiograph_path_index_lru".to_string())
             .spawn(move || {
                 let mut state = LruWorkerState::new(initial_capacity);
@@ -841,63 +885,43 @@ impl PathIndex {
                         IndexUpdate::SetCapacity(capacity) => {
                             state.set_capacity(capacity, &lru_entries);
                         }
-                        IndexUpdate::Load { capacity, order } => {
-                            state.set_capacity(capacity, &lru_entries);
-                            state.load_order(order, &lru_entries);
-                        }
                         IndexUpdate::Clear => {
                             state.clear(&lru_entries);
-                        }
-                        IndexUpdate::Snapshot(resp) => {
-                            let _ = resp.send(state.snapshot());
                         }
                         IndexUpdate::Flush(ack) => {
                             let _ = ack.send(());
                         }
                     }
                 }
-            })
-            .expect("failed to spawn path index lru worker");
-        *tx_guard = Some(tx);
+            });
+        if spawn.is_ok() {
+            *tx_guard = Some(tx);
+        }
     }
 
     pub fn async_enabled(&self) -> bool {
-        self.async_tx
-            .lock()
-            .expect("path index async poisoned")
-            .is_some()
+        self.async_tx.lock().is_some()
     }
 
     pub fn flush_async(&self) -> bool {
-        let tx = self
-            .async_tx
-            .lock()
-            .expect("path index async poisoned")
-            .clone();
-        let Some(tx) = tx else {
+        let Some(tx) = self.async_tx.lock().clone() else {
             return false;
         };
         let (ack_tx, ack_rx) = mpsc::channel();
-        if tx.try_send(IndexUpdate::Flush(ack_tx.clone())).is_err() {
-            if tx.send(IndexUpdate::Flush(ack_tx)).is_err() {
-                return false;
-            }
+        if tx.try_send(IndexUpdate::Flush(ack_tx.clone())).is_err()
+            && tx.send(IndexUpdate::Flush(ack_tx)).is_err()
+        {
+            return false;
         }
         ack_rx.recv_timeout(PATH_INDEX_ASYNC_FLUSH_TIMEOUT).is_ok()
     }
 
     fn clear_lru(&self) {
-        if let Some(tx) = self
-            .async_tx
-            .lock()
-            .expect("path index async poisoned")
-            .as_ref()
-        {
+        if let Some(tx) = self.async_tx.lock().as_ref() {
             let _ = tx.try_send(IndexUpdate::Clear);
         } else {
             self.lru_entries.clear();
         }
-        self.mark_sidecar_dirty();
     }
 
     /// Query the LRU cache for deeper-than-indexed paths (diagnostic/testing).
@@ -907,12 +931,7 @@ impl PathIndex {
         }
         let entry = self.lru_entries.get(path)?;
         let targets = entry.get(&start)?.clone();
-        if let Some(tx) = self
-            .async_tx
-            .lock()
-            .expect("path index async poisoned")
-            .as_ref()
-        {
+        if let Some(tx) = self.async_tx.lock().as_ref() {
             let _ = tx.try_send(IndexUpdate::Touch {
                 path_sig: path.clone(),
             });
@@ -920,73 +939,11 @@ impl PathIndex {
         Some(targets)
     }
 
-    pub fn snapshot_lru(&self) -> Option<LruSnapshot> {
-        if self.lru_capacity() == 0 {
-            return None;
-        }
-        let mut capacity = self.lru_capacity();
-        let order = if let Some(tx) = self
-            .async_tx
-            .lock()
-            .expect("path index async poisoned")
-            .as_ref()
-        {
-            let (resp_tx, resp_rx) = mpsc::channel();
-            let _ = tx.try_send(IndexUpdate::Snapshot(resp_tx));
-            resp_rx
-                .recv_timeout(PATH_INDEX_ASYNC_FLUSH_TIMEOUT)
-                .ok()
-                .map(|s| {
-                    capacity = s.capacity;
-                    s.order
-                })
-                .unwrap_or_default()
-        } else {
-            Vec::new()
-        };
-
-        let mut entries: HashMap<PathSig, AHashMap<u32, RoaringBitmap>> = HashMap::new();
-        for item in self.lru_entries.iter() {
-            entries.insert(item.key().clone(), item.value().clone());
-        }
-
-        Some(LruSnapshot {
-            capacity,
-            order,
-            entries,
-        })
-    }
-
-    pub fn restore_lru(&self, snapshot: LruSnapshot) {
-        self.lru_capacity
-            .store(snapshot.capacity, Ordering::Relaxed);
-        self.lru_entries.clear();
-        for (sig, map) in snapshot.entries {
-            self.lru_entries.insert(sig, map);
-        }
-        if let Some(tx) = self
-            .async_tx
-            .lock()
-            .expect("path index async poisoned")
-            .as_ref()
-        {
-            let _ = tx.try_send(IndexUpdate::Load {
-                capacity: snapshot.capacity,
-                order: snapshot.order,
-            });
-        }
-    }
-
     fn cache_result(&self, path_sig: PathSig, start: u32, targets: RoaringBitmap) {
         if self.lru_capacity() == 0 {
             return;
         }
-        let tx = self
-            .async_tx
-            .lock()
-            .expect("path index async poisoned")
-            .clone();
-        let Some(tx) = tx else {
+        let Some(tx) = self.async_tx.lock().clone() else {
             return;
         };
         let _ = tx.try_send(IndexUpdate::Insert {
@@ -994,7 +951,6 @@ impl PathIndex {
             start,
             targets,
         });
-        self.mark_sidecar_dirty();
     }
 
     /// Build path index from relation store
@@ -1015,9 +971,9 @@ impl PathIndex {
             let sig = PathSig::new(vec![rel.rel_type]);
             self.index
                 .entry(sig)
-                .or_insert_with(AHashMap::new)
+                .or_default()
                 .entry(rel.source)
-                .or_insert_with(RoaringBitmap::new)
+                .or_default()
                 .insert(rel.target);
         }
 
@@ -1125,9 +1081,138 @@ pub struct PathDB {
     /// Cached inverted indexes for attribute full-text search (rebuilt on demand).
     #[serde(skip)]
     text_index: TextIndexCache,
-    /// Optional writer for durable index sidecars.
-    #[serde(skip)]
-    index_sidecar: Mutex<Option<Arc<IndexSidecarWriter>>>,
+}
+
+pub const CANONICAL_FACT_LOG_VERSION_V1: u32 = 1;
+pub const LIVE_PATHDB_DIGEST_VERSION_V1: u32 = 1;
+
+/// Deterministic, `.axi`-anchored fact log extracted from PathDB fact nodes.
+///
+/// This deterministic view records canonical fact ids rather than PathDB row
+/// positions. It is an input to authenticated materialization, not a standalone
+/// persistence format.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CanonicalFactLogV1 {
+    pub version: u32,
+    pub digest: AxiDigest,
+    pub certified_only: bool,
+    pub entries: Vec<CanonicalFactLogEntryV1>,
+    pub diagnostics: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct CanonicalFactLogEntryV1 {
+    pub axi_fact_id: StableFactId,
+    pub module: String,
+    pub schema: String,
+    pub instance: String,
+    pub relation: String,
+    pub fields: Vec<CanonicalFactFieldV1>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct CanonicalFactFieldV1 {
+    pub field: String,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct CanonicalFactLogDigestPayloadV1 {
+    version: u32,
+    entries: Vec<CanonicalFactLogEntryV1>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct LivePathDbDigestPayloadV1 {
+    version: u32,
+    strings: Vec<LiveStringRowV1>,
+    entities: Vec<LiveEntityRowV1>,
+    relations: Vec<LiveRelationRowV1>,
+    equivalences: Vec<LiveEquivalenceRowV1>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct LiveStringRowV1 {
+    id: u32,
+    value: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct LiveEntityRowV1 {
+    id: u32,
+    type_name: String,
+    attrs: Vec<LiveAttrRowV1>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+struct LiveAttrRowV1 {
+    key: String,
+    value: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct LiveRelationRowV1 {
+    id: u32,
+    rel_type: String,
+    source: u32,
+    target: u32,
+    confidence_bits: u32,
+    attrs: Vec<LiveAttrRowV1>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+struct LiveEquivalenceRowV1 {
+    source: u32,
+    target: u32,
+    equiv_type: String,
+}
+
+impl CanonicalFactLogV1 {
+    pub fn from_db(db: &PathDB) -> Result<Self> {
+        let (mut entries, mut diagnostics) = canonical_fact_log_entries_v1(db)?;
+        entries.sort();
+        diagnostics.sort();
+
+        let digest = canonical_fact_log_digest_v1(&entries)?;
+        let certified_only = diagnostics.is_empty()
+            && entries
+                .iter()
+                .all(|entry| entry.axi_fact_id.is_fact_id_v2());
+
+        Ok(Self {
+            version: CANONICAL_FACT_LOG_VERSION_V1,
+            digest,
+            certified_only,
+            entries,
+            diagnostics,
+        })
+    }
+
+    pub fn certified_from_db(db: &PathDB) -> Result<Self> {
+        let report = crate::checked_db::CheckedDb::check(db)?;
+        if !report.ok {
+            return Err(anyhow::anyhow!(
+                "cannot build certified CanonicalFactLogV1: PathDB failed Rust-side checks (axi_fact_errors={}, rewrite_rule_errors={}, context_errors={}, modal_errors={})",
+                report.axi_fact_typecheck.errors.len(),
+                report.rewrite_rule_typecheck.errors.len(),
+                report.context_invariants.errors.len(),
+                report.modal_invariants.errors.len()
+            ));
+        }
+
+        let log = Self::from_db(db)?;
+        if !log.certified_only {
+            let first = log
+                .diagnostics
+                .first()
+                .map(|s| s.as_str())
+                .unwrap_or("canonical fact log has uncertified entries");
+            return Err(anyhow::anyhow!(
+                "cannot build certified CanonicalFactLogV1: {first}"
+            ));
+        }
+        Ok(log)
+    }
 }
 
 impl PathDB {
@@ -1142,7 +1227,6 @@ impl PathDB {
             confidence_index: Vec::new(),
             fact_index: FactIndexCache::default(),
             text_index: TextIndexCache::default(),
-            index_sidecar: Mutex::new(None),
         }
     }
 
@@ -1181,11 +1265,9 @@ impl PathDB {
 
         let key_id = self.interner.intern(key);
         let value_id = self.interner.intern(value);
-        self.entities
-            .attrs
-            .entry(key_id)
-            .or_insert_with(HashMap::new)
-            .insert(entity_id, value_id);
+        if !self.entities.upsert_attr(entity_id, key_id, value_id) {
+            return Err(anyhow::anyhow!("unknown entity id {entity_id}"));
+        }
         Ok(())
     }
 
@@ -1206,7 +1288,7 @@ impl PathDB {
         self.entities
             .type_index
             .entry(type_id)
-            .or_insert_with(RoaringBitmap::new)
+            .or_default()
             .insert(entity_id);
         Ok(())
     }
@@ -1249,11 +1331,11 @@ impl PathDB {
         let equiv_type_id = self.interner.intern(equiv_type);
         self.equivalences
             .entry(e1)
-            .or_insert_with(Vec::new)
+            .or_default()
             .push((e2, equiv_type_id));
         self.equivalences
             .entry(e2)
-            .or_insert_with(Vec::new)
+            .or_default()
             .push((e1, equiv_type_id));
     }
 
@@ -1276,39 +1358,14 @@ impl PathDB {
         self.text_index.attach_async_source(source);
     }
 
-    /// Attach a durable index sidecar writer.
-    pub fn attach_index_sidecar_writer(&self, writer: Arc<IndexSidecarWriter>) {
-        self.fact_index.attach_sidecar_writer(writer.clone());
-        self.text_index.attach_sidecar_writer(writer.clone());
-        self.path_index.attach_sidecar_writer(writer.clone());
-        let mut guard = self.index_sidecar.lock().expect("index sidecar poisoned");
-        *guard = Some(writer);
+    /// Extract a deterministic canonical fact log from `.axi` fact nodes.
+    pub fn canonical_fact_log_v1(&self) -> Result<CanonicalFactLogV1> {
+        CanonicalFactLogV1::from_db(self)
     }
 
-    /// Snapshot durable indexes into a sidecar payload.
-    pub fn snapshot_index_sidecar(&self, snapshot_id: Option<String>) -> PathDbIndexSidecarV1 {
-        let fact_gen = self.fact_index.generation();
-        let text_gen = self.text_index.generation();
-        let mut sidecar = PathDbIndexSidecarV1::new(snapshot_id);
-        sidecar.fact_index = self.fact_index.snapshot(fact_gen);
-        sidecar.text_indexes = self.text_index.snapshot(text_gen);
-        sidecar.path_lru = self.path_index.snapshot_lru();
-        sidecar
-    }
-
-    /// Load durable indexes from a sidecar payload.
-    pub fn load_index_sidecar(&mut self, sidecar: PathDbIndexSidecarV1) {
-        let fact_gen = self.fact_index.generation();
-        let text_gen = self.text_index.generation();
-        if let Some(idx) = sidecar.fact_index {
-            self.fact_index.load_index(idx, fact_gen);
-        }
-        if !sidecar.text_indexes.is_empty() {
-            self.text_index.load_indexes(text_gen, sidecar.text_indexes);
-        }
-        if let Some(lru) = sidecar.path_lru {
-            self.path_index.restore_lru(lru);
-        }
+    /// Extract a canonical fact log only when Rust-side checks and stable ids pass.
+    pub fn certified_canonical_fact_log_v1(&self) -> Result<CanonicalFactLogV1> {
+        CanonicalFactLogV1::certified_from_db(self)
     }
 
     /// Configure the LRU cache for deeper-than-indexed paths.
@@ -1349,6 +1406,70 @@ impl PathDB {
     pub fn find_by_type(&self, type_name: &str) -> Option<&RoaringBitmap> {
         let type_id = self.interner.id_of(type_name)?;
         self.entities.by_type(type_id)
+    }
+
+    /// Find entities by an already interned type id.
+    pub fn find_by_type_id(&self, type_id: StrId) -> Option<&RoaringBitmap> {
+        self.entities.by_type(type_id)
+    }
+
+    /// Deterministic entity type ids in interner order.
+    pub fn entity_type_ids(&self) -> Vec<StrId> {
+        let mut ids = self.entities.type_index.keys().copied().collect::<Vec<_>>();
+        ids.sort_unstable_by_key(|id| id.raw());
+        ids
+    }
+
+    /// Deterministic relation type ids in interner order.
+    pub fn relation_type_ids(&self) -> Vec<StrId> {
+        let mut ids = self
+            .relations
+            .type_index
+            .keys()
+            .copied()
+            .collect::<Vec<_>>();
+        ids.sort_unstable_by_key(|id| id.raw());
+        ids
+    }
+
+    /// Return a bounded deterministic set of `(attribute, value)` ids for an
+    /// entity. The lowest interned attribute ids are retained when the entity
+    /// has more than `limit` attributes.
+    pub fn entity_attr_ids_bounded(
+        &self,
+        entity_id: u32,
+        limit: usize,
+    ) -> (Vec<(StrId, StrId)>, bool) {
+        let Some(entity_attrs) = self.entities.attrs_for_entity(entity_id) else {
+            return (Vec::new(), false);
+        };
+        let truncated = entity_attrs.len() > limit;
+        let mut attrs = entity_attrs.iter().copied().take(limit).collect::<Vec<_>>();
+        attrs.sort_unstable_by_key(|(attribute, value)| (attribute.raw(), value.raw()));
+        (attrs, truncated)
+    }
+
+    /// Deterministic entity-type names present in this derived runtime index.
+    /// Includes virtual type memberships added by runtime adapters.
+    pub fn entity_type_names(&self) -> Vec<String> {
+        self.entities
+            .type_index
+            .keys()
+            .filter_map(|type_id| self.interner.lookup(*type_id))
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect()
+    }
+
+    /// Deterministic relation-type names present in this derived runtime index.
+    pub fn relation_type_names(&self) -> Vec<String> {
+        self.relations
+            .type_index
+            .keys()
+            .filter_map(|type_id| self.interner.lookup(*type_id))
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect()
     }
 
     /// Find entities where `attr(key)` contains `needle` (case-insensitive).
@@ -1409,6 +1530,25 @@ impl PathDB {
         self.text_index.query_any_tokens(self, key_id, &tokens)
     }
 
+    /// Bounded OR-token attribute matching for extension-layer grounding.
+    ///
+    /// Returns `(ordered_entity_ids, visited_entity_rows, truncated)`.
+    /// The traversal always scans deterministic entity ids up to `max_visits`;
+    /// process-local FTS cache state never changes bounded results.
+    pub fn entities_with_attr_fts_any_bounded(
+        &self,
+        key: &str,
+        query: &str,
+        max_visits: usize,
+    ) -> (Vec<u32>, usize, bool) {
+        let Some(key_id) = self.interner.id_of(key) else {
+            return (Vec::new(), 0, false);
+        };
+        let tokens = text_index::tokenize_query(query);
+        self.text_index
+            .query_any_tokens_bounded(self, key_id, &tokens, max_visits)
+    }
+
     /// Find entities where `attr(key)` is within a Levenshtein distance of
     /// `max_dist` from `needle` (case-insensitive).
     ///
@@ -1454,16 +1594,14 @@ impl PathDB {
         let entity_type = self.interner.lookup(type_id)?;
 
         let mut attrs: HashMap<String, String> = HashMap::new();
-        for (attr_name_id, col) in &self.entities.attrs {
-            if let Some(value_id) = col.get(&entity_id) {
-                let Some(name) = self.interner.lookup(*attr_name_id) else {
-                    continue;
-                };
-                let Some(value) = self.interner.lookup(*value_id) else {
-                    continue;
-                };
-                attrs.insert(name, value);
-            }
+        for &(attr_name_id, value_id) in self.entities.attrs_for_entity(entity_id)? {
+            let Some(name) = self.interner.lookup(attr_name_id) else {
+                continue;
+            };
+            let Some(value) = self.interner.lookup(value_id) else {
+                continue;
+            };
+            attrs.insert(name, value);
         }
 
         Some(EntityView {
@@ -1540,7 +1678,8 @@ impl PathDB {
         }
 
         if path_len > max_depth && !current.is_empty() {
-            self.path_index.cache_result(path_sig, start, current.clone());
+            self.path_index
+                .cache_result(path_sig, start, current.clone());
         }
         current
     }
@@ -1578,30 +1717,35 @@ impl PathDB {
         current
     }
 
-    /// Find paths between two entities
+    /// Find simple paths between two entities.
+    ///
+    /// Visited state is path-local: a global visited set would incorrectly
+    /// suppress a second path when two branches share an intermediate node.
     pub fn find_paths(&self, from: u32, to: u32, max_depth: usize) -> Vec<Vec<StrId>> {
         let mut results = Vec::new();
-        let mut queue: Vec<(u32, Vec<StrId>)> = vec![(from, vec![])];
-        let mut visited = RoaringBitmap::new();
-        visited.insert(from);
+        let mut initial_visited = RoaringBitmap::new();
+        initial_visited.insert(from);
+        let mut queue: Vec<(u32, Vec<StrId>, RoaringBitmap)> =
+            vec![(from, vec![], initial_visited)];
 
-        while let Some((current, path)) = queue.pop() {
+        while let Some((current, path, visited)) = queue.pop() {
             if path.len() >= max_depth {
                 continue;
             }
 
-            // Check all outgoing relations
             for rel in &self.relations.relations {
-                if rel.source == current && !visited.contains(rel.target) {
-                    let mut new_path = path.clone();
-                    new_path.push(rel.rel_type);
+                if rel.source != current || visited.contains(rel.target) {
+                    continue;
+                }
+                let mut new_path = path.clone();
+                new_path.push(rel.rel_type);
 
-                    if rel.target == to {
-                        results.push(new_path);
-                    } else {
-                        visited.insert(rel.target);
-                        queue.push((rel.target, new_path));
-                    }
+                if rel.target == to {
+                    results.push(new_path);
+                } else {
+                    let mut next_visited = visited.clone();
+                    next_visited.insert(rel.target);
+                    queue.push((rel.target, new_path, next_visited));
                 }
             }
         }
@@ -1621,29 +1765,32 @@ impl PathDB {
         let min_confidence = min_confidence.clamp(0.0, 1.0);
 
         let mut results = Vec::new();
-        let mut queue: Vec<(u32, Vec<StrId>)> = vec![(from, vec![])];
-        let mut visited = RoaringBitmap::new();
-        visited.insert(from);
+        let mut initial_visited = RoaringBitmap::new();
+        initial_visited.insert(from);
+        let mut queue: Vec<(u32, Vec<StrId>, RoaringBitmap)> =
+            vec![(from, vec![], initial_visited)];
 
-        while let Some((current, path)) = queue.pop() {
+        while let Some((current, path, visited)) = queue.pop() {
             if path.len() >= max_depth {
                 continue;
             }
 
             for rel in &self.relations.relations {
-                if rel.confidence < min_confidence {
+                if rel.confidence < min_confidence
+                    || rel.source != current
+                    || visited.contains(rel.target)
+                {
                     continue;
                 }
-                if rel.source == current && !visited.contains(rel.target) {
-                    let mut new_path = path.clone();
-                    new_path.push(rel.rel_type);
+                let mut new_path = path.clone();
+                new_path.push(rel.rel_type);
 
-                    if rel.target == to {
-                        results.push(new_path);
-                    } else {
-                        visited.insert(rel.target);
-                        queue.push((rel.target, new_path));
-                    }
+                if rel.target == to {
+                    results.push(new_path);
+                } else {
+                    let mut next_visited = visited.clone();
+                    next_visited.insert(rel.target);
+                    queue.push((rel.target, new_path, next_visited));
                 }
             }
         }
@@ -1683,81 +1830,363 @@ impl PathDB {
             .collect()
     }
 
-    // ========================================================================
-    // Serialization
-    // ========================================================================
+    /// Create a detached in-memory copy from canonical runtime rows.
+    ///
+    /// This is intentionally not a persistence codec. Durable PathDB state is
+    /// published and loaded only through the authenticated SQLite `.axpd`
+    /// materialization API.
+    pub fn detached_clone(&self) -> Result<Self> {
+        let payload = live_pathdb_digest_payload_v1(self)?;
+        let mut cloned = Self::new();
 
-    /// Serialize to binary format
-    pub fn to_bytes(&self) -> Result<Vec<u8>> {
-        let interner_bytes = self.interner.to_bytes();
-        let db_bytes = bincode::serialize(&(
-            &self.entities,
-            &self.relations,
-            &self.path_index,
-            &self.equivalences,
-            &self.confidence_index,
-        ))?;
-
-        let mut result = Vec::new();
-        // Header: magic number + version
-        result.extend_from_slice(b"AXPD"); // Axiograph PathDB
-        result.extend_from_slice(&1u32.to_le_bytes()); // version 1
-
-        // Interner
-        result.extend_from_slice(&(interner_bytes.len() as u64).to_le_bytes());
-        result.extend_from_slice(&interner_bytes);
-
-        // DB
-        result.extend_from_slice(&(db_bytes.len() as u64).to_le_bytes());
-        result.extend_from_slice(&db_bytes);
-
-        Ok(result)
+        for row in &payload.strings {
+            let id = cloned.interner.intern(&row.value);
+            if id.raw() != row.id {
+                return Err(anyhow::anyhow!(
+                    "runtime string order changed while cloning PathDB"
+                ));
+            }
+        }
+        for row in &payload.entities {
+            let type_id = cloned
+                .interner
+                .id_of(&row.type_name)
+                .ok_or_else(|| anyhow::anyhow!("missing cloned entity type `{}`", row.type_name))?;
+            let attrs = row
+                .attrs
+                .iter()
+                .map(|attr| {
+                    Ok((
+                        cloned.interner.id_of(&attr.key).ok_or_else(|| {
+                            anyhow::anyhow!("missing cloned attr key `{}`", attr.key)
+                        })?,
+                        cloned.interner.id_of(&attr.value).ok_or_else(|| {
+                            anyhow::anyhow!("missing cloned attr value `{}`", attr.value)
+                        })?,
+                    ))
+                })
+                .collect::<Result<Vec<_>>>()?;
+            let id = cloned.entities.add(type_id, attrs);
+            if id != row.id {
+                return Err(anyhow::anyhow!(
+                    "runtime entity order changed while cloning PathDB"
+                ));
+            }
+        }
+        for row in &payload.relations {
+            let rel_type = cloned.interner.id_of(&row.rel_type).ok_or_else(|| {
+                anyhow::anyhow!("missing cloned relation type `{}`", row.rel_type)
+            })?;
+            let attrs = row
+                .attrs
+                .iter()
+                .map(|attr| {
+                    Ok((
+                        cloned.interner.id_of(&attr.key).ok_or_else(|| {
+                            anyhow::anyhow!("missing cloned relation attr key `{}`", attr.key)
+                        })?,
+                        cloned.interner.id_of(&attr.value).ok_or_else(|| {
+                            anyhow::anyhow!("missing cloned relation attr value `{}`", attr.value)
+                        })?,
+                    ))
+                })
+                .collect::<Result<Vec<_>>>()?;
+            let id = cloned.relations.add(Relation {
+                rel_type,
+                source: row.source,
+                target: row.target,
+                confidence: f32::from_bits(row.confidence_bits),
+                attrs,
+            });
+            if id != row.id {
+                return Err(anyhow::anyhow!(
+                    "runtime relation order changed while cloning PathDB"
+                ));
+            }
+            cloned
+                .confidence_index
+                .push(f32::from_bits(row.confidence_bits));
+        }
+        for row in &payload.equivalences {
+            let equiv_type = cloned.interner.id_of(&row.equiv_type).ok_or_else(|| {
+                anyhow::anyhow!("missing cloned equivalence type `{}`", row.equiv_type)
+            })?;
+            cloned
+                .equivalences
+                .entry(row.source)
+                .or_default()
+                .push((row.target, equiv_type));
+        }
+        cloned.build_indexes_with_depth(self.path_index.max_depth());
+        Ok(cloned)
     }
+}
 
-    /// Deserialize from binary format
-    pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
-        // Check header
-        if bytes.len() < 8 || &bytes[0..4] != b"AXPD" {
-            return Err(anyhow::anyhow!("Invalid PathDB file"));
+fn pathdb_string(db: &PathDB, id: StrId, what: &str) -> Result<String> {
+    db.interner.lookup(id).ok_or_else(|| {
+        anyhow::anyhow!(
+            "internal PathDB inconsistency: missing interned string for {what} id {}",
+            id.raw()
+        )
+    })
+}
+
+fn pathdb_entity_attr_string(db: &PathDB, entity: u32, key: &str) -> Option<String> {
+    let key_id = db.interner.id_of(key)?;
+    let value_id = db.entities.get_attr(entity, key_id)?;
+    db.interner.lookup(value_id)
+}
+
+fn canonical_entity_value_token_v1(db: &PathDB, entity: u32) -> Result<String> {
+    if let Some(name) = pathdb_entity_attr_string(db, entity, axi_meta::META_ATTR_NAME) {
+        return Ok(name);
+    }
+    if let Some(fact_id) = pathdb_entity_attr_string(db, entity, axi_meta::ATTR_AXI_FACT_ID) {
+        return Ok(fact_id);
+    }
+    Err(anyhow::anyhow!(
+        "entity {entity} is missing a stable `{}` or `{}` value",
+        axi_meta::META_ATTR_NAME,
+        axi_meta::ATTR_AXI_FACT_ID
+    ))
+}
+
+fn canonical_fact_log_digest_v1(entries: &[CanonicalFactLogEntryV1]) -> Result<AxiDigest> {
+    let payload = CanonicalFactLogDigestPayloadV1 {
+        version: CANONICAL_FACT_LOG_VERSION_V1,
+        entries: entries.to_vec(),
+    };
+    let bytes = serde_json::to_vec(&payload)?;
+    Ok(AxiDigest::new(axiograph_kernel::object_blob_digest_v2(
+        &bytes,
+    )))
+}
+
+fn canonical_fact_log_entries_v1(
+    db: &PathDB,
+) -> Result<(Vec<CanonicalFactLogEntryV1>, Vec<String>)> {
+    let meta = crate::axi_semantics::MetaPlaneIndex::from_db(db)?;
+    let mut entries = Vec::new();
+    let mut diagnostics = Vec::new();
+
+    let Some(relation_key_id) = db.interner.id_of(axi_meta::ATTR_AXI_RELATION) else {
+        return Ok((entries, diagnostics));
+    };
+    let Some(relation_col) = db.entities.attrs.get(&relation_key_id) else {
+        return Ok((entries, diagnostics));
+    };
+
+    for (&fact_entity, &relation_value_id) in relation_col {
+        let relation = match db.interner.lookup(relation_value_id) {
+            Some(v) => v,
+            None => {
+                diagnostics.push(format!(
+                    "fact {fact_entity}: missing interned `{}` value",
+                    axi_meta::ATTR_AXI_RELATION
+                ));
+                continue;
+            }
+        };
+        let Some(schema) = pathdb_entity_attr_string(db, fact_entity, axi_meta::ATTR_AXI_SCHEMA)
+        else {
+            diagnostics.push(format!(
+                "fact {fact_entity} ({relation}): missing `{}`",
+                axi_meta::ATTR_AXI_SCHEMA
+            ));
+            continue;
+        };
+        let Some(schema_index) = meta.schemas.get(&schema) else {
+            diagnostics.push(format!(
+                "fact {fact_entity} ({schema}.{relation}): schema is not present in the meta-plane"
+            ));
+            continue;
+        };
+        let Some(relation_decl) = schema_index.relation_decls.get(&relation) else {
+            diagnostics.push(format!(
+                "fact {fact_entity} ({schema}.{relation}): relation is not present in the meta-plane"
+            ));
+            continue;
+        };
+
+        let module = pathdb_entity_attr_string(db, fact_entity, axi_meta::ATTR_AXI_MODULE)
+            .or_else(|| schema_index.module_name.clone());
+        let instance = pathdb_entity_attr_string(db, fact_entity, axi_meta::ATTR_AXI_INSTANCE);
+        let Some(module) = module else {
+            diagnostics.push(format!(
+                "fact {fact_entity} ({schema}.{relation}): missing `{}`",
+                axi_meta::ATTR_AXI_MODULE
+            ));
+            continue;
+        };
+        let Some(instance) = instance else {
+            diagnostics.push(format!(
+                "fact {fact_entity} ({schema}.{relation}): missing `{}`",
+                axi_meta::ATTR_AXI_INSTANCE
+            ));
+            continue;
+        };
+
+        let mut fields = Vec::with_capacity(relation_decl.fields.len());
+        let mut ordered_fields: Vec<(&str, String)> =
+            Vec::with_capacity(relation_decl.fields.len());
+        let mut field_error = false;
+        for field in &relation_decl.fields {
+            let Some(field_rel_id) = db.interner.id_of(&field.field_name) else {
+                diagnostics.push(format!(
+                    "fact {fact_entity} ({schema}.{relation}): field `{}` has no interned relation id",
+                    field.field_name
+                ));
+                field_error = true;
+                continue;
+            };
+            let outgoing = db.relations.outgoing(fact_entity, field_rel_id);
+            match outgoing.as_slice() {
+                [edge] => {
+                    let value = match canonical_entity_value_token_v1(db, edge.target) {
+                        Ok(value) => value,
+                        Err(err) => {
+                            diagnostics.push(format!(
+                                "fact {fact_entity} ({schema}.{relation}) field `{}`: {err}",
+                                field.field_name
+                            ));
+                            field_error = true;
+                            continue;
+                        }
+                    };
+                    fields.push(CanonicalFactFieldV1 {
+                        field: field.field_name.clone(),
+                        value: value.clone(),
+                    });
+                    ordered_fields.push((field.field_name.as_str(), value));
+                }
+                [] => {
+                    diagnostics.push(format!(
+                        "fact {fact_entity} ({schema}.{relation}): missing field edge `{}`",
+                        field.field_name
+                    ));
+                    field_error = true;
+                }
+                _ => {
+                    diagnostics.push(format!(
+                        "fact {fact_entity} ({schema}.{relation}): multiple field edges for `{}`",
+                        field.field_name
+                    ));
+                    field_error = true;
+                }
+            }
+        }
+        if field_error {
+            continue;
         }
 
-        let version = u32::from_le_bytes(bytes[4..8].try_into()?);
-        if version != 1 {
-            return Err(anyhow::anyhow!("Unsupported PathDB version: {}", version));
+        let ordered_field_refs: Vec<(&str, &str)> = ordered_fields
+            .iter()
+            .map(|(field, value)| (*field, value.as_str()))
+            .collect();
+        let computed_fact_id = StableFactId::new(axiograph_kernel::runtime_fact_id_v2(
+            &module,
+            &schema,
+            &instance,
+            &relation,
+            &ordered_field_refs,
+        ));
+
+        match pathdb_entity_attr_string(db, fact_entity, axi_meta::ATTR_AXI_FACT_ID) {
+            Some(declared) if declared == computed_fact_id.as_str() => {}
+            Some(declared) => diagnostics.push(format!(
+                "fact {fact_entity} ({schema}.{relation}): `{}` mismatch (declared={declared}, computed={})",
+                axi_meta::ATTR_AXI_FACT_ID,
+                computed_fact_id.as_str()
+            )),
+            None => diagnostics.push(format!(
+                "fact {fact_entity} ({schema}.{relation}): missing `{}` (computed={})",
+                axi_meta::ATTR_AXI_FACT_ID,
+                computed_fact_id.as_str()
+            )),
         }
 
-        let mut offset = 8;
-
-        // Interner
-        let interner_len = u64::from_le_bytes(bytes[offset..offset + 8].try_into()?) as usize;
-        offset += 8;
-        let interner = StringInterner::from_bytes(&bytes[offset..offset + interner_len])?;
-        offset += interner_len;
-
-        // DB
-        let db_len = u64::from_le_bytes(bytes[offset..offset + 8].try_into()?) as usize;
-        offset += 8;
-        let (entities, relations, path_index, equivalences, confidence_index): (
-            EntityStore,
-            RelationStore,
-            PathIndex,
-            HashMap<u32, Vec<(u32, StrId)>>,
-            Vec<f32>,
-        ) = bincode::deserialize(&bytes[offset..offset + db_len])?;
-
-        Ok(Self {
-            db_token: DbToken::new(),
-            interner,
-            entities,
-            relations,
-            path_index,
-            equivalences,
-            confidence_index,
-            fact_index: FactIndexCache::default(),
-            text_index: TextIndexCache::default(),
-            index_sidecar: Mutex::new(None),
-        })
+        entries.push(CanonicalFactLogEntryV1 {
+            axi_fact_id: computed_fact_id,
+            module,
+            schema,
+            instance,
+            relation,
+            fields,
+        });
     }
+
+    Ok((entries, diagnostics))
+}
+
+fn live_pathdb_digest_payload_v1(db: &PathDB) -> Result<LivePathDbDigestPayloadV1> {
+    let string_count = db.interner.next_id.load(Ordering::SeqCst);
+    let mut strings = Vec::with_capacity(string_count as usize);
+    for raw in 0..string_count {
+        let id = StrId::new(raw);
+        strings.push(LiveStringRowV1 {
+            id: raw,
+            value: pathdb_string(db, id, "string table")?,
+        });
+    }
+
+    let mut entities = Vec::with_capacity(db.entities.types.len());
+    for (entity_id, &type_id) in db.entities.types.iter().enumerate() {
+        let mut attrs = Vec::new();
+        for (&key_id, col) in &db.entities.attrs {
+            if let Some(&value_id) = col.get(&(entity_id as u32)) {
+                attrs.push(LiveAttrRowV1 {
+                    key: pathdb_string(db, key_id, "entity attr key")?,
+                    value: pathdb_string(db, value_id, "entity attr value")?,
+                });
+            }
+        }
+        attrs.sort();
+        entities.push(LiveEntityRowV1 {
+            id: entity_id as u32,
+            type_name: pathdb_string(db, type_id, "entity type")?,
+            attrs,
+        });
+    }
+
+    let mut relations = Vec::with_capacity(db.relations.relations.len());
+    for (relation_id, rel) in db.relations.relations.iter().enumerate() {
+        let mut attrs = Vec::with_capacity(rel.attrs.len());
+        for &(key_id, value_id) in &rel.attrs {
+            attrs.push(LiveAttrRowV1 {
+                key: pathdb_string(db, key_id, "relation attr key")?,
+                value: pathdb_string(db, value_id, "relation attr value")?,
+            });
+        }
+        attrs.sort();
+        relations.push(LiveRelationRowV1 {
+            id: relation_id as u32,
+            rel_type: pathdb_string(db, rel.rel_type, "relation type")?,
+            source: rel.source,
+            target: rel.target,
+            confidence_bits: rel.confidence.to_bits(),
+            attrs,
+        });
+    }
+
+    let mut equivalences = Vec::new();
+    for (&source, values) in &db.equivalences {
+        for &(target, equiv_type) in values {
+            equivalences.push(LiveEquivalenceRowV1 {
+                source,
+                target,
+                equiv_type: pathdb_string(db, equiv_type, "equivalence type")?,
+            });
+        }
+    }
+    equivalences.sort();
+
+    Ok(LivePathDbDigestPayloadV1 {
+        version: LIVE_PATHDB_DIGEST_VERSION_V1,
+        strings,
+        entities,
+        relations,
+        equivalences,
+    })
 }
 
 impl Default for PathDB {
@@ -1840,11 +2269,13 @@ impl PathDB {
         };
         self.fact_index.with_index_or_fallback(
             self,
-            |db| db.fact_nodes_by_context_schema_relation_scan(
-                context_entity_id,
-                schema_id,
-                relation_id,
-            ),
+            |db| {
+                db.fact_nodes_by_context_schema_relation_scan(
+                    context_entity_id,
+                    schema_id,
+                    relation_id,
+                )
+            },
             |idx| {
                 idx.facts_by_context_schema_relation(context_entity_id, schema_id, relation_id)
                     .cloned()
@@ -1954,7 +2385,7 @@ impl PathDB {
             return RoaringBitmap::new();
         };
         let mut out = RoaringBitmap::new();
-        for (&entity_id, _) in col {
+        for &entity_id in col.keys() {
             for &rid in self
                 .relations
                 .outgoing_relation_ids(entity_id, context_rel_id)
@@ -2304,6 +2735,79 @@ mod tests {
     use super::*;
 
     #[test]
+    fn bounded_fts_is_cache_state_independent() {
+        let mut db = PathDB::new();
+        for ordinal in 0..20_000 {
+            let name = if ordinal == 19_999 {
+                "Needle"
+            } else {
+                "Unrelated"
+            };
+            db.add_entity("Node", vec![("name", name)]);
+        }
+
+        let cold = db.entities_with_attr_fts_any_bounded("name", "needle", 16_384);
+        assert_eq!(cold, (Vec::new(), 16_384, true));
+
+        assert_eq!(db.entities_with_attr_fts_any("name", "needle").len(), 1);
+        let warm = db.entities_with_attr_fts_any_bounded("name", "needle", 16_384);
+        assert_eq!(warm, cold);
+    }
+
+    #[test]
+    fn any_adjacency_is_degree_bounded() {
+        let mut db = PathDB::new();
+        let selected = db.add_entity("Node", vec![]);
+        let selected_target = db.add_entity("Node", vec![]);
+        db.add_relation("selected", selected, selected_target, 1.0, vec![]);
+
+        for ordinal in 0..4_096 {
+            let source = db.add_entity("Unrelated", vec![("ordinal", &ordinal.to_string())]);
+            let target = db.add_entity("Unrelated", vec![]);
+            db.add_relation("unrelated", source, target, 1.0, vec![]);
+        }
+
+        assert_eq!(db.relations.outgoing_any_len(selected), 1);
+        assert_eq!(db.relations.incoming_any_len(selected_target), 1);
+        assert_eq!(db.relations.outgoing_index[&selected].len(), 1);
+        assert_eq!(db.relations.incoming_index[&selected_target].len(), 1);
+        assert_eq!(db.relations.outgoing_any_iter(selected).count(), 1);
+        assert_eq!(db.relations.incoming_any_iter(selected_target).count(), 1);
+    }
+
+    #[test]
+    fn entity_attributes_are_degree_bounded() {
+        let mut db = PathDB::new();
+        let source_attrs = (0..256)
+            .map(|ordinal| (format!("attribute_{ordinal:03}"), ordinal.to_string()))
+            .collect::<Vec<_>>();
+        let source_attr_refs = source_attrs
+            .iter()
+            .map(|(key, value)| (key.as_str(), value.as_str()))
+            .collect::<Vec<_>>();
+        let selected = db.add_entity("Selected", source_attr_refs);
+
+        for ordinal in 0..4_096 {
+            let key = format!("unrelated_attribute_{ordinal}");
+            let value = ordinal.to_string();
+            db.add_entity("Unrelated", vec![(key.as_str(), value.as_str())]);
+        }
+
+        let (attrs, truncated) = db.entity_attr_ids_bounded(selected, 8);
+        assert_eq!(attrs.len(), 8);
+        assert!(truncated);
+        assert_eq!(db.entities.attrs_for_entity(selected).unwrap().len(), 256);
+
+        db.upsert_entity_attr(selected, "attribute_000", "updated")
+            .unwrap();
+        assert_eq!(
+            db.get_entity(selected).unwrap().attrs["attribute_000"],
+            "updated"
+        );
+        assert_eq!(db.entities.attrs_for_entity(selected).unwrap().len(), 256);
+    }
+
+    #[test]
     fn test_basic_operations() {
         let mut db = PathDB::new();
 
@@ -2311,10 +2815,14 @@ mod tests {
         let alice = db.add_entity("Person", vec![("name", "Alice")]);
         let bob = db.add_entity("Person", vec![("name", "Bob")]);
         let carol = db.add_entity("Person", vec![("name", "Carol")]);
+        db.mark_virtual_type(alice, "Agent")
+            .expect("known entity accepts virtual type");
 
         // Add relations
         db.add_relation("knows", alice, bob, 1.0, vec![]);
         db.add_relation("knows", bob, carol, 0.8, vec![]);
+        assert_eq!(db.entity_type_names(), vec!["Agent", "Person"]);
+        assert_eq!(db.relation_type_names(), vec!["knows"]);
 
         // Build indexes
         db.build_indexes();
@@ -2326,5 +2834,191 @@ mod tests {
         // Path query
         let two_hop = db.follow_path(alice, &["knows", "knows"]);
         assert!(two_hop.contains(carol));
+    }
+
+    #[test]
+    fn find_paths_keeps_distinct_branches_with_a_shared_tail() {
+        let mut db = PathDB::new();
+        let source = db.add_entity("Node", vec![]);
+        let left = db.add_entity("Node", vec![]);
+        let right = db.add_entity("Node", vec![]);
+        let shared = db.add_entity("Node", vec![]);
+        let target = db.add_entity("Node", vec![]);
+
+        db.add_relation("left", source, left, 1.0, vec![]);
+        db.add_relation("right", source, right, 1.0, vec![]);
+        db.add_relation("merge", left, shared, 1.0, vec![]);
+        db.add_relation("merge", right, shared, 1.0, vec![]);
+        db.add_relation("finish", shared, target, 1.0, vec![]);
+
+        let mut paths: Vec<Vec<String>> = db
+            .find_paths(source, target, 3)
+            .iter()
+            .map(|path| {
+                path.iter()
+                    .map(|id| {
+                        db.interner
+                            .lookup(*id)
+                            .unwrap_or_else(|| "<missing>".to_string())
+                    })
+                    .collect()
+            })
+            .collect();
+        paths.sort_unstable();
+
+        assert_eq!(
+            paths,
+            vec![
+                vec![
+                    "left".to_string(),
+                    "merge".to_string(),
+                    "finish".to_string()
+                ],
+                vec![
+                    "right".to_string(),
+                    "merge".to_string(),
+                    "finish".to_string()
+                ]
+            ]
+        );
+    }
+
+    #[test]
+    fn find_paths_with_min_confidence_keeps_only_eligible_branches() {
+        let mut db = PathDB::new();
+        let source = db.add_entity("Node", vec![]);
+        let left = db.add_entity("Node", vec![]);
+        let right = db.add_entity("Node", vec![]);
+        let shared = db.add_entity("Node", vec![]);
+        let target = db.add_entity("Node", vec![]);
+
+        db.add_relation("left", source, left, 0.5, vec![]);
+        db.add_relation("right", source, right, 1.0, vec![]);
+        db.add_relation("merge", left, shared, 1.0, vec![]);
+        db.add_relation("merge", right, shared, 1.0, vec![]);
+        db.add_relation("finish", shared, target, 1.0, vec![]);
+
+        let paths: Vec<Vec<String>> = db
+            .find_paths_with_min_confidence(source, target, 3, 0.8)
+            .iter()
+            .map(|path| {
+                path.iter()
+                    .map(|id| {
+                        db.interner
+                            .lookup(*id)
+                            .unwrap_or_else(|| "<missing>".to_string())
+                    })
+                    .collect()
+            })
+            .collect();
+
+        assert_eq!(
+            paths,
+            vec![vec![
+                "right".to_string(),
+                "merge".to_string(),
+                "finish".to_string()
+            ]]
+        );
+    }
+
+    #[test]
+    fn detached_clone_preserves_runtime_rows_without_a_persistence_codec() -> Result<()> {
+        let mut db = PathDB::new();
+        let alice = db.add_entity("Person", vec![("z", "last"), ("name", "Alice")]);
+        let bob = db.add_entity("Person", vec![("name", "Bob"), ("a", "first")]);
+        db.add_relation("knows", alice, bob, 0.75, vec![("source", "test")]);
+        db.add_equivalence(alice, bob, "sameAs");
+        db.build_indexes();
+
+        let expected_rows = serde_json::to_vec(&live_pathdb_digest_payload_v1(&db)?)?;
+        let cloned = db.detached_clone()?;
+
+        assert_eq!(
+            expected_rows,
+            serde_json::to_vec(&live_pathdb_digest_payload_v1(&cloned)?)?
+        );
+        assert!(cloned.follow_one(alice, "knows").contains(bob));
+        Ok(())
+    }
+
+    #[test]
+    fn canonical_fact_log_v1_is_deterministic_and_certified_for_imported_axi() -> Result<()> {
+        let mut db = PathDB::new();
+        let axi = r#"
+module Demo
+
+schema S:
+  object Person
+  relation Parent(parent: Person, child: Person)
+
+instance I of S:
+  Person = {Alice, Bob}
+  Parent = {(parent=Alice, child=Bob)}
+"#;
+        crate::axi_module_import::import_axi_schema_v1_into_pathdb(&mut db, axi)?;
+
+        let log = db.certified_canonical_fact_log_v1()?;
+        assert!(log.certified_only);
+        assert!(log.diagnostics.is_empty());
+        assert_eq!(log.entries.len(), 1);
+        let entry = &log.entries[0];
+        assert!(entry.axi_fact_id.is_fact_id_v2());
+        assert_eq!(entry.module, "Demo");
+        assert_eq!(entry.schema, "S");
+        assert_eq!(entry.instance, "I");
+        assert_eq!(entry.relation, "Parent");
+        assert_eq!(
+            entry.fields,
+            vec![
+                CanonicalFactFieldV1 {
+                    field: "parent".to_string(),
+                    value: "Alice".to_string()
+                },
+                CanonicalFactFieldV1 {
+                    field: "child".to_string(),
+                    value: "Bob".to_string()
+                }
+            ]
+        );
+
+        let cloned = db.detached_clone()?;
+        let cloned_log = cloned.certified_canonical_fact_log_v1()?;
+        assert_eq!(log.digest, cloned_log.digest);
+        assert_eq!(log.entries, cloned_log.entries);
+        Ok(())
+    }
+
+    #[test]
+    fn certified_canonical_fact_log_v1_rejects_fact_id_mismatch() -> Result<()> {
+        let mut db = PathDB::new();
+        let axi = r#"
+module Demo
+
+schema S:
+  object Person
+  relation Parent(parent: Person, child: Person)
+
+instance I of S:
+  Person = {Alice, Bob}
+  Parent = {(parent=Alice, child=Bob)}
+"#;
+        crate::axi_module_import::import_axi_schema_v1_into_pathdb(&mut db, axi)?;
+        let fact = db
+            .fact_nodes_by_axi_relation("Parent")
+            .iter()
+            .next()
+            .expect("expected imported Parent fact");
+        db.upsert_entity_attr(
+            fact,
+            axi_meta::ATTR_AXI_FACT_ID,
+            &format!("axi:fact:v2:sha256:{}", "0".repeat(64)),
+        )?;
+
+        let err = db
+            .certified_canonical_fact_log_v1()
+            .expect_err("mismatched canonical fact id must fail closed");
+        assert!(err.to_string().contains("mismatch"));
+        Ok(())
     }
 }

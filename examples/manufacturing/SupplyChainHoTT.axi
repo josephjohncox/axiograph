@@ -1,15 +1,15 @@
--- Supply Chain as Higher Category
+-- Supply chain ontology
 --
 -- Models manufacturing supply chains with HoTT structure:
 -- - Objects: Entities (suppliers, factories, warehouses, customers)
 -- - 1-morphisms: Material/info flows
 -- - 2-morphisms: Process equivalences (different routes, same outcome)
 --
--- HoTT enables:
--- - Path independence for logistics (multiple routes, same delivery)
--- - Supplier substitution via equivalence
--- - Bill of Materials as a functor
--- - Process verification as path equality
+-- The point of the example is readable typed supply-chain structure:
+-- - nodes and flows,
+-- - route equivalence,
+-- - supplier substitution,
+-- - and inventory/process relations.
 
 module SupplyChainHoTT
 
@@ -38,10 +38,10 @@ schema SupplyChain:
   object Cost
 
   -- A flow is a directed transfer
-  relation Flow(from: Node, to: Node, material: Material, qty: Quantity, time: LeadTime)
+  relation Flow(from: Node, to: Node, material: Material, qty: Quantity, time: LeadTime @temporal)
 
   -- Flow composition (sequential transfers)
-  relation FlowCompose(f1: Flow, f2: Flow, result: Flow)
+  relation FlowCompose(f1: relation(Flow), f2: relation(Flow), result: relation(Flow))
 
   -- ==========================================================================
   -- Process Equivalences (2-Morphisms)
@@ -122,7 +122,7 @@ schema SupplyChain:
 
   -- Flow changes inventory (like stock-flow in economics)
   relation FlowChangesInventory(
-    flow: Flow,
+    flow: relation(Flow),
     sourceLoc: Location,
     targetLoc: Location,
     deltaSrc: Quantity,
@@ -193,10 +193,11 @@ instance ManufacturingExample of SupplyChain:
     Carbide_Insert,
     Coolant,
     Machined_Part,
+    Rough_Part,
     Assembled_Product
   }
 
-  Quantity = {Q0, Q10, Q100, Q1000}
+  Quantity = {Q0, Q1, Q10, Q100, Q1000}
   LeadTime = {Days_1, Days_3, Days_7, Days_14}
   Cost = {Low, Medium, High}
 
@@ -225,7 +226,9 @@ instance ManufacturingExample of SupplyChain:
     -- Route 2: Supplier B → WH → Machining → Assembly → Customer
     Route_Via_SupplierB,
     -- Route 3: Direct from supplier to machining (skip WH)
-    Route_Direct
+    Route_Direct,
+    ConventionalRoute,
+    HSMRoute
   }
 
   RouteProof = {
@@ -247,7 +250,25 @@ instance ManufacturingExample of SupplyChain:
     (from=RawMetal_A, to=Machining_Plant,
      route1=Route_Via_SupplierA,
      route2=Route_Direct,
-     proof=LeadTimeTradeoff)
+     proof=LeadTimeTradeoff),
+
+    -- Explicit reverse witnesses for the finite symmetric model.
+    (from=Machining_Plant, to=RawMetal_A,
+     route1=Route_Via_SupplierB,
+     route2=Route_Via_SupplierA,
+     proof=SameMaterial),
+    (from=Machining_Plant, to=RawMetal_A,
+     route1=Route_Direct,
+     route2=Route_Via_SupplierA,
+     proof=LeadTimeTradeoff),
+    (from=RawMetal_A, to=RawMetal_A,
+     route1=Route_Via_SupplierA,
+     route2=Route_Via_SupplierA,
+     proof=SameMaterial),
+    (from=Machining_Plant, to=Machining_Plant,
+     route1=Route_Via_SupplierB,
+     route2=Route_Via_SupplierB,
+     proof=SameMaterial)
   }
 
   -- SUPPLIER EQUIVALENCE (univalence for sourcing!)
@@ -268,7 +289,8 @@ instance ManufacturingExample of SupplyChain:
   -- RawMetal_A ≃ RawMetal_B (for Steel_Billet)
   -- This means we can substitute! Dual-sourcing is justified.
   SupplierEquiv = {
-    (s1=RawMetal_A, s2=RawMetal_B, material=Steel_Billet, qualityMatch=QualityEquiv)
+    (s1=RawMetal_A, s2=RawMetal_B, material=Steel_Billet, qualityMatch=QualityEquiv),
+    (s1=RawMetal_B, s2=RawMetal_A, material=Steel_Billet, qualityMatch=QualityEquiv)
   }
 
   -- Products and BOM

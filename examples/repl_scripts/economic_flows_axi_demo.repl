@@ -1,7 +1,7 @@
 # Axiograph REPL script: import canonical `.axi` schema module (EconomicFlows)
 #
 # Demonstrates:
-# - importing a canonical `axi_schema_v1` module (schema/theory/instance)
+# - importing a canonical `axi_v1` module (schema/theory/instance)
 # - inspecting meta-plane schema + constraints
 # - schema-directed validation of imported fact nodes (reified tuples)
 # - visualization "layering": schema/meta-plane + instance data + fact nodes
@@ -42,14 +42,11 @@ q select ?w where ?f = PathEquivalence(path1=BorrowInvestRepay, path2=SaveInvest
 
 # Visualize the schema meta-plane.
 viz build/economic_flows_axi_schema.dot format dot plane meta focus_name Economy hops 3 max_nodes 320
-viz build/economic_flows_axi_schema.html format html plane meta focus_name Economy hops 3 max_nodes 320
+viz build/economic_flows_axi_schema.json format json plane meta focus_name Economy hops 3 max_nodes 320
 
 # Visualize a combined neighborhood around an agent (shows entity nodes + fact nodes + schema links).
 viz build/economic_flows_axi_household_both.dot format dot plane both focus_name Household_A hops 2 max_nodes 240
-viz build/economic_flows_axi_household_both.html format html plane both focus_name Household_A hops 2 max_nodes 240
+viz build/economic_flows_axi_household_both.json format json plane both focus_name Household_A hops 2 max_nodes 240
 
 # Typed overlay: annotate data-plane nodes using meta-plane schema/theory info.
-viz build/economic_flows_axi_household_both_typed.html format html plane both focus_name Household_A hops 2 max_nodes 240 typed_overlay
-
-export_axi build/economic_flows_axi_export_v1.axi
-save build/economic_flows_axi.axpd
+viz build/economic_flows_axi_household_both_typed.json format json plane both focus_name Household_A hops 2 max_nodes 240 typed_overlay

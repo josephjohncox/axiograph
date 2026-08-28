@@ -1,4 +1,12 @@
 use axiograph_pathdb::axi_module_constraints::check_axi_constraints_ok_v1;
+use axiograph_pathdb::axi_module_typecheck::{
+    review_axi_v1_module, validate_axi_v1_module, ReviewStamp,
+};
+
+fn validated_module(text: &str) -> axiograph_pathdb::Module<axiograph_pathdb::Validated> {
+    let module = axiograph_dsl::axi_v1::parse_axi_v1(text).expect("parse axi");
+    validate_axi_v1_module(module).expect("typecheck axi")
+}
 
 #[test]
 fn symmetric_param_detects_functional_violation_introduced_by_swap() {
@@ -28,7 +36,7 @@ instance Demo of S:
   }
 "#;
 
-    let module = axiograph_dsl::axi_v1::parse_axi_v1(text).expect("parse axi");
+    let module = validated_module(text);
     let err = check_axi_constraints_ok_v1(&module).expect_err("should fail");
     let msg = err.to_string();
     assert!(
@@ -57,8 +65,8 @@ instance Demo of S:
 "#;
 
     let module = axiograph_dsl::axi_v1::parse_axi_v1(text).expect("parse axi");
-    let err = check_axi_constraints_ok_v1(&module).expect_err("should fail");
-    assert!(err.to_string().contains("duplicate param field"), "err={err}");
+    let err = validate_axi_v1_module(module).expect_err("should fail during typecheck");
+    assert!(err.to_string().contains("repeats field `ctx`"), "err={err}");
 }
 
 #[test]
@@ -78,7 +86,7 @@ instance Demo of S:
   Spouse = {(a=Alice, b=Bob)}
 "#;
 
-    let module = axiograph_dsl::axi_v1::parse_axi_v1(text).expect("parse axi");
+    let module = validated_module(text);
     let err = check_axi_constraints_ok_v1(&module).expect_err("should fail");
     assert!(
         err.to_string().contains("must not be a carrier field"),
@@ -104,11 +112,8 @@ instance Demo of S:
 "#;
 
     let module = axiograph_dsl::axi_v1::parse_axi_v1(text).expect("parse axi");
-    let err = check_axi_constraints_ok_v1(&module).expect_err("should fail");
-    assert!(
-        err.to_string().contains("param field `ctx`") && err.to_string().contains("not a declared field"),
-        "err={err}"
-    );
+    let err = validate_axi_v1_module(module).expect_err("should fail during typecheck");
+    assert!(err.to_string().contains("has no field `ctx`"), "err={err}");
 }
 
 #[test]
@@ -137,7 +142,7 @@ instance Demo of S:
   }
 "#;
 
-    let module = axiograph_dsl::axi_v1::parse_axi_v1(text).expect("parse axi");
+    let module = validated_module(text);
     let err = check_axi_constraints_ok_v1(&module).expect_err("should fail");
     assert!(err.to_string().contains("key violation"), "err={err}");
 }
@@ -167,7 +172,7 @@ instance Demo of S:
   }
 "#;
 
-    let module = axiograph_dsl::axi_v1::parse_axi_v1(text).expect("parse axi");
+    let module = validated_module(text);
     check_axi_constraints_ok_v1(&module).expect("should pass");
 }
 
@@ -191,8 +196,8 @@ instance Demo of S:
 "#;
 
     let module = axiograph_dsl::axi_v1::parse_axi_v1(text).expect("parse axi");
-    let err = check_axi_constraints_ok_v1(&module).expect_err("should fail");
-    assert!(err.to_string().contains("duplicate param field"), "err={err}");
+    let err = validate_axi_v1_module(module).expect_err("should fail during typecheck");
+    assert!(err.to_string().contains("repeats field `ctx`"), "err={err}");
 }
 
 #[test]
@@ -212,7 +217,7 @@ instance Demo of S:
   Accessible = {(from=A, to=B)}
 "#;
 
-    let module = axiograph_dsl::axi_v1::parse_axi_v1(text).expect("parse axi");
+    let module = validated_module(text);
     let err = check_axi_constraints_ok_v1(&module).expect_err("should fail");
     assert!(
         err.to_string().contains("must not be a carrier field"),
@@ -238,11 +243,8 @@ instance Demo of S:
 "#;
 
     let module = axiograph_dsl::axi_v1::parse_axi_v1(text).expect("parse axi");
-    let err = check_axi_constraints_ok_v1(&module).expect_err("should fail");
-    assert!(
-        err.to_string().contains("param field `ctx`") && err.to_string().contains("not a declared field"),
-        "err={err}"
-    );
+    let err = validate_axi_v1_module(module).expect_err("should fail during typecheck");
+    assert!(err.to_string().contains("has no field `ctx`"), "err={err}");
 }
 
 #[test]
@@ -264,7 +266,7 @@ instance Demo of S:
   R = {(from=a0, to=b0)}
 "#;
 
-    let module = axiograph_dsl::axi_v1::parse_axi_v1(text).expect("parse axi");
+    let module = validated_module(text);
     let err = check_axi_constraints_ok_v1(&module).expect_err("should fail");
     assert!(
         err.to_string().contains("refused") && err.to_string().contains("unknown/unsupported"),
@@ -293,6 +295,32 @@ instance Demo of S:
   R = {(from=a0, to=b0)}
 "#;
 
-    let module = axiograph_dsl::axi_v1::parse_axi_v1(text).expect("parse axi");
+    let module = validated_module(text);
     check_axi_constraints_ok_v1(&module).expect("should pass");
+}
+
+#[test]
+fn constraints_ok_accepts_reviewed_modules_too() {
+    let text = r#"
+module ReviewedConstraintOk
+
+schema S:
+  object A
+  object B
+  relation R(from: A, to: B)
+
+instance Demo of S:
+  A = {a0}
+  B = {b0}
+  R = {(from=a0, to=b0)}
+"#;
+
+    let reviewed = review_axi_v1_module(
+        validated_module(text),
+        ReviewStamp {
+            reviewer: Some("agent".to_string()),
+            note: Some("reviewed".to_string()),
+        },
+    );
+    check_axi_constraints_ok_v1(&reviewed).expect("reviewed module should pass");
 }

@@ -1,0 +1,52 @@
+{
+  "version": "behavior_case_check_request_v1",
+  "behavior_case": {
+    "case_id": "subscription_billing.entitlement_after_paid_invoice",
+    "title": "Paid invoice grants account entitlement",
+    "summary": "Domain-only behavior case for subscription billing. Tooling, code refs, coverage policy, and fDDD context maps live in the overlay.",
+    "given": {
+      "snapshot_label": "accepted subscription billing ontology seed",
+      "world": "accepted",
+      "facts": [
+        "AccountHasSubscription(account=Account_Acme, subscription=Sub_Pro, ctx=Accepted, time=T0)",
+        "SubscriptionGeneratesInvoice(subscription=Sub_Pro, invoice=Invoice_2026_04, ctx=Accepted, time=T0)",
+        "InvoicePaidBy(invoice=Invoice_2026_04, payment=Payment_2026_04, ctx=Accepted, time=T1)",
+        "PaidInvoiceGrantsEntitlement(invoice=Invoice_2026_04, entitlement=Entitlement_API, ctx=Accepted, time=T1)"
+      ],
+      "notes": [
+        "The behavior case names accepted domain facts only; endpoint and worker surfaces are overlay data."
+      ]
+    },
+    "when": {
+      "kind": "query",
+      "label": "Ask whether product access is granted after the invoice payment is accepted"
+    },
+    "then": {
+      "expected_outcomes": [
+        "The subscription has the API entitlement after the invoice is paid.",
+        "The account read model exposes the granted entitlement.",
+        "Product-access code can be tested against an Axiograph receipt for the accepted ontology."
+      ],
+      "rule_scopes": [
+        {
+          "schema": "SubscriptionBilling",
+          "scope_class": "relation",
+          "relation": "InvoicePaidBy"
+        },
+        {
+          "schema": "SubscriptionBilling",
+          "scope_class": "relation",
+          "relation": "AccountGrantedEntitlement"
+        }
+      ],
+      "trust_target": "strong",
+      "notes": [
+        "Strong use requires the overlay coverage and theory-check reports to stay clean under the accepted anchor."
+      ]
+    },
+    "notes": [
+      "No implementation_surfaces, coverage_edges, or fDDD context fields are embedded in this behavior case."
+    ]
+  },
+  "lifecycle_state": "accepted"
+}

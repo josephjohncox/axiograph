@@ -1,4 +1,4 @@
-# Continuous Ingest and Continuous Discovery (Prototype)
+# Continuous Ingest and Continuous Discovery
 
 **Diataxis:** Tutorial  
 **Audience:** contributors
@@ -29,7 +29,7 @@ To keep the system usable *and* sound, we maintain two explicit planes:
 
 Artifacts:
 
-- `chunks.json`: document/code chunks with metadata (`path`, `language`, `span`, etc.)
+- `chunks.json`: typed `EvidenceChunkBundleV1` document/code evidence with metadata (`path`, `language`, `span`, etc.)
 - `proposals.json`: extracted **structured KG proposals** (entities/relations/claims) with confidence + evidence pointers
 - `facts.json`: optional “raw extractor output” (pattern- or LLM-derived) retained for debugging and incremental development
 - optional: vector index / embeddings (not a truth source)
@@ -73,7 +73,7 @@ Common sources we support (or aim to support) as first-class ingesters:
 - **Confluence** (HTML export)
 - **SQL** (DDL/schema)
 - **RDF/OWL** (`.nt`/`.ttl`/`.nq`/`.trig`/`.rdf`/`.owl`/`.xml`; see `docs/explanation/SEMANTIC_WEB_INTEROP.md`)
-- **CAD** (STEP/IGES)
+- **CAD** (STEP/IGES; experimental importer work, not a supported current ingest path)
 - PDFs, transcripts, reading lists
 
 ### 2.2 Output contract: proposal facts with provenance
@@ -97,7 +97,7 @@ Discovery consumes both planes:
 
 Inputs:
 
-- `chunks.json` + (optionally) embeddings
+- `EvidenceChunkBundleV1` chunks + optional embedding evidence overlays
 - `proposals.json` structured proposals
 
 Outputs:
@@ -163,14 +163,16 @@ Example trace skeleton:
 
 ---
 
-## 5. Prototype CLI workflow (today)
+## 5. Current local CLI workflow
 
-The goal of the prototype tooling is to make this loop tangible without requiring a full distributed deployment.
+The goal of the local tooling is to make this loop tangible without requiring a
+distributed deployment. Ingestion mutates evidence-plane artifacts; promotion
+into canonical `.axi` remains explicit and reviewable.
 
 ### 5.1 Index a repo (evidence plane)
 
 - Scan a directory, chunk files, extract lightweight facts, emit:
-  - `chunks.json`,
+  - `chunks.json` (`EvidenceChunkBundleV1`),
   - `edges.json` (lightweight repo graph edges),
   - `proposals.json` (structured KG proposals with evidence pointers; generic Evidence/Proposals schema),
   - `traces.json` (optional).
@@ -229,38 +231,24 @@ REPL script:
 
 ```bash
 cd rust
-cargo run -p axiograph-cli -- repl --script ../examples/repl_scripts/continuous_ingest_demo.repl
+cargo run -p axiograph-cli -- repl --script ../examples/repl_scripts/synthetic/continuous_ingest_demo.repl
 ```
 
 It starts from a base `enterprise` scenario, then applies two ingest ticks:
 
 - new `Doc` entities arrive
 - low-confidence evidence edges are added (`mentionsService`, `suggestsSameColumn`, …)
-- explicit witness objects are created (`PathWitness`, `Homotopy`)
+- explicit path witnesses and equivalence links are created
 - after each tick it writes neighborhood visualizations:
   - `build/continuous_ingest_round0.{dot,html}`
   - `build/continuous_ingest_round1.{dot,html}`
   - `build/continuous_ingest_round2.{dot,html}`
 
-This is a prototype for the production loop: ingestion mutates the evidence plane,
-while promotion into canonical `.axi` (and certificate checking) remains explicit.
+This is the local form of the production loop: ingestion mutates the evidence
+plane, while promotion into canonical `.axi` and certificate checking remains
+explicit.
 
-### 5.5 Hands-on demos: continuous ingest from SQL / Proto (CLI-only)
-
-If you want to keep everything in the “CLI command” surface (no interactive REPL),
-use the demo scripts:
-
-- SQL: `scripts/continuous_ingest_sql_cli_demo.sh`
-- Proto: `scripts/continuous_ingest_proto_cli_demo.sh` (requires `buf`)
-
-Both demos run two “ticks”:
-
-1) ingest structured sources into `proposals.json` (evidence plane)
-2) draft a readable candidate `.axi` module (schema discovery)
-3) import to a PathDB snapshot (`.axpd`)
-4) render HTML visualizations (meta/data neighborhood views)
-
-### 5.6 Higher-level discovery loop: augment → promote
+### 5.5 Higher-level discovery loop: augment → promote
 
 Once you have a `proposals.json`, you can run a deterministic augmentation pass
 that derives additional structure (and optionally uses an LLM for semantic
@@ -371,11 +359,13 @@ cargo run -p axiograph-cli -- discover promote-proposals \
 
 Outputs:
 
-- `build/candidates/MachinistLearning.proposals.axi` (candidate blocks to merge)
+- `build/candidates/MachinistLearning.proposals.axi` (review candidate, not accepted truth)
 - `build/candidates/promotion_trace.json` (what mapped vs what was skipped)
 
-Promotion remains manual: review the candidate `.axi` output and merge accepted blocks into the
-canonical modules under `examples/` (or your project’s canonical `.axi` tree).
+Promotion is not a copy/paste merge into examples. Treat the generated `.axi` as
+a review candidate, run `check validate` / `check theory`, and promote through
+the accepted-plane / semantic VCS flow for your project. For the current
+canonical path, see `docs/howto/CANONICAL_SEMANTIC_SPINE.md`.
 
 ---
 

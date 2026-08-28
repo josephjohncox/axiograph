@@ -1,0 +1,262 @@
+{
+  "version": "tooling_overlay_bundle_v1",
+  "fddd_context_map": {
+    "context_id": "bounded-context:process-control",
+    "label": "Process-control software overlay",
+    "summary": "Maps plant authorization ontology to simulator, PLC, HMI, ERP, optimizer, and service surfaces without embedding tooling in AXI.",
+    "scopes": [
+      {
+        "kind": "relation",
+        "schema": "ProcessControl",
+        "name": "BatchClearedForCharge"
+      },
+      {
+        "kind": "relation",
+        "schema": "ProcessControl",
+        "name": "SimulationSupportsAction"
+      },
+      {
+        "kind": "relation",
+        "schema": "ProcessControl",
+        "name": "InterlockAllowsAction"
+      }
+    ],
+    "bounded_contexts": [
+      {
+        "binding_id": "bounded-context:process-control",
+        "label": "Process control",
+        "summary": "Owns safe charge authorization across simulation, controls, HMI, and ERP evidence.",
+        "ontology_refs": [
+          {
+            "kind": "schema",
+            "schema": "ProcessControl",
+            "name": "ProcessControl"
+          }
+        ]
+      }
+    ],
+    "aggregates": [
+      {
+        "binding_id": "aggregate:batch",
+        "label": "Batch aggregate",
+        "ontology_refs": [
+          {
+            "kind": "object",
+            "schema": "ProcessControl",
+            "name": "Batch"
+          }
+        ]
+      },
+      {
+        "binding_id": "aggregate:reactor",
+        "label": "Reactor aggregate",
+        "ontology_refs": [
+          {
+            "kind": "object",
+            "schema": "ProcessControl",
+            "name": "Reactor"
+          }
+        ]
+      }
+    ],
+    "processes": [
+      {
+        "binding_id": "process:authorize-charge",
+        "label": "Authorize reactor charge process",
+        "summary": "Combine material certification, sensor state, simulation support, and interlock allowance before opening charge flow.",
+        "ontology_refs": [
+          {
+            "kind": "relation",
+            "schema": "ProcessControl",
+            "name": "BatchHasCertifiedMaterial"
+          },
+          {
+            "kind": "relation",
+            "schema": "ProcessControl",
+            "name": "SimulationSupportsAction"
+          },
+          {
+            "kind": "relation",
+            "schema": "ProcessControl",
+            "name": "BatchClearedForCharge"
+          }
+        ]
+      }
+    ],
+    "functions": [
+      {
+        "binding_id": "function:charge-authorization",
+        "label": "Charge authorization function",
+        "summary": "Application function that produces an auditable charge authorization decision for HMI and PLC consumers.",
+        "ontology_refs": [
+          {
+            "kind": "relation",
+            "schema": "ProcessControl",
+            "name": "BatchClearedForCharge"
+          }
+        ]
+      }
+    ],
+    "business_rules": [
+      {
+        "binding_id": "rule:certified-material-before-charge",
+        "label": "Certified material before charge",
+        "summary": "A batch cannot be cleared for charge unless material certification evidence is accepted.",
+        "ontology_refs": [
+          {
+            "kind": "rewrite",
+            "schema": "ProcessControl",
+            "name": "lot_certificate_to_batch_certificate"
+          },
+          {
+            "kind": "relation",
+            "schema": "ProcessControl",
+            "name": "BatchHasCertifiedMaterial"
+          }
+        ]
+      },
+      {
+        "binding_id": "rule:safe-charge-window",
+        "label": "Safe charge window",
+        "summary": "Charge authorization depends on simulation support and an allowing interlock state.",
+        "ontology_refs": [
+          {
+            "kind": "relation",
+            "schema": "ProcessControl",
+            "name": "SimulationSupportsAction"
+          },
+          {
+            "kind": "relation",
+            "schema": "ProcessControl",
+            "name": "InterlockAllowsAction"
+          }
+        ]
+      }
+    ]
+  },
+  "implementation_surfaces": {
+    "surfaces": [
+      {
+        "surface_id": "endpoint:erp:material-certification",
+        "kind": "endpoint",
+        "label": "ERP material-certification endpoint",
+        "ontology_refs": [
+          {
+            "kind": "relation",
+            "schema": "ProcessControl",
+            "name": "MaterialHasCertificate"
+          }
+        ],
+        "code_refs": [
+          "services/erp/internal/materials/certification.go"
+        ],
+        "languages": [
+          "go"
+        ]
+      },
+      {
+        "surface_id": "simulator:reactor:charge-window",
+        "kind": "simulator",
+        "label": "Reactor charge-window simulator",
+        "ontology_refs": [
+          {
+            "kind": "relation",
+            "schema": "ProcessControl",
+            "name": "SimulationSupportsAction"
+          }
+        ],
+        "code_refs": [
+          "simulators/reactor_charge/model.py",
+          "optimizers/charge_window/src/lib.rs"
+        ],
+        "languages": [
+          "python",
+          "rust"
+        ]
+      },
+      {
+        "surface_id": "plc:charge-valve-interlock",
+        "kind": "plc",
+        "label": "Charge valve PLC interlock",
+        "ontology_refs": [
+          {
+            "kind": "relation",
+            "schema": "ProcessControl",
+            "name": "InterlockAllowsAction"
+          }
+        ],
+        "code_refs": [
+          "plc/safety/interlocks/reactor_charge.st"
+        ],
+        "languages": [
+          "structured_text"
+        ]
+      },
+      {
+        "surface_id": "ui:hmi:charge-release",
+        "kind": "ui",
+        "label": "HMI charge-release panel",
+        "ontology_refs": [
+          {
+            "kind": "relation",
+            "schema": "ProcessControl",
+            "name": "BatchClearedForCharge"
+          }
+        ],
+        "code_refs": [
+          "apps/hmi/src/charge-release.tsx"
+        ],
+        "languages": [
+          "typescript"
+        ]
+      }
+    ],
+    "coverage_edges": [
+      {
+        "surface_id": "endpoint:erp:material-certification",
+        "rule_id": "schema/processcontrol/relation/materialhascertificate/rule/key/0",
+        "status": "implemented"
+      },
+      {
+        "surface_id": "simulator:reactor:charge-window",
+        "rule_id": "schema/processcontrol/relation/simulationsupportsaction/rule/key/0",
+        "status": "tested"
+      },
+      {
+        "surface_id": "plc:charge-valve-interlock",
+        "rule_id": "schema/processcontrol/relation/interlockallowsaction/rule/key/0",
+        "status": "documented_only"
+      },
+      {
+        "surface_id": "ui:hmi:charge-release",
+        "rule_id": "schema/processcontrol/relation/batchclearedforcharge/rule/key/0",
+        "status": "unknown"
+      }
+    ]
+  },
+  "coverage_policy": {
+    "coverage_mode": "advisory",
+    "require_codegen_languages": [
+      "rust",
+      "typescript",
+      "python",
+      "go"
+    ],
+    "strict_coverage": false,
+    "require_code_refs": false,
+    "require_runtime_theory": false,
+    "fail_on_unresolved_obligations": false
+  },
+  "codegen_plan": {
+    "languages": [
+      "rust",
+      "typescript",
+      "python",
+      "go"
+    ],
+    "test_name": "process_control_charge_authorization",
+    "notes": [
+      "Generated skeletons represent service-level checks. PLC/Structured Text remains a surfaced implementation obligation, not a generated language in this tranche."
+    ]
+  }
+}

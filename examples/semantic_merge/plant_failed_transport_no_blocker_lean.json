@@ -1,0 +1,65 @@
+{
+  "version": "semantic_vcs_lean_rebase_plan_v1",
+  "source": {
+    "anchor": {
+      "accepted_ref": "heads/review/simulation-safety",
+      "accepted_snapshot_id": "axi:snapshot:v2:sha256:3d8d1ab71667f3439aee1e50a6448bf3fb56d2b8cd86049bb31b2f6c61f96234",
+      "kernel_ir_digest": "axi:object-blob:v2:sha256:252eefd980a59ea00248d05a014c6f753f5d3671b43414dbbdbf6f41c4688fe2",
+      "context_id": "plant-simulation",
+      "world_id": "review"
+    },
+    "refs": [
+      {
+        "kind": "theory_obligation",
+        "id": "SimulationRules.RiskNodeForState.key"
+      }
+    ]
+  },
+  "onto": {
+    "anchor": {
+      "accepted_ref": "heads/main",
+      "accepted_snapshot_id": "axi:snapshot:v2:sha256:66bdec2a2ca77f5064d7d4e294dacea270f14b9087b5f2b3ff952ebf45355c58",
+      "kernel_ir_digest": "axi:object-blob:v2:sha256:8a8f46c360b57c290ed888a776d8ba5450f218e349d9f7dd48053701879fec86",
+      "context_id": "plant-procurement",
+      "world_id": "accepted"
+    },
+    "refs": [
+      {
+        "kind": "relation_object",
+        "id": "PlantProcurement.ReleaseDocumentForLot"
+      }
+    ]
+  },
+  "result": {
+    "anchor": {
+      "accepted_ref": "heads/review/simulation-safety",
+      "accepted_snapshot_id": "axi:snapshot:v2:sha256:fe60e459d70df9488530aa2b16784bc36100577e392deaef1896cd673bd9ac94",
+      "kernel_ir_digest": "axi:object-blob:v2:sha256:98259d813ce1999fee7a35270c5a07e2da9d2294e88ddc73f84ae5a1cc7f84c5",
+      "context_id": "plant-simulation",
+      "world_id": "review"
+    },
+    "refs": [
+      {
+        "kind": "theory_obligation",
+        "id": "SimulationRules.RiskNodeForState.key"
+      },
+      {
+        "kind": "relation_object",
+        "id": "PlantProcurement.ReleaseDocumentForLot"
+      }
+    ]
+  },
+  "transport_items": [
+    {
+      "source_ref": {
+        "kind": "theory_obligation",
+        "id": "SimulationRules.RiskNodeForState.key"
+      },
+      "status": "opaque_or_out_of_fragment",
+      "required": true
+    }
+  ],
+  "blockers": [],
+  "resolver_steps": [],
+  "residual_obligations": []
+}

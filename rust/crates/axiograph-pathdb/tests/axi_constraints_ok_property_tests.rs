@@ -1,11 +1,17 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use axiograph_dsl::schema_v1::{
-    ConstraintV1, FieldDeclV1, InstanceAssignmentV1, RelationDeclV1, SchemaV1Instance,
-    SchemaV1Module, SchemaV1Schema, SchemaV1Theory, SetItemV1, SetLiteralV1,
+    ConstraintV1, FieldDeclV1, InstanceAssignmentV1, RelationDeclV1, RoleKindV1, SchemaV1Instance,
+    SchemaV1Module, SchemaV1Schema, SchemaV1Theory, SetItemV1, SetLiteralV1, TypeExprV1,
 };
 use axiograph_pathdb::axi_module_constraints::check_axi_constraints_ok_v1;
+use axiograph_pathdb::axi_module_typecheck::validate_axi_v1_module;
 use proptest::prelude::*;
+
+fn constraints_ok(module: SchemaV1Module) -> bool {
+    let typed = validate_axi_v1_module(module).expect("generated module should typecheck");
+    check_axi_constraints_ok_v1(&typed).is_ok()
+}
 
 fn build_single_relation_module(
     relation_fields: &[String],
@@ -27,10 +33,14 @@ fn build_single_relation_module(
                 .iter()
                 .map(|f| FieldDeclV1 {
                     field: f.clone(),
-                    ty: object_ty.clone(),
+                    ty: TypeExprV1::Object {
+                        name: object_ty.clone(),
+                    },
+                    kind: RoleKindV1::Data,
                 })
                 .collect(),
         }],
+        generators: Vec::new(),
     };
 
     let theory = SchemaV1Theory {
@@ -59,23 +69,24 @@ fn build_single_relation_module(
         });
     }
 
-    assignments.push(InstanceAssignmentV1 {
-        name: relation_name,
-        value: SetLiteralV1 {
-            items: tuples
-                .iter()
-                .map(|vals| {
-                    SetItemV1::Tuple {
+    if !tuples.is_empty() {
+        assignments.push(InstanceAssignmentV1 {
+            name: relation_name,
+            value: SetLiteralV1 {
+                items: tuples
+                    .iter()
+                    .map(|vals| SetItemV1::Tuple {
+                        label: None,
                         fields: relation_fields
                             .iter()
                             .cloned()
                             .zip(vals.iter().cloned())
                             .collect(),
-                    }
-                })
-                .collect(),
-        },
-    });
+                    })
+                    .collect(),
+            },
+        });
+    }
 
     let inst = SchemaV1Instance {
         name: "Demo".to_string(),
@@ -85,17 +96,14 @@ fn build_single_relation_module(
 
     SchemaV1Module {
         module_name: "PropTest".to_string(),
+        imports: Vec::new(),
         schemas: vec![schema],
         theories: vec![theory],
         instances: vec![inst],
     }
 }
 
-fn key_ok(
-    ordered_fields: &[String],
-    tuples: &[Vec<String>],
-    key_fields: &[String],
-) -> bool {
+fn key_ok(ordered_fields: &[String], tuples: &[Vec<String>], key_fields: &[String]) -> bool {
     let mut idxs: Vec<usize> = Vec::with_capacity(key_fields.len());
     for f in key_fields {
         let Some(idx) = ordered_fields.iter().position(|x| x == f) else {
@@ -166,8 +174,7 @@ fn symmetric_closure(
             .expect("where_field exists")
     });
 
-    let (closure_fields, projection_idxs, swap_left_proj, swap_right_proj) = if let Some(p) =
-        params
+    let (closure_fields, projection_idxs, swap_left_proj, swap_right_proj) = if let Some(p) = params
     {
         let allowed: HashSet<&str> = [carrier_left, carrier_right]
             .into_iter()
@@ -401,7 +408,7 @@ proptest! {
             functional_ok(&closure_fields, &closure_tuples, "a", "b");
 
         let expected_ok = original_ok && closure_ok;
-        let got_ok = check_axi_constraints_ok_v1(&module).is_ok();
+        let got_ok = constraints_ok(module);
         prop_assert_eq!(got_ok, expected_ok);
     }
 
@@ -454,7 +461,7 @@ proptest! {
             functional_ok(&closure_fields, &closure_tuples, "a", "b");
 
         let expected_ok = original_ok && closure_ok;
-        let got_ok = check_axi_constraints_ok_v1(&module).is_ok();
+        let got_ok = constraints_ok(module);
         prop_assert_eq!(got_ok, expected_ok);
     }
 
@@ -488,7 +495,7 @@ proptest! {
         // Key fields are chosen from the allowed closure fields: (a,b,ctx,time) (no witness).
         let mut key_idxs: Vec<usize> = key_idx_set.into_iter().collect();
         key_idxs.sort();
-        let allowed_fields = vec!["a", "b", "ctx", "time"];
+        let allowed_fields = ["a", "b", "ctx", "time"];
         let key_fields: Vec<String> = key_idxs.into_iter().map(|i| allowed_fields[i].to_string()).collect();
 
         let constraints = vec![
@@ -517,7 +524,7 @@ proptest! {
             functional_ok(&closure_fields, &closure_tuples, "a", "b");
 
         let expected_ok = original_ok && closure_ok;
-        let got_ok = check_axi_constraints_ok_v1(&module).is_ok();
+        let got_ok = constraints_ok(module);
         prop_assert_eq!(got_ok, expected_ok);
     }
 
@@ -577,7 +584,7 @@ proptest! {
             functional_ok(&closure_fields, &closure_tuples, "from", "to");
 
         let expected_ok = original_ok && closure_ok;
-        let got_ok = check_axi_constraints_ok_v1(&module).is_ok();
+        let got_ok = constraints_ok(module);
         prop_assert_eq!(got_ok, expected_ok);
     }
 
@@ -618,7 +625,7 @@ proptest! {
             functional_ok(&closure_fields, &closure_tuples, "from", "to");
 
         let expected_ok = original_ok && closure_ok;
-        let got_ok = check_axi_constraints_ok_v1(&module).is_ok();
+        let got_ok = constraints_ok(module);
         prop_assert_eq!(got_ok, expected_ok);
     }
 }

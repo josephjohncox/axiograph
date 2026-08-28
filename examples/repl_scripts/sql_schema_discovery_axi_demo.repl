@@ -1,15 +1,14 @@
-# Axiograph REPL script: schema discovery demo (drafted `.axi` module)
+# Axiograph REPL script: review-plane schema discovery inspection (drafted `.axi` module)
 #
-# This demo imports a *candidate* canonical `.axi` module that was generated from
+# This review-plane script imports a *candidate* canonical `.axi` module generated from
 # evidence-plane `proposals.json` (e.g. SQL DDL ingestion).
 #
-# Goal: show how "automated ontology engineering" bootstraps a schema so that:
-# - PathDB gets a meta-plane (schema/theory graph),
-# - AxQL planning can add implied type constraints and use keys/functionals as hints,
-# - Fact atoms benefit from FactIndex and (optionally) key-based pruning.
+# Goal: show how automated ontology engineering drafts a schema candidate so
+# reviewers can inspect the meta-plane, typed planning hints, and FactIndex use
+# before promotion into the accepted plane.
 #
 # Source proposals:
-#   examples/schema_discovery/sql_schema_proposals.json
+#   examples/schema_discovery/inputs/sql_schema_proposals.json
 #
 # Run (from repo root):
 #   make binaries
@@ -34,7 +33,7 @@ validate_axi
 
 # Visualize the imported schema meta-plane (purely tooling; not certifiable).
 viz build/sql_schema_discovery_schema.dot format dot plane meta focus_name SqlSchema hops 3 max_nodes 240
-viz build/sql_schema_discovery_schema.html format html plane meta focus_name SqlSchema hops 3 max_nodes 240
+viz build/sql_schema_discovery_schema.json format json plane meta focus_name SqlSchema hops 3 max_nodes 240
 
 stats
 
@@ -44,13 +43,10 @@ q select ?t where Orders -SqlForeignKey-> ?t limit 10
 
 # Visualize a small neighborhood around one data-plane entity.
 viz build/sql_schema_discovery_users.dot format dot focus_name Users hops 2 max_nodes 140
-viz build/sql_schema_discovery_users.html format html focus_name Users hops 2 max_nodes 140
+viz build/sql_schema_discovery_users.json format json focus_name Users hops 2 max_nodes 140
 
 # Fact atoms query the reified tuple nodes (uses FactIndex via `axi_relation="SqlHasColumn"`).
 q select ?f where ?f = SqlHasColumn(from=Users, to=Users_id) limit 10
 
 # Repeat to demonstrate the REPL's compiled query cache (same query IR + snapshot key).
 q select ?f where ?f = SqlHasColumn(from=Users, to=Users_id) limit 10
-
-export_axi build/sql_schema_discovery_export_v1.axi
-save build/sql_schema_discovery.axpd

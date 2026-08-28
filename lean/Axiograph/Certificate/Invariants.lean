@@ -18,9 +18,13 @@ Scope (today)
 
 We focus on the core witness kinds that appear in end-to-end flows:
 
-* reachability witnesses (`reachability_v2`, optionally anchored to `PathDBExportV1`)
-* normalization / rewrite witnesses (`normalize_path_v2`, `rewrite_derivation_v2`)
+* normalization and path-equivalence witnesses (`normalize_path_v2`,
+  `path_equiv_v2`)
+* internal builtin `RewriteDerivationProofV2` replay helpers used by path equivalence
 * reconciliation decisions (`resolution_v2`)
+
+Anchored domain-rule steps in `rewrite_derivation_v3` are outside these
+free-groupoid soundness theorems.
 
 This file does **not** aim to prove completeness of any algorithm (“all answers”),
 only soundness-style invariants (“these witnesses are internally consistent and
@@ -30,239 +34,6 @@ mean what they claim”).
 namespace Axiograph.Certificate.Invariants
 
 open Axiograph
-
--- =============================================================================
--- Reachability witnesses
--- =============================================================================
-
-namespace ReachabilityInvariants
-
-open Axiograph.Reachability
-
-/-!
-## Internal structure invariants (unanchored)
-
-`verifyReachabilityProofV2` is the internal checker for reachability witnesses.
-It does *not* consult any concrete graph; it only checks that the witness is a
-well-formed chain and returns the derived summary.
-
-The following theorem records that whenever verification succeeds, the returned
-summary agrees with the witness’s own “derived” fields (`start`, `end_`, etc.).
--/
-
-theorem verifyReachabilityProofV2_ok_matches_computations
-    (proof : ReachabilityProofV2)
-    (result : ReachabilityResultV2) :
-    verifyReachabilityProofV2 proof = .ok result →
-      result.start = proof.start ∧
-      result.end_ = proof.end_ ∧
-      result.pathLen = proof.pathLen ∧
-      result.confidence = proof.confidence := by
-  induction proof generalizing result with
-  | reflexive entity =>
-      intro h
-      simp [verifyReachabilityProofV2] at h
-      cases h
-      simp [ReachabilityProofV2.start, ReachabilityProofV2.end_, ReachabilityProofV2.pathLen,
-        ReachabilityProofV2.confidence]
-  | step src relType dst relConfidence relationId? rest ih =>
-      intro h
-      cases hRest : verifyReachabilityProofV2 rest with
-      | error msg =>
-          simp [verifyReachabilityProofV2, hRest] at h
-      | ok restRes =>
-          have hRestInv := ih restRes hRest
-          cases hChain : (restRes.start != dst) with
-          | true =>
-              simp [verifyReachabilityProofV2, hRest, hChain] at h
-          | false =>
-              simp [verifyReachabilityProofV2, hRest, hChain] at h
-              cases h
-              rcases hRestInv with ⟨_hStart, hEnd, hLen, hConf⟩
-              refine ⟨rfl, ?_, ?_, ?_⟩
-              · simpa [ReachabilityProofV2.end_] using hEnd
-              · simpa [ReachabilityProofV2.pathLen] using hLen
-              · simpa [ReachabilityProofV2.confidence] using congrArg (fun p => Prob.vMult relConfidence p) hConf
-
-/-!
-## Anchored structure invariants
-
-`verifyReachabilityProofV2Anchored` additionally requires each witness step to:
-
-* reference a real `relation_id` in a `PathDBExportV1` snapshot (via
-  `relation_info`), and
-* match the snapshot’s edge metadata (endpoints, rel-type, and confidence).
-
-We record this as an inductive predicate describing a “snapshot-anchored”
-reachability chain.
--/
-
-open Axiograph.Axi.PathDBExportV1
-
-inductive AnchoredReachabilityChain
-    (relationInfo : Std.HashMap Nat RelationInfoRow) :
-    ReachabilityProofV2 → Prop
-  | reflexive (entity : Nat) :
-      AnchoredReachabilityChain relationInfo (.reflexive entity)
-  | step
-      (src relType dst : Nat)
-      (relConfidence : Prob.VProb)
-      (relationId : Nat)
-      (row : RelationInfoRow)
-      (rest : ReachabilityProofV2)
-      (hGet : relationInfo.get? relationId = some row)
-      (hRelType : row.relTypeId = relType)
-      (hSource : row.source = src)
-      (hTarget : row.target = dst)
-      (hConfidence : Prob.toNat row.confidence = Prob.toNat relConfidence)
-      (hChain : rest.start = dst)
-      (hRest : AnchoredReachabilityChain relationInfo rest) :
-      AnchoredReachabilityChain relationInfo (.step src relType dst relConfidence (some relationId) rest)
-
-theorem verifyReachabilityProofV2Anchored_ok_matches_computations
-    (relationInfo : Std.HashMap Nat RelationInfoRow)
-    (proof : ReachabilityProofV2)
-    (result : ReachabilityResultV2) :
-    verifyReachabilityProofV2Anchored relationInfo proof = .ok result →
-      result.start = proof.start ∧
-      result.end_ = proof.end_ ∧
-      result.pathLen = proof.pathLen ∧
-      result.confidence = proof.confidence := by
-  induction proof generalizing result with
-  | reflexive entity =>
-      intro h
-      simp [verifyReachabilityProofV2Anchored] at h
-      cases h
-      simp [ReachabilityProofV2.start, ReachabilityProofV2.end_, ReachabilityProofV2.pathLen,
-        ReachabilityProofV2.confidence]
-  | step src relType dst relConfidence relationId? rest ih =>
-      intro h
-      cases relationId? with
-      | none =>
-          simp [verifyReachabilityProofV2Anchored] at h
-      | some relationId =>
-          cases hRow : relationInfo[relationId]? with
-          | none =>
-              simp [verifyReachabilityProofV2Anchored, hRow] at h
-          | some row =>
-              cases hEndpoints : (row.source != src || row.target != dst) with
-              | true =>
-                  simp [verifyReachabilityProofV2Anchored, hRow, hEndpoints] at h
-              | false =>
-                  cases hRelType : (row.relTypeId != relType) with
-                  | true =>
-                      simp [verifyReachabilityProofV2Anchored, hRow, hEndpoints, hRelType] at h
-                  | false =>
-                      cases hConfidence : (Prob.toNat row.confidence != Prob.toNat relConfidence) with
-                      | true =>
-                          simp [verifyReachabilityProofV2Anchored, hRow, hEndpoints, hRelType, hConfidence] at h
-                      | false =>
-                          cases hRest : verifyReachabilityProofV2Anchored relationInfo rest with
-                          | error msg =>
-                              simp [verifyReachabilityProofV2Anchored, hRow, hEndpoints, hRelType, hConfidence, hRest] at h
-                          | ok restRes =>
-                              have hRestInv := ih restRes hRest
-                              cases hChain : (restRes.start != dst) with
-                              | true =>
-                                  simp [verifyReachabilityProofV2Anchored, hRow, hEndpoints, hRelType, hConfidence, hRest, hChain] at h
-                              | false =>
-                                  simp [verifyReachabilityProofV2Anchored, hRow, hEndpoints, hRelType, hConfidence, hRest,
-                                    hChain] at h
-                                  cases h
-                                  rcases hRestInv with ⟨_hStart, hEnd, hLen, hConf⟩
-                                  refine ⟨rfl, ?_, ?_, ?_⟩
-                                  · simpa [ReachabilityProofV2.end_] using hEnd
-                                  · simpa [ReachabilityProofV2.pathLen] using hLen
-                                  · simpa [ReachabilityProofV2.confidence] using congrArg (fun p => Prob.vMult relConfidence p) hConf
-
-theorem verifyReachabilityProofV2Anchored_ok_implies_anchored_chain
-    (relationInfo : Std.HashMap Nat RelationInfoRow)
-    (proof : ReachabilityProofV2)
-    (result : ReachabilityResultV2) :
-    verifyReachabilityProofV2Anchored relationInfo proof = .ok result →
-      AnchoredReachabilityChain relationInfo proof := by
-  induction proof generalizing result with
-  | reflexive entity =>
-      intro h
-      simp [verifyReachabilityProofV2Anchored] at h
-      exact AnchoredReachabilityChain.reflexive (relationInfo := relationInfo) entity
-  | step src relType dst relConfidence relationId? rest ih =>
-      intro h
-      cases relationId? with
-      | none =>
-          simp [verifyReachabilityProofV2Anchored] at h
-      | some relationId =>
-          cases hRow : relationInfo[relationId]? with
-          | none =>
-              simp [verifyReachabilityProofV2Anchored, hRow] at h
-          | some row =>
-              cases hEndpoints : (row.source != src || row.target != dst) with
-              | true =>
-                  simp [verifyReachabilityProofV2Anchored, hRow, hEndpoints] at h
-              | false =>
-                  cases hRelType : (row.relTypeId != relType) with
-                  | true =>
-                      simp [verifyReachabilityProofV2Anchored, hRow, hEndpoints, hRelType] at h
-                  | false =>
-                      cases hConfidence : (Prob.toNat row.confidence != Prob.toNat relConfidence) with
-                      | true =>
-                          simp [verifyReachabilityProofV2Anchored, hRow, hEndpoints, hRelType, hConfidence] at h
-                      | false =>
-                          cases hRest : verifyReachabilityProofV2Anchored relationInfo rest with
-                          | error msg =>
-                              simp [verifyReachabilityProofV2Anchored, hRow, hEndpoints, hRelType, hConfidence, hRest] at h
-                          | ok restRes =>
-                              cases hChain : (restRes.start != dst) with
-                              | true =>
-                                  simp [verifyReachabilityProofV2Anchored, hRow, hEndpoints, hRelType, hConfidence, hRest,
-                                    hChain] at h
-                              | false =>
-                                  simp [verifyReachabilityProofV2Anchored, hRow, hEndpoints, hRelType, hConfidence, hRest,
-                                    hChain] at h
-                                  have hRestChain : AnchoredReachabilityChain relationInfo rest :=
-                                    ih restRes hRest
-
-                                  -- Convert the checker’s boolean guards into equalities.
-                                  have hEndpoints' :
-                                      (row.source != src) = false ∧ (row.target != dst) = false := by
-                                    exact (Bool.or_eq_false_iff).1 hEndpoints
-                                  have hSource : row.source = src :=
-                                    (bne_eq_false_iff_eq).1 hEndpoints'.left
-                                  have hTarget : row.target = dst :=
-                                    (bne_eq_false_iff_eq).1 hEndpoints'.right
-                                  have hRelTypeEq : row.relTypeId = relType :=
-                                    (bne_eq_false_iff_eq).1 hRelType
-                                  have hConfidenceEq : Prob.toNat row.confidence = Prob.toNat relConfidence :=
-                                    (bne_eq_false_iff_eq).1 hConfidence
-
-                                  -- Recover the witness-level chaining invariant `rest.start = dst`.
-                                  have hRestSummary :=
-                                    verifyReachabilityProofV2Anchored_ok_matches_computations
-                                      relationInfo rest restRes hRest
-                                  have hRestResStartEq : restRes.start = rest.start := hRestSummary.left
-                                  have hRestResStartDst : restRes.start = dst :=
-                                    (bne_eq_false_iff_eq).1 hChain
-                                  have hChainEq : rest.start = dst := by
-                                    exact hRestResStartEq.symm.trans hRestResStartDst
-
-                                  exact AnchoredReachabilityChain.step
-                                    (relationInfo := relationInfo)
-                                    (src := src)
-                                    (relType := relType)
-                                    (dst := dst)
-                                    (relConfidence := relConfidence)
-                                    (relationId := relationId)
-                                    (row := row)
-                                    (rest := rest)
-                                    (hGet := hRow)
-                                    (hRelType := hRelTypeEq)
-                                    (hSource := hSource)
-                                    (hTarget := hTarget)
-                                    (hConfidence := hConfidenceEq)
-                                    (hChain := hChainEq)
-                                    (hRest := hRestChain)
-
-end ReachabilityInvariants
 
 -- =============================================================================
 -- Reconciliation (resolution) witnesses
@@ -323,6 +94,7 @@ namespace RewriteInvariants
 
 open Axiograph.PathNormalization
 open Axiograph.RewriteDerivation
+open Axiograph.PathEquivalence
 open Axiograph.Certificate.PathRewriteSoundness
 open Axiograph.HoTT
 
@@ -428,10 +200,8 @@ we get a semantic statement “input and normalized denote the same morphism” 
 reducing to `runDerivation_preserves_denotation`.
 -/
 
-theorem verifyNormalizePathProofV2_sound_of_derivation
+theorem verifyNormalizePathProofV2_sound
     (proof : NormalizePathProofV2)
-    (steps : Array PathRewriteStepV2)
-    (hDerivation : proof.derivation? = some steps)
     (result : NormalizePathResultV2)
     (hVerify : verifyNormalizePathProofV2 proof = .ok result)
     {a b : Nat}
@@ -440,54 +210,53 @@ theorem verifyNormalizePathProofV2_sound_of_derivation
     ∃ typedNormalized : PathExpr a b,
       toTyped proof.normalized = .ok ⟨a, b, typedNormalized⟩ ∧
       denote typedInput = denote typedNormalized := by
-  have hReplay : runDerivation proof.input steps = .ok proof.normalized := by
+  have hReplay : runDerivation proof.input proof.derivation = .ok proof.normalized := by
     unfold verifyNormalizePathProofV2 at hVerify
     cases hInputEndpoints : endpoints proof.input with
     | error msg =>
         have : False := by
-            simp [hInputEndpoints] at hVerify
+          simp [hInputEndpoints] at hVerify
         exact False.elim this
     | ok inputEnds =>
         rcases inputEnds with ⟨inputStart, inputEnd⟩
         cases hNormEndpoints : endpoints proof.normalized with
         | error msg =>
             have : False := by
-                simp [hInputEndpoints, hNormEndpoints] at hVerify
+              simp [hInputEndpoints, hNormEndpoints] at hVerify
             exact False.elim this
         | ok normEnds =>
             rcases normEnds with ⟨normStart, normEnd⟩
             cases hEndpointsMismatch : (inputStart != normStart || inputEnd != normEnd) with
             | true =>
                 have : False := by
-                    simp [hInputEndpoints, hNormEndpoints, hEndpointsMismatch] at hVerify
+                  simp [hInputEndpoints, hNormEndpoints, hEndpointsMismatch] at hVerify
                 exact False.elim this
             | false =>
-                -- Reduce the optional derivation branch using `hDerivation`, then analyze `runDerivation`.
-                cases hRun : runDerivation proof.input steps with
+                cases hRun : runDerivation proof.input proof.derivation with
                 | error msg =>
                     have : False := by
-                        simp [hInputEndpoints, hNormEndpoints, hEndpointsMismatch,
-                          hDerivation, hRun] at hVerify
+                      simp [hInputEndpoints, hNormEndpoints, hEndpointsMismatch, hRun] at hVerify
                     exact False.elim this
                 | ok derived =>
                     cases hMismatch : (derived != proof.normalized) with
                     | true =>
                         have : False := by
-                            simp [hInputEndpoints, hNormEndpoints, hEndpointsMismatch,
-                              hDerivation, hRun, hMismatch] at hVerify
+                          simp [hInputEndpoints, hNormEndpoints, hEndpointsMismatch,
+                            hRun, hMismatch] at hVerify
                         exact False.elim this
-                      | false =>
-                          have hEq : derived = proof.normalized :=
-                            (bne_eq_false_iff_eq).1 hMismatch
-                          simp [hEq]
-  exact runDerivation_preserves_denotation proof.input steps proof.normalized hReplay hTyped
+                    | false =>
+                        have hEq : derived = proof.normalized :=
+                          (bne_eq_false_iff_eq).1 hMismatch
+                        exact congrArg Except.ok hEq
+  exact runDerivation_preserves_denotation proof.input proof.derivation proof.normalized hReplay hTyped
 
 /-!
-## Soundness of `rewrite_derivation_v2` certificates
+## Soundness of internal builtin replay payloads
 
-This is the generic certificate kind for replayable derivations. The verifier
-accepts iff replay succeeds and produces the claimed output; the semantic
-soundness follows from the free-groupoid rule soundness.
+`RewriteDerivationProofV2` is the builtin payload reused by normalization and
+path-equivalence checking. The verifier accepts iff replay succeeds and
+produces the claimed output; semantic soundness follows from the free-groupoid
+rule soundness. This theorem does not cover V3 anchored domain rules.
 -/
 
 theorem verifyRewriteDerivationProofV2_sound
@@ -540,6 +309,64 @@ theorem verifyRewriteDerivationProofV2_sound
                             (bne_eq_false_iff_eq).1 hMismatch
                           simp [hEq]
   exact runDerivation_preserves_denotation proof.input proof.derivation proof.output hReplay hTyped
+
+/-!
+## Soundness of accepted path-equivalence certificates
+
+`verifyPathEquivProofV2` checks two mandatory rewrite traces to one shared normal
+form. Each accepted trace preserves free-groupoid denotation, so acceptance
+implies denotational equality of the endpoint-indexed inputs. Confidence is not
+part of this equality statement.
+-/
+theorem verifyPathEquivProofV2_sound
+    (proof : PathEquivProofV2)
+    (result : PathEquivResultV2)
+    (hVerify : verifyPathEquivProofV2 proof = .ok result)
+    {a b : Nat}
+    {typedLeft typedRight : PathExpr a b}
+    (hTypedLeft : toTyped proof.left = .ok ⟨a, b, typedLeft⟩)
+    (hTypedRight : toTyped proof.right = .ok ⟨a, b, typedRight⟩) :
+    denote typedLeft = denote typedRight := by
+  cases hLeftReplay : verifyRewriteDerivationProofV2
+      (Axiograph.PathEquivalence.leftRewriteProof proof) with
+  | error msg =>
+      have impossible : (Except.error msg : Except String PathEquivResultV2) = .ok result := by
+        simp [verifyPathEquivProofV2, hLeftReplay] at hVerify
+      cases impossible
+  | ok leftResult =>
+      cases hRightReplay : verifyRewriteDerivationProofV2
+          (Axiograph.PathEquivalence.rightRewriteProof proof) with
+      | error msg =>
+          have impossible : (Except.error msg : Except String PathEquivResultV2) = .ok result := by
+            simp [verifyPathEquivProofV2, hLeftReplay, hRightReplay] at hVerify
+          cases impossible
+      | ok rightResult =>
+          rcases verifyRewriteDerivationProofV2_sound
+              (Axiograph.PathEquivalence.leftRewriteProof proof)
+              leftResult hLeftReplay
+              (by simpa [Axiograph.PathEquivalence.leftRewriteProof] using hTypedLeft) with
+            ⟨typedNormalizedLeft, hTypedNormalizedLeft, hDenoteLeft⟩
+          rcases verifyRewriteDerivationProofV2_sound
+              (Axiograph.PathEquivalence.rightRewriteProof proof)
+              rightResult hRightReplay
+              (by simpa [Axiograph.PathEquivalence.rightRewriteProof] using hTypedRight) with
+            ⟨typedNormalizedRight, hTypedNormalizedRight, hDenoteRight⟩
+          have hNormalizedType : typedNormalizedLeft = typedNormalizedRight := by
+            have hOk :
+                (Except.ok (ε := String)
+                  (⟨a, b, typedNormalizedLeft⟩ : TypedSigma)) =
+                .ok (⟨a, b, typedNormalizedRight⟩ : TypedSigma) :=
+              hTypedNormalizedLeft.symm.trans hTypedNormalizedRight
+            have hSigma :
+                (⟨a, b, typedNormalizedLeft⟩ : TypedSigma) =
+                (⟨a, b, typedNormalizedRight⟩ : TypedSigma) :=
+              Except.ok.inj hOk
+            cases hSigma
+            rfl
+          calc
+            denote typedLeft = denote typedNormalizedLeft := hDenoteLeft
+            _ = denote typedNormalizedRight := by rw [hNormalizedType]
+            _ = denote typedRight := hDenoteRight.symm
 
 end RewriteInvariants
 

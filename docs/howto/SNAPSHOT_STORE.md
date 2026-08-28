@@ -1,191 +1,206 @@
-# Snapshot Store (Accepted Plane + PathDB WAL)
+# AxiStore Accepted-State Authority
 
 **Diataxis:** How-to  
-**Audience:** users (and operators)
+**Audience:** operators and contributors
 
-This repo treats **canonical `.axi`** as the source of truth, and treats **PathDB**
-(`.axpd`) as a derived, rebuildable index for fast query/REPL workflows.
+AxiStore is the sole persistence authority for accepted ontology state and
+semantic lineage. Canonical accepted UTF-8 `.axi` bytes remain the meaning
+plane. PathDB and `.axpd` remain derived query materializations.
 
-To make continuous ingest and discovery practical (without rebuilding from
-scratch every time), we store an **append-only PathDB WAL** *under* the accepted
-plane directory.
+## Layout
 
-## Goals
-
-- `.axi` is canonical, reviewable, diffable.
-- Promotion into the accepted plane is explicit and append-only.
-- PathDB snapshots are derived from accepted snapshots and can be checked out by
-  id.
-- Extension-layer mutations (doc chunks, heuristic links, etc.) are stored as
-  WAL ops and are **not** part of the certified core unless explicitly promoted
-  into canonical `.axi`.
-
-## Directory layout
-
-An accepted-plane directory (default: `build/accepted_plane`) contains:
-
-```
-build/accepted_plane/
-  modules/<ModuleName>/<digest>.axi
-  snapshots/<accepted_snapshot_id>.json
-  accepted_plane.log.jsonl
-  HEAD
-
-  pathdb/
-    blobs/<digest>.chunks.json
-    blobs/<digest>.proposals.json
-    snapshots/<pathdb_snapshot_id>.json
-    checkpoints/<pathdb_snapshot_id>.axpd
-    pathdb_wal.log.jsonl
-    HEAD
+```text
+<store>/
+  catalog.sqlite
+  catalog.sqlite-wal
+  catalog.sqlite-shm
+  objects/
+    sha256/
+      <64-lowercase-hex>
+  materializations/
+    <MaterializationIdV2>.axpd
+    <MaterializationIdV2>.receipt.json
 ```
 
-### Accepted-plane snapshots
+Do not copy this directory to replicate authority and do not copy mutable
+pointers. Replication needs an authenticated object-transfer and catalog
+protocol; direct filesystem replication is deliberately not provided.
 
-- `HEAD` points to the latest accepted snapshot id.
-- Each accepted snapshot manifest lists the set of modules (by digest + stored path).
-- Snapshot ids are **content-derived** (stable): change the module set and the
-  snapshot id changes.
+The SQLite catalog uses the `AXIS` application id, the greenfield V2 schema,
+a pinned 4096-byte page size, WAL mode, `synchronous=FULL`, foreign
+keys, strict tables, bounded SQLite parser/runtime limits, and a bounded busy
+timeout. Catalog, WAL, SHM, object, publication, module, ref, and reachable-DAG
+limits are checked before unbounded reads or decoding. Catalog and immutable
+object paths must be regular files under real directories; symlink substitution
+fails closed.
 
-### PathDB WAL snapshots
+The immutable object directory stores exact repository descriptors, `.axi`
+revisions, trees, snapshots, build artifacts, reports, certificates, receipts,
+reconciliations, and semantic commits.
 
-- `pathdb/HEAD` points to the latest **PathDB** snapshot id.
-- A PathDB snapshot manifest records:
-  - the accepted snapshot id it is derived from, and
-  - a cumulative list of WAL ops (currently: `ImportChunksV1`, `ImportProposalsV1`).
-- A checkpoint `.axpd` is stored per snapshot id for fast checkout.
+## Initialize
 
-## CLI usage
+Use the library API in `axiograph-store`:
 
-For “git-like” inspection, you can also use:
+```rust
+use axiograph_store::{AxiStore, RepositoryDescriptor};
+
+let descriptor = RepositoryDescriptor::new(
+    "example-ontology",
+    "operator-generated-genesis-nonce",
+)?;
+let store = AxiStore::init("build/axi-store", &descriptor)?;
+```
+
+The descriptor's exact canonical bytes create the repository genesis identity.
+Reopening with a different descriptor fails.
+
+## Build a promotion
+
+A `PromotionPlan` contains:
+
+- every exact accepted module byte string;
+- the sorted `AcceptedTree`;
+- an `AcceptedSnapshot` with zero, one, or two ordered parents;
+- immutable compiled IR, canonical fact log, validation, CQ, theory, and
+  checker-receipt objects;
+- an `AcceptedBuildManifest` binding that complete closure and explicit
+  non-claims;
+- an optional immutable `Reconciliation` for a merge;
+- one `SemanticCommit` binding the repository, ordered parents, typed delta,
+  gates, attachments, provenance, lifecycle events, and exact accepted
+  anchors; and
+- optional review/evidence ref updates targeting that commit.
+
+Protected main requires all four gate families: canonical validation,
+competency questions, runtime theory, and trusted-checker receipt. A failed or
+missing gate rejects promotion. Runtime validation remains a Rust finite check;
+it is not relabeled as a Lean proof.
+
+## Promote with generation CAS
+
+```rust
+let before = store.status()?;
+let after = store.promote(before.state.generation, &plan)?;
+assert_eq!(after.state.generation, before.state.generation + 1);
+```
+
+Promotion validates per-object and aggregate publication limits, then publishes
+and fsyncs immutable objects first. It uses one `BEGIN IMMEDIATE` transaction to
+validate the complete closure, insert catalog rows, move protected `heads/main`
+and requested review refs, append the contiguous audit sequence/hash chain, and
+CAS the singleton `store_state` row. A stale writer receives
+`AxiStoreError::StaleState`; the winner cannot lose an update or split accepted
+snapshot and semantic heads.
+
+## Candidate branches and tags
+
+`publish_candidate` publishes a complete authenticated commit to a review or
+evidence branch without changing accepted main. It still advances the singleton
+generation, ref-map digest, and audit tail in one transaction.
+
+```rust
+let status = store.publish_candidate(
+    generation,
+    "heads/review/schema-change",
+    expected_tip.as_ref(),
+    &candidate_plan,
+)?;
+
+let tagged = store.create_tag(
+    status.state.generation,
+    "tags/release-2026-01",
+    &commit_id,
+)?;
+```
+
+Tags are immutable. `heads/main` cannot be moved through the branch API.
+
+## Inspect and prove lineage
+
+```rust
+let status = store.status()?;
+let branches = store.branches()?;
+let tags = store.tags()?;
+let base = store.merge_base(&left_tip, &right_tip)?;
+let proof = store.lineage_proof(
+    &subject,
+    &ancestor,
+    &LineagePin::SubjectCommit(subject.clone()),
+)?;
+```
+
+Merge-base selection computes maximal common ancestors. One candidate succeeds;
+zero fails; multiple maximal candidates return
+`AxiStoreError::AmbiguousMergeBase`. No distance heuristic or digest tie-breaker
+chooses between criss-cross bases.
+
+A lineage proof must pin the exact current state when its subject is accepted
+main, or independently pin the subject commit. Repository identity alone is not
+an acceptable proof anchor.
+
+## Publish and open PathDB materializations
+
+Construct `AxpdBuildSpec` from the exact accepted build manifest, compiled
+kernel snapshot, canonical fact log, configuration, and ordered overlays. Then:
+
+```rust
+let receipt = store.publish_axpd(build_spec, &AxpdLimits::default())?;
+let verified = store.open_axpd(
+    &receipt.materialization_id,
+    &AxpdLimits::default(),
+)?;
+```
+
+The receipt binds accepted snapshot/tree/module/kernel/fact-log/overlay anchors,
+the canonical logical digest, exact SQLite image digest, versions, and
+configuration. Publication, recovery, and every open also require those anchors
+to match a build manifest whose semantic commit appeared as protected accepted
+main in the checksum-validated AxiStore audit history. Repository membership or
+a review/evidence candidate manifest is insufficient. Opening then recomputes
+all receipt and image fields before returning rows. Use `load_verified_pathdb`
+to hydrate runtime indexes after verification.
+
+## Determinism scope
+
+Identical repository descriptors and promotion inputs produce identical object,
+tree, snapshot, manifest, commit, ref-map, audit, and `StoreState` identities
+and identical immutable object bytes. Mutable `catalog.sqlite`/WAL page bytes are
+not an identity surface and are not claimed to be byte-for-byte deterministic;
+SQLite owns their physical layout. `.axpd` has separate logical and exact-image
+digests under a pinned materializer/SQLite version.
+
+## Restart and corruption checks
+
+`AxiStore::open` validates:
+
+- repository descriptor identity and exact bytes;
+- every reachable object hash and kind;
+- accepted tree module ordering and exact revision bytes;
+- snapshot and commit parent ordering, closure, and acyclicity;
+- build-manifest artifacts and explicit non-claims;
+- reconciliation base/tips, decisions, preview, and certificates;
+- protected main, every branch/tag target, and ref-map digest;
+- the complete audit hash chain; and
+- the singleton accepted snapshot/commit/manifest tuple.
+
+Missing parents, cycles, partial state, tampered catalog fields, or changed
+object bytes reject the store. Unreachable immutable objects left by a crash
+before catalog commit are harmless and may be garbage-collected only by a
+future closure-aware maintenance operation.
+
+## Focused gate
 
 ```bash
-cd rust
-axiograph db accept init --dir ../build/accepted_plane
-axiograph db accept status --dir ../build/accepted_plane
-axiograph db accept list --dir ../build/accepted_plane --layer accepted --limit 20
-axiograph db accept list --dir ../build/accepted_plane --layer pathdb --limit 20
-axiograph db accept show --dir ../build/accepted_plane --layer accepted --snapshot head
-axiograph db accept show --dir ../build/accepted_plane --layer pathdb --snapshot head
-axiograph db accept log --dir ../build/accepted_plane --layer accepted --limit 20
-axiograph db accept log --dir ../build/accepted_plane --layer pathdb --limit 20
+make verify-axi-store
+# or
+cd rust && cargo test -p axiograph-store
 ```
 
-Snapshot ids can be passed as:
-- `head` / `latest`
-- a full id (`fnv1a64:...`)
-- or a unique prefix (e.g. `a05581cb` or `fnv1a64:a05581cb`)
-
-## Serving snapshots (HTTP)
-
-If you want a long-running process that keeps a snapshot loaded and serves
-queries/viz over HTTP, use:
-
-- `axiograph db serve` (documented in `docs/howto/DB_SERVER.md`).
-
-### 1) Promote canonical `.axi` into the accepted plane
-
-```bash
-cd rust
-axiograph db accept promote ../examples/economics/EconomicFlows.axi \
-  --dir ../build/accepted_plane \
-  --message "reviewed: initial economics module"
-```
-
-This prints the new accepted snapshot id.
-
-### 2) Build a base `.axpd` from an accepted snapshot
-
-```bash
-cd rust
-axiograph db accept build-pathdb \
-  --dir ../build/accepted_plane \
-  --snapshot latest \
-  --out ../build/accepted_base.axpd
-```
-
-### 3) Commit extension-layer overlays into the PathDB WAL (optional)
-
-This is useful for discovery workflows: you can import doc/code chunks as graph
-nodes to enable `fts(...)` / `contains(...)`, viz, and LLM grounding.
-
-```bash
-cd rust
-axiograph db accept pathdb-commit \
-  --dir ../build/accepted_plane \
-  --accepted-snapshot latest \
-  --chunks ../build/ingest_chunks.json \
-  --message "import chunks for discovery"
-```
-
-You can also preserve cross-domain extracted structure by importing a
-`proposals.json` file (Evidence/Proposals schema) into the WAL:
-
-```bash
-cd rust
-axiograph db accept pathdb-commit \
-  --dir ../build/accepted_plane \
-  --accepted-snapshot latest \
-  --proposals ../build/proposals.json \
-  --message "preserve evidence-plane proposals"
-```
-
-This prints the new PathDB snapshot id (distinct from the accepted snapshot id).
-
-### 4) Check out a `.axpd` from the PathDB WAL snapshot
-
-```bash
-cd rust
-axiograph db accept pathdb-build \
-  --dir ../build/accepted_plane \
-  --snapshot latest \
-  --out ../build/accepted_with_chunks.axpd
-```
-
-## Trust boundary (important)
-
-- The accepted plane is the **canonical meaning plane**.
-- The PathDB WAL is a **derived query substrate** that can include non-certified
-  overlays.
-
-Rule of thumb:
-
-- **Certified answers** should be anchored to accepted `.axi` inputs (digest +
-  extracted fact ids) and checked by Lean.
-- WAL overlays are for:
-  - discovery,
-  - evidence navigation,
-  - retrieval/grounding,
-  - interactive ontology engineering,
-  - and performance (incremental ingest).
-
-If/when an overlay becomes “accepted knowledge”, it should be **explicitly
-promoted** into canonical `.axi` (and thus becomes part of the accepted snapshot).
-
-## Master/replica (read replicas)
-
-The simplest distributed deployment is:
-
-- a **single write master** that runs promotion + WAL commits, and
-- one or more **read replicas** that sync the snapshot store directory and serve queries/viz/REPL.
-
-Because the store is “mostly immutable objects + small HEAD pointers”, replication can be done by
-copying missing objects and then updating HEAD.
-
-### Filesystem sync (v1)
-
-Use the built-in sync command:
-
-```bash
-cd rust
-axiograph db accept sync \
-  --from ../build/master_plane \
-  --dir  ../build/replica_plane \
-  --layer both \
-  --include-checkpoints
-```
-
-Notes:
-
-- `--no-update-head` copies immutable objects only (safer for staged rollouts).
-- `--include-checkpoints` is optional: replicas can rebuild `.axpd` checkpoints from manifests + blobs.
+The gate covers failure injection after every object write/fsync/publication,
+materialization image/receipt write/fsync/publication, and catalog
+begin/event/state/commit step. It also covers concurrent CAS writers, catalog
+identity/schema/size substitution, object-size limits, audit sequence/checksum
+tampering, missing parents, cycles, ordered merge parents, maximal-base
+ambiguity, independently pinned lineage subjects, branch movement, tags, and
+restart.

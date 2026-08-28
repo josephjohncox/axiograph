@@ -1,0 +1,25 @@
+{
+  "version": "embedding_evidence_overlay_v1",
+  "kind": "embedding_evidence_overlay_v1",
+  "coverage_mode": "advisory",
+  "source_manifest": "examples/llm_sync/embedding_sidecar_manifest_example.json",
+  "observations": [
+    {
+      "observation_id": "obs:titanium-chatter-rule",
+      "source_target_id": "chunk:machining_conversation:0",
+      "candidate_ref": "MachinistLearning.TitaniumChatterMitigationRule",
+      "relationship_kind": "candidate_supports_rule",
+      "score": 0.82,
+      "score_semantics": "cosine_similarity_demo",
+      "suggested_refinement": {
+        "kind": "runtime_refinement_handle_v1",
+        "action": "review_candidate_rule_support",
+        "target": "business_rule:titanium_chatter_mitigation"
+      },
+      "caveats": [
+        "Similarity is evidence, not semantic equivalence.",
+        "Promotion requires typed validation, CQ/trust gates, and semantic VCS review."
+      ]
+    }
+  ]
+}

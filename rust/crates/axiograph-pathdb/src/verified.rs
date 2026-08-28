@@ -57,7 +57,8 @@ impl Serialize for VerifiedProb {
     where
         S: Serializer,
     {
-        // v1 certificates use float-on-the-wire for backwards compatibility.
+        // Current v1 certificate payloads use float-on-the-wire; trusted checks
+        // lower this back into bounded fixed-point values.
         serializer.serialize_f32(self.value())
     }
 }
@@ -68,25 +69,17 @@ impl<'de> Deserialize<'de> for VerifiedProb {
         D: Deserializer<'de>,
     {
         let value = f32::deserialize(deserializer)?;
-        VerifiedProb::try_new(value).ok_or_else(|| {
+        VerifiedProb::new(value).ok_or_else(|| {
             serde::de::Error::custom("VerifiedProb must be a finite float in [0, 1]")
         })
     }
 }
 
 impl VerifiedProb {
-    /// Create a new probability value
-    /// Verus: requires 0.0 <= value <= 1.0
-    /// Verus: ensures result.value == value
-    #[cfg_attr(verus, requires(0.0 <= value && value <= 1.0))]
-    #[cfg_attr(verus, ensures(|result: VerifiedProb| result.value == value))]
-    pub fn new(value: f32) -> Self {
-        Self::try_new(value).expect("VerifiedProb::new: value must be in [0, 1]")
-    }
-
-    /// Try to create a probability, returning None if invalid
-    pub fn try_new(value: f32) -> Option<Self> {
-        if !value.is_finite() || value < 0.0 || value > 1.0 {
+    /// Create a probability, returning `None` unless the input is finite and in `[0, 1]`.
+    #[must_use]
+    pub fn new(value: f32) -> Option<Self> {
+        if !value.is_finite() || !(0.0..=1.0).contains(&value) {
             return None;
         }
         Some(Self {
@@ -167,146 +160,6 @@ fn prob_and_invariant_proof() {
     // 0 <= p <= 1
     // 0 <= q <= 1
     // => 0 <= p * q <= 1 (since both are non-negative and <= 1)
-}
-
-// ============================================================================
-// Binary Format Constants (PathDB `.axpd` v2)
-// ============================================================================
-
-/// Magic number: "AXPD" in ASCII
-pub const MAGIC_NUMBER: u32 = 0x41585044;
-
-/// Current format version
-pub const FORMAT_VERSION: u32 = 2;
-
-/// Feature flags
-pub mod feature_flags {
-    pub const MODAL_LOGIC: u64 = 1 << 0;
-    pub const PROBABILISTIC: u64 = 1 << 1;
-    pub const TEMPORAL_LOGIC: u64 = 1 << 2;
-    pub const EPISTEMIC_LOGIC: u64 = 1 << 3;
-    pub const DEONTIC_LOGIC: u64 = 1 << 4;
-    pub const HOTT_EQUIV: u64 = 1 << 5;
-    pub const COMPRESSION: u64 = 1 << 8;
-    pub const ENCRYPTION: u64 = 1 << 9;
-}
-
-/// Section IDs (PathDB `.axpd` v2)
-pub mod section_ids {
-    pub const HEADER: u8 = 0x01;
-    pub const STRING_TABLE: u8 = 0x02;
-    pub const ENTITY_TABLE: u8 = 0x03;
-    pub const RELATION_TABLE: u8 = 0x04;
-    pub const PATH_INDEX: u8 = 0x05;
-    pub const MODAL_FRAME: u8 = 0x10;
-    pub const PROB_DIST: u8 = 0x11;
-    pub const EQUIVALENCES: u8 = 0x12;
-    pub const METADATA: u8 = 0xFF;
-}
-
-// ============================================================================
-// Verified Binary Header
-// ============================================================================
-
-/// Binary file header (64 bytes, fixed size)
-#[repr(C, packed)]
-#[derive(Debug, Clone, Copy)]
-pub struct BinaryHeader {
-    pub magic: u32,
-    pub version: u32,
-    pub flags: u64,
-    pub string_offset: u64,
-    pub entity_offset: u64,
-    pub relation_offset: u64,
-    pub path_index_offset: u64,
-    pub total_size: u64,
-    pub checksum: u64,
-}
-
-impl BinaryHeader {
-    /// Header size in bytes
-    pub const SIZE: usize = 64;
-
-    /// Validate the header
-    #[cfg_attr(
-        verus,
-        ensures(|result: bool| result ==> self.magic == MAGIC_NUMBER && self.version <= FORMAT_VERSION)
-    )]
-    pub fn is_valid(&self) -> bool {
-        self.magic == MAGIC_NUMBER
-            && self.version >= 1
-            && self.version <= FORMAT_VERSION
-            && self.string_offset < self.total_size
-            && self.entity_offset < self.total_size
-            && self.relation_offset < self.total_size
-    }
-
-    /// Check if a feature is enabled
-    pub fn has_feature(&self, flag: u64) -> bool {
-        (self.flags & flag) != 0
-    }
-
-    /// Parse header from bytes
-    #[cfg_attr(verus, requires(bytes.len() >= Self::SIZE))]
-    pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
-        if bytes.len() < Self::SIZE {
-            return None;
-        }
-
-        let header = Self {
-            magic: u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]),
-            version: u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]),
-            flags: u64::from_le_bytes([
-                bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14],
-                bytes[15],
-            ]),
-            string_offset: u64::from_le_bytes([
-                bytes[16], bytes[17], bytes[18], bytes[19], bytes[20], bytes[21], bytes[22],
-                bytes[23],
-            ]),
-            entity_offset: u64::from_le_bytes([
-                bytes[24], bytes[25], bytes[26], bytes[27], bytes[28], bytes[29], bytes[30],
-                bytes[31],
-            ]),
-            relation_offset: u64::from_le_bytes([
-                bytes[32], bytes[33], bytes[34], bytes[35], bytes[36], bytes[37], bytes[38],
-                bytes[39],
-            ]),
-            path_index_offset: u64::from_le_bytes([
-                bytes[40], bytes[41], bytes[42], bytes[43], bytes[44], bytes[45], bytes[46],
-                bytes[47],
-            ]),
-            total_size: u64::from_le_bytes([
-                bytes[48], bytes[49], bytes[50], bytes[51], bytes[52], bytes[53], bytes[54],
-                bytes[55],
-            ]),
-            checksum: u64::from_le_bytes([
-                bytes[56], bytes[57], bytes[58], bytes[59], bytes[60], bytes[61], bytes[62],
-                bytes[63],
-            ]),
-        };
-
-        if header.is_valid() {
-            Some(header)
-        } else {
-            None
-        }
-    }
-
-    /// Serialize to bytes
-    pub fn to_bytes(&self) -> [u8; Self::SIZE] {
-        let mut result = [0u8; Self::SIZE];
-        result[0..4].copy_from_slice(&self.magic.to_le_bytes());
-        result[4..8].copy_from_slice(&self.version.to_le_bytes());
-        result[8..16].copy_from_slice(&self.flags.to_le_bytes());
-        result[16..24].copy_from_slice(&self.string_offset.to_le_bytes());
-        result[24..32].copy_from_slice(&self.entity_offset.to_le_bytes());
-        result[32..40].copy_from_slice(&self.relation_offset.to_le_bytes());
-        result[40..48].copy_from_slice(&self.path_index_offset.to_le_bytes());
-        result[48..56].copy_from_slice(&self.total_size.to_le_bytes());
-        result[56..64].copy_from_slice(&self.checksum.to_le_bytes());
-        result
-    }
 }
 
 // ============================================================================
@@ -741,58 +594,27 @@ mod tests {
 
     #[test]
     fn test_verified_prob() {
-        let p = VerifiedProb::new(0.7);
+        let p = VerifiedProb::new(0.7).unwrap();
         assert!(p.value() >= 0.0 && p.value() <= 1.0);
 
         let complement = p.complement();
         assert!((complement.value() - 0.3).abs() < 0.001);
+
+        for invalid in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, -0.1, 1.1] {
+            assert_eq!(VerifiedProb::new(invalid), None);
+        }
     }
 
     #[test]
     fn test_verified_prob_algebra() {
-        let p = VerifiedProb::new(0.5);
-        let q = VerifiedProb::new(0.5);
+        let p = VerifiedProb::new(0.5).unwrap();
+        let q = VerifiedProb::new(0.5).unwrap();
 
         let and_result = p.and_independent(&q);
         assert!((and_result.value() - 0.25).abs() < 0.001);
 
         let or_result = p.or_independent(&q);
         assert!((or_result.value() - 0.75).abs() < 0.001);
-    }
-
-    #[test]
-    fn test_binary_header() {
-        let header = BinaryHeader {
-            magic: MAGIC_NUMBER,
-            version: FORMAT_VERSION,
-            flags: feature_flags::MODAL_LOGIC | feature_flags::PROBABILISTIC,
-            string_offset: 64,
-            entity_offset: 1000,
-            relation_offset: 2000,
-            path_index_offset: 3000,
-            total_size: 10000,
-            checksum: 0,
-        };
-
-        assert!(header.is_valid());
-        assert!(header.has_feature(feature_flags::MODAL_LOGIC));
-        assert!(header.has_feature(feature_flags::PROBABILISTIC));
-        assert!(!header.has_feature(feature_flags::TEMPORAL_LOGIC));
-
-        // Round-trip test
-        let bytes = header.to_bytes();
-        let parsed = BinaryHeader::from_bytes(&bytes).unwrap();
-        let parsed_magic = parsed.magic;
-        let header_magic = header.magic;
-        assert_eq!(parsed_magic, header_magic);
-
-        let parsed_version = parsed.version;
-        let header_version = header.version;
-        assert_eq!(parsed_version, header_version);
-
-        let parsed_flags = parsed.flags;
-        let header_flags = header.flags;
-        assert_eq!(parsed_flags, header_flags);
     }
 
     #[test]
@@ -837,9 +659,9 @@ mod tests {
         let dist = EncodedDistribution {
             var_id: 1,
             outcomes: vec![
-                (0, VerifiedProb::new(0.3)),
-                (1, VerifiedProb::new(0.3)),
-                (2, VerifiedProb::new(0.4)),
+                (0, VerifiedProb::new(0.3).unwrap()),
+                (1, VerifiedProb::new(0.3).unwrap()),
+                (2, VerifiedProb::new(0.4).unwrap()),
             ],
         };
 
@@ -852,12 +674,12 @@ mod tests {
             from: 1,
             rel_type: 10,
             to: 2,
-            rel_confidence: VerifiedProb::new(0.9),
+            rel_confidence: VerifiedProb::new(0.9).unwrap(),
             rest: Box::new(ReachabilityProof::Step {
                 from: 2,
                 rel_type: 11,
                 to: 3,
-                rel_confidence: VerifiedProb::new(0.8),
+                rel_confidence: VerifiedProb::new(0.8).unwrap(),
                 rest: Box::new(ReachabilityProof::Reflexive { entity: 3 }),
             }),
         };

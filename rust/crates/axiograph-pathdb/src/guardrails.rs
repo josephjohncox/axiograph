@@ -215,7 +215,7 @@ impl GuardrailEngine {
         }
 
         // Sort by severity (most severe first)
-        violations.sort_by(|a, b| b.severity.cmp(&a.severity));
+        violations.sort_by_key(|violation| std::cmp::Reverse(violation.severity));
         violations
     }
 
@@ -427,8 +427,8 @@ impl LearningProvider for KGLearningProvider {
 
                 resources.push(LearningResource {
                     resource_type: LearningResourceType::Concept,
-                    title: format!("Concept #{}", concept_id),
-                    description: format!("Related to '{}'", topic),
+                    title: format!("Concept #{concept_id}"),
+                    description: format!("Related to '{topic}'"),
                     kg_path: Some(vec!["Concept".to_string(), concept_id.to_string()]),
                     url: None,
                     relevance: 0.7,
@@ -441,7 +441,7 @@ impl LearningProvider for KGLearningProvider {
             for guideline_id in guidelines.iter().take(5) {
                 resources.push(LearningResource {
                     resource_type: LearningResourceType::SafetyRule,
-                    title: format!("Safety Guideline #{}", guideline_id),
+                    title: format!("Safety Guideline #{guideline_id}"),
                     description: "Safety-related guidance".to_string(),
                     kg_path: Some(vec![
                         "SafetyGuideline".to_string(),
@@ -525,7 +525,7 @@ impl ProgressiveDisclosure {
                     violation.explanation
                 );
                 if let Some(suggestion) = violation.suggestions.first() {
-                    output.push_str(&format!("💡 {}\n", suggestion));
+                    output.push_str(&format!("💡 {suggestion}\n"));
                 }
                 output
             }
@@ -595,7 +595,7 @@ impl ProgressiveDisclosure {
                             resource.description
                         ));
                         if let Some(url) = &resource.url {
-                            output.push_str(&format!("URL: {}\n", url));
+                            output.push_str(&format!("URL: {url}\n"));
                         }
                         output.push('\n');
                     }
@@ -627,10 +627,12 @@ impl ProgressiveDisclosure {
     }
 
     fn truncate(&self, s: &str, max_len: usize) -> String {
-        if s.len() <= max_len {
+        let mut chars = s.chars();
+        let prefix: String = chars.by_ref().take(max_len).collect();
+        if chars.next().is_none() {
             s.to_string()
         } else {
-            format!("{}...", &s[..max_len])
+            format!("{prefix}...")
         }
     }
 }
@@ -840,6 +842,13 @@ mod tests {
             DisclosureLevel::from_experience(0.9),
             DisclosureLevel::Expert
         );
+    }
+
+    #[test]
+    fn truncation_counts_characters_without_splitting_utf8() {
+        let disclosure = ProgressiveDisclosure::new(DisclosureLevel::Minimal);
+        assert_eq!(disclosure.truncate("é🙂x", 2), "é🙂...");
+        assert_eq!(disclosure.truncate("é🙂x", 3), "é🙂x");
     }
 
     #[test]

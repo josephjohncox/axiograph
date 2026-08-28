@@ -3,6 +3,15 @@
 **Diataxis:** Explanation  
 **Audience:** contributors
 
+## Boundary
+
+Status note: this is an advanced/research integration note. Axiograph's core
+runtime surface is a predictive proposal adapter plus bounded proposal rollout.
+The core does **not** claim native JEPA, world-model, MPC, or control semantics.
+Calling a JEPA-style component a "world model" here is a research hypothesis
+about an external adapter implementation, not a claim about the trusted
+Axiograph kernel or default runtime.
+
 ## What is a JEPA (quick refresher)
 
 A Joint-Embedding Predictive Architecture (JEPA) learns representations by
@@ -25,11 +34,13 @@ practice.
 ## Why JEPA fits Axiograph's architecture
 
 Axiograph already separates:
+
 - **Accepted plane** (canonical `.axi` meaning plane),
 - **Evidence plane** (proposals/chunks), and
 - **Derived PathDB** (`.axpd`) optimized for query.
 
 JEPA is a natural *untrusted* learner for the evidence plane:
+
 - It can predict missing or future structure without committing to symbolic
   correctness.
 - Its outputs can be turned into **candidate facts/relations** in
@@ -42,6 +53,7 @@ JEPA can propose; certificates validate.
 ## Axiograph as grounded + provable substrate
 
 JEPA needs stable, structured context/target pairs. Axiograph provides:
+
 - **Grounded state**: accepted-plane anchors (snapshot ids) + evidence overlays.
 - **Typed structure**: schema-scoped facts and relations, making targets
   explicit and auditable.
@@ -50,27 +62,33 @@ JEPA needs stable, structured context/target pairs. Axiograph provides:
 - **Provable checks**: Lean certificates for constraints, rewrite rules, and
   canonical semantics.
 
-This enables a loop where JEPA learns from grounded snapshots and emits
-predictions back into the evidence plane, while promotion into the accepted
-plane remains certificate-checked.
+This enables a loop where JEPA learns from canonical grounded `.axi` modules and
+emits predictions back into the evidence plane, while promotion into the
+accepted plane remains certificate-checked.
 
 ## Mapping JEPA concepts onto Axiograph
 
 ### Context block
+
 Axiograph contexts can be built from:
+
 - A PathDB subgraph around a query anchor (entities + relations + confidence),
 - Context/world metadata (provenance, source, time), and
 - Nearby DocChunks (text evidence).
 
 ### Target block
+
 Targets can be:
+
 - Masked fact nodes (reified n-ary tuples),
 - Masked relations (edge types + endpoints),
 - Future snapshot deltas (time-evolution), or
 - Missing attributes in schema-scoped instances.
 
 ### Predictor output
+
 Instead of raw facts, the JEPA predictor outputs **embeddings**:
+
 - Use nearest-neighbor to propose likely relation/attribute values.
 - Store predicted candidates as evidence-plane proposals with confidence.
 - Optionally store embeddings as snapshot-scoped sidecars for fast retrieval.
@@ -78,16 +96,19 @@ Instead of raw facts, the JEPA predictor outputs **embeddings**:
 ## Practical training setups (Axiograph-specific)
 
 1) **Masked fact prediction**
+
 - Sample a subgraph context.
 - Mask a set of fact nodes or relation edges.
 - Predict embeddings of the masked items.
 
-2) **Cross-context prediction**
+1) **Cross-context prediction**
+
 - Use one context/world as input (ObservedSensors).
 - Predict embeddings in another context/world (Simulation or Literature).
 - Helps discover alignment gaps and reconciliation candidates.
 
-3) **Snapshot delta prediction**
+1) **Snapshot delta prediction**
+
 - Context = snapshot N.
 - Target = snapshot N+1 delta (added/changed facts).
 - Useful for forecasting or "what changed" priors.
@@ -96,18 +117,32 @@ Instead of raw facts, the JEPA predictor outputs **embeddings**:
 
 - **Evidence plane:** `proposals.json` can store JEPA-generated candidates.
 - **DocChunks:** existing chunk overlays enable embedding-grounded JEPA inputs.
-- **Optional embeddings:** `axiograph db accept pathdb-embed` already stores
-  snapshot-scoped embeddings for retrieval.
+- **Optional embeddings:** typed, snapshot-scoped embedding evidence remains
+  outside accepted meaning and outside the SQLite materialization identity
+  unless explicitly included as a digested overlay.
 - **LLM sync / discovery:** JEPA can act as a fast, non-LLM candidate generator
   upstream of reconciliation and promotion.
 
 ## Current CLI / server hooks
 
-- **Training export:** `axiograph discover jepa-export ...` (from full `.axi` modules).
-- **World model proposals:** `axiograph ingest world-model ...` (emits `proposals.json`
-  with provenance) or the built-in LLM plugin `axiograph ingest world-model-plugin-llm`.
-- **REPL:** `wm` subcommand (configure backend, emit proposals, optional WAL commit).
-- **DB server:** `POST /world_model/propose` (evidence plane; optional WAL commit).
+- **Training export:** `axiograph discover training-export ...`
+  (from full `.axi` modules).
+- **Predictive proposals:** `axiograph ingest predictive-proposal ...` (emits
+  `proposals.json` with provenance) or the built-in LLM adapter
+  `axiograph ingest predictive-proposals-llm`.
+- **REPL:** `proposal` subcommand (configure an adapter and emit in-process
+  evidence proposals).
+- **DB server:** authenticated, read-only query service over one explicit
+  AxiStore `MaterializationIdV2`; it does not accept proposal writes.
+
+The plugin/request seam should be read this way:
+
+- `input.axi_module_text` + `revision_digest_v2` are the primary semantic
+  contract.
+- `semantic_input` carries typed lineage and optional semantic layers.
+- JEPA/training export is an optional `semantic_input` layer, not a replacement
+  for canonical `.axi`.
+- Snapshot/export file paths are not first-class semantic request fields.
 
 ## Integration with knowledge discovery + tooling
 
@@ -119,8 +154,9 @@ Instead of raw facts, the JEPA predictor outputs **embeddings**:
 - **Modal scoping:** contexts/worlds are explicit fields, not hidden filters.
 - **Verification:** promotion-time checks and certificates are the gate for
   high-value inferences.
-- **LLM integration:** LLMs can request JEPA proposals or combine them with
-  tool-loop suggestions; both are untrusted and must pass guardrails.
+- **LLM integration:** LLMs can request proposals from a JEPA-style adapter or
+  combine them with tool-loop suggestions; both are untrusted and must pass
+  guardrails.
 
 ## Guardrails and limitations
 
@@ -134,7 +170,7 @@ Instead of raw facts, the JEPA predictor outputs **embeddings**:
 
 ## Self-supervised loop (iterative)
 
-1) Export grounded training pairs from snapshot anchors.
+1) Export grounded training pairs from canonical `.axi` anchors.
 2) Train JEPA to predict masked targets from context.
 3) Emit top-k predictions into the evidence plane (proposals).
 4) Reconcile/promote with constraints + certificates.
@@ -143,30 +179,43 @@ Instead of raw facts, the JEPA predictor outputs **embeddings**:
 ## JEPA plan (architectural, Axiograph-specific)
 
 **1) Data/anchor layer**
-- Define a canonical training export from *full* `.axi` modules (schema + theory
-  + instance) plus context/world metadata, not just a PathDB export.
-- Use accepted-plane anchors (snapshot ids) for reproducibility; PathDB exports
-  are derived and optional convenience views.
+
+- Define a canonical training export from *full* `.axi` modules (schema,
+  theory, and instance) plus context/world metadata, never from derived PathDB
+  rows.
+- Use accepted AxiStore snapshot/tree/module anchors for reproducibility;
+  `MaterializationIdV2` may be cited only as derived execution lineage.
+- Keep the predictive proposal adapter request centered on canonical `.axi`;
+  training exports are derived metadata, and snapshot/store paths should stay
+  out of the primary request contract.
+- Treat predicted embeddings and nearest-neighbor structure as evidence/index
+  sidecars, not semantic truth. Embedding-derived relationships must be lifted
+  into typed proposals and reviewed before promotion; see
+  `docs/reference/EMBEDDINGS_AND_EVIDENCE.md`.
 - Include negative samples (distractors) to reduce trivial shortcuts.
 
 **2) Model layer**
+
 - Graph encoder (GNN/Transformer) for subgraph context.
 - Text encoder for DocChunks (can reuse existing embedding pipeline).
 - Predictor head trained to match target embeddings (JEPA loss).
 - Targets: masked fact nodes, masked relations, or snapshot deltas.
 
 **3) Evidence-plane integration**
+
 - Convert top-k predictions into `Relation` proposals (evidence plane).
 - Store prediction embeddings as a snapshot-scoped sidecar for retrieval.
 - Attach confidence + provenance metadata to each proposal.
 
 **4) Guardrails/evaluation layer**
+
 - Evaluate precision/recall on held-out facts + reconciliation acceptance rate.
 - Track constraint violations (axi_constraints_ok_v1) and rejection causes.
 - Measure drift across contexts/snapshots (when JEPA predicts cross-context).
 
 **5) Runtime surfaces**
-- CLI entrypoint to generate JEPA proposals for a snapshot.
+
+- CLI entrypoint to generate predictive proposals for a snapshot.
 - Optional server endpoint to request JEPA-assisted candidates.
 - Keep all outputs in the evidence plane; do not bypass certificates.
 

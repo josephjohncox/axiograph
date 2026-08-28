@@ -1,246 +1,365 @@
-# Formal Verification in Axiograph v6
+# Formal Verification
 
 **Diataxis:** How-to  
 **Audience:** contributors
 
-This repo is migrating to a **proof-carrying** architecture:
+Axiograph verifies narrow, high-value claims by reducing runtime work to small
+Lean-checkable witnesses:
 
-- **Rust** is the high-performance *untrusted engine* (ingestion, search, optimization, PathDB).
-- **Lean** is the *trusted checker* and specification (mathlib-backed).
+```text
+exact accepted canonical .axi bytes
+  -> revision_digest_v2 cryptographic anchor
+  -> envelope V3 / query_result_v4
+  -> axiograph-verifier-stdio-v2
+  -> Lean receipt with decision accepted
+```
 
-The end goal is: **every high-value inference is accompanied by a certificate** that a small
-Lean checker can validate against the formal semantics.
+Non-query V2 certificate families remain separate typed contracts. The query
+boundary has no FNV anchor, V3 query reader, or compatibility upgrade path.
 
-## Trusted vs untrusted boundary
+Rust remains the operational engine. Lean is the trusted checker for the
+supported certificate and gate families.
 
-**Untrusted (Rust runtime)**
-- Can be “clever” and fast.
-- Produces *results + certificates*.
-- May be wrong; correctness comes only from passing the Lean checker.
+## Boundaries
 
-**Trusted (Lean checker)**
-- Defines the semantics we care about (paths/groupoid laws, normalization, confidence composition).
-- Validates certificates produced by Rust.
-- Rejects results whose certificates do not verify.
+- Trust boundary: `docs/reference/TRUSTED_KERNEL.md`.
+- Certificate families: `docs/reference/CERTIFICATES.md`.
+- Compiled semantic IR: `docs/reference/KERNEL_IR.md`.
+- Runtime theory reports: `docs/reference/RUNTIME_THEORY_CHECKER.md`.
+- Semantic VCS conformance: `docs/reference/SEMANTIC_VCS.md`.
+- Software-authoring coverage/codegen: `docs/reference/SOFTWARE_AUTHORING_TOOLS.md`.
+- Embedding/evidence boundaries: `docs/reference/EMBEDDINGS_AND_EVIDENCE.md`.
+- Test gate selection: `docs/howto/TESTING.md`.
 
-This repo previously used Idris2 as a prototype proof layer. The initial
-Rust+Lean release removes Idris/FFI compatibility; Lean is the only trusted
-checker.
+The active query certificate is envelope V3 / `query_result_v4`: a typed query
+witness bound to exact canonical `.axi` bytes, the prepared query, and the
+ordered returned answer. Derived PathDB rows and `.axpd` images are not
+verifier inputs or semantic authority.
 
-## Ways this can be broken (and how we avoid it)
+## Trusted vs Untrusted
 
-These are common failure modes in “proof-carrying” systems. We explicitly
-design against them.
+Rust:
 
-### 1) Conflating “certificate-checked” with “true”
+- parses and elaborates `.axi`,
+- builds compiled IR and runtime reports,
+- runs queries, coverage, merge/rebase, projections, and codegen planning,
+- emits certificates for supported fragments.
 
-A certificate check proves **derivability from the inputs under the semantics**,
-not correctness of the inputs.
+Lean:
 
-Mitigations:
-- Keep provenance explicit: what snapshot/modules did this derive from?
-- Treat ingestion as *evidence*: keep “raw” vs “accepted/canonical” planes separate.
-- Prefer “soundness-only” claims in certificates (“this result is valid”), not
-  completeness (“these are all results”) unless we can prove it.
+- parses the supplied canonical `.axi` anchor,
+- checks the certificate/gate payload,
+- rejects unsupported, under-anchored, or malformed claims.
 
-### 2) Building a checker that just re-runs the same algorithm
+A Lean-accepted certificate proves the stated narrow claim under the supplied
+anchors and assumptions. V4 proves exact completeness only for its declared
+bounded finite denotation. It does not prove source truth, approximate-search or
+evidence completeness, global ontology closure, unrestricted dependent/HoTT
+semantics, or correctness of the whole Rust runtime.
 
-If the Lean checker re-implements the whole engine, you’re “proving the code”,
-not pinning down the meaning. It also couples bugs between emitter and checker.
+## Current Lean-Checked Surfaces
 
-Mitigations:
-- Keep the trusted checker small and semantics-driven.
-- Prefer certificates that are:
-  - *replayable* (a derivation trace), or
-  - *simple to recompute* (a small decision procedure), and
-  - proved sound against the denotational semantics (e.g. free-groupoid denotation).
+The shipped verifier path is centered on:
 
-### 3) Not making “unknown vs false” explicit
+- `lean/Axiograph/VerifyMain.lean`
+- `lean/Axiograph/Certificate/Format.lean`
+- `lean/Axiograph/Certificate/Check.lean`
+- `lean/Axiograph/Certificate/Invariants.lean`
+- `lean/Axiograph/Certificate/PathRewriteSoundness.lean`
+- `lean/Axiograph/Theory/Finite.lean`
+- `lean/Axiograph/HoTT/FreeGroupoid.lean`
+- `lean/Axiograph/Axi/AxiV1.lean`
+- `lean/Axiograph/Axi/TypeCheck.lean`
+- `lean/Axiograph/Axi/ConstraintsCheck.lean`
+- `lean/Axiograph/Prob/Verified.lean`
 
-Graphs assembled from heterogeneous sources are not closed-world databases.
-Silently treating missing facts as false causes inconsistency blowups and
-invalid inferences.
+Main checked families:
 
-Mitigations:
-- Keep the “unknown” state explicit in query/validation layers.
-- Treat absence-of-evidence separately from evidence-of-absence.
-- Make inconsistency handling a first-class, explicit policy (reject, quarantine,
-  or surface contradictions with provenance), not an implicit default.
+- `axi_well_typed_v1`: canonical `.axi` module well-typedness gate.
+- `axi_constraints_ok_v1`: conservative theory-constraint gate.
+- `query_result_v4`: query-and-answer-bound witness plus exact completeness for
+  the declared finite decidable type/derived-attribute/bounded-RPQ fragment.
+- `reachability_v3`: low-level canonical path witness over stable `axi_fact_id`.
+- `category_kernel_v3`: exact-byte-anchored category reconstruction with typed
+  objects, relation objects, ordered projections, identities, composable
+  arrows, parallel equations, contextual congruence, exact signed cancellation
+  traces for both formal inverse laws of every generator, and complete bounded
+  generator-reachability saturation.
+- `rewrite_derivation_v3`: `.axi`-anchored rewrite trace.
+- `normalize_path_v2` and `path_equiv_v2`: endpoint-indexed groupoid path
+  fragments with mandatory traces; imported Lean theorems show that accepted
+  replay preserves denotation after endpoint retyping. Fixed-point confidence
+  is a separate non-associative fold and is not transported through path
+  equality.
+- `resolution_v2`: fixed-point reconciliation decision.
+- `delta_f_v1`: finite array-level transport recompute parity, not a general
+  functorial pullback theorem.
 
-### 4) Treating inverses/groupoids as factual invertibility
+`Axiograph.Theory.Finite` checks finite relation-object category presentations,
+ordered role projections, indexed paths/free-groupoid laws, dependent
+role/refinement/context/transport witnesses, checked typed-hole lifecycles, and
+explanation-certified finite generator reachability. `VerifyMain` imports it
+for `category_kernel_v3`. The dispatched certificate checks exact presentation
+reconstruction, endpoint-aware equation congruence, formal inverse-law
+normalization traces, and bounded generator saturation; broader interpretation,
+refinement, and transport definitions remain theorem support. The V3 wire
+checker is decision procedure plus replay: no theorem currently retypes its
+index words as `GroupoidPath` or derives denotation preservation from
+acceptance.
 
-Groupoid inverses are **semantic equalities / rewrites**, not “facts are always
-invertible in the world”.
+Semantic VCS has separate external checkers:
 
-Mitigations:
-- Keep a clear boundary between:
-  - observational edges (direct claims/evidence), and
-  - equivalences/rewrites (how we are allowed to transport along them).
-- Make rewrite rules explicit and certificate-checked.
+- `lean/Axiograph/SemanticVCS.lean`
+- `lean/Axiograph/SemanticVCS/Json.lean`
+- `lean/Axiograph/SemanticVCS/Lineage.lean`
+- `lean/Axiograph/SemanticVCS/CheckMain.lean`
 
-### 5) Treating confidence math as calibrated truth-probability
+The first pair checks reduced merge/rebase payloads for finite operational
+conformance. `Lineage.lean` independently recomputes V2 accepted-tree,
+snapshot-lineage, and complete semantic-commit SHA-256 identities and checks a
+bounded ancestry path. Neither path is a global ontology-completeness proof or
+part of the `VerifyMain` trusted closure.
 
-Confidence propagation here is an *evidence-weight / trust* calculus, not a
-guarantee of calibrated probabilistic truth.
+## Run The Current Gates
 
-Mitigations:
-- Keep confidence semantics explicit (fixed-point representation in v2).
-- Prefer interpretable operations (monotone bounds, conservative composition).
-- Avoid over-claiming: confidence supports ranking/thresholding, not “truth”.
+Focused canonical spine:
 
-## What is being verified (today)
-
-**Lean (mathlib-backed)**
-- HoTT-style path/groupoid vocabulary: `lean/Axiograph/HoTT/Core.lean`
-- Knowledge graph paths and 2-cells: `lean/Axiograph/HoTT/KnowledgeGraph.lean`
-- Path length + confidence composition (fixed-point): `lean/Axiograph/HoTT/PathAlgebraProofs.lean`
-- Free groupoid semantics bridge (mathlib): `lean/Axiograph/HoTT/FreeGroupoid.lean`
-- Denotational congruence lemmas (whiskering + inverse): `lean/Axiograph/HoTT/PathCongruence.lean`
-- Fixed-point verified probabilities and decision procedures: `lean/Axiograph/Prob/Verified.lean`
-- Mathlib building blocks we reuse (non-exhaustive):
-  - Free groupoid on a quiver: `Mathlib.CategoryTheory.Groupoid.FreeGroupoid`
-  - Path category / quiver paths: `Mathlib.CategoryTheory.PathCategory.Basic`
-  - Kan extensions (roadmap for Σ_F/Π_F): `Mathlib.CategoryTheory.Functor.KanExtension.Adjunction`
-  - Sites/sheaves/subtopoi (roadmap for contexts + modalities): `Mathlib.CategoryTheory.Sites.Grothendieck`, `Mathlib.CategoryTheory.Sites.Sheaf`
-  - Probability reference point (semantics-level; not in the trusted checker): `Mathlib.MeasureTheory.Measure.GiryMonad`
-
-Topos-theoretic semantics notes (explanation-level) live in:
-- `docs/explanation/TOPOS_THEORY.md`
-
-**Rust**
-- PathDB “verified layer” scaffolding (Verus-oriented): `rust/crates/axiograph-pathdb/src/verified.rs`
-- Certificate emission types: `rust/crates/axiograph-pathdb/src/certificate.rs`
-- Proof-mode + proof-producing optimizer scaffold: `rust/crates/axiograph-pathdb/src/proof_mode.rs`, `rust/crates/axiograph-pathdb/src/optimizer.rs`
-
-## Certificates (Rust → Lean)
-
-Certificates are versioned, inspectable JSON objects. Lean parses a certificate and runs a
-small verifier against it.
-
-Detailed schema + running instructions live in:
-- `docs/reference/CERTIFICATES.md`
-
-Today we support:
-- **v1 reachability**: float confidences (transition-only).
-- **v2 reachability**: fixed-point confidences (trusted representation).
-- **v2 reachability (anchored)**: optional `.axi` anchor + `relation_id` fact IDs checked against `PathDBExportV1` (endpoints, rel-type, confidence).
-- **v2 axi_well_typed_v1 (anchored)**: canonical `.axi` module well-typedness gate (small decision procedure; Lean re-checks the parsed AST).
-- **v2 axi_constraints_ok_v1 (anchored)**: core theory-constraint gate (keys/functionals/at_most; Lean re-checks against the parsed AST).
-- **v2 query_result_v1 (anchored)**: conjunctive query results (AxQL / SQL-ish), with per-atom witnesses checked against `PathDBExportV1`.
-- **v2 resolution**: fixed-point reconciliation decision (Lean recomputes `decideResolution`).
-- **v2 normalize_path**: free-groupoid path normalization (Lean recomputes normalization) and
-  optional explicit rewrite derivations (Lean replays rule+position steps).
-- **v2 rewrite_derivation**: replayable rewrite traces (rule + position), reusable for domain rewrites and reconciliation explanations.
-- **v2 rewrite_derivation_v3**: replayable rewrite traces with *first-class rule references* (builtin rules + `.axi`-declared rules, anchored by module digest).
-- **v2 path_equiv**: groupoid path equivalence via shared normalization, with optional
-  explicit derivations for both sides.
-
-The migration direction is to keep expanding **v2** to cover:
-- reconciliation and domain rewrite derivations (normalization is now derivation-capable),
-- reconciliation derivations and decisions,
-- confidence invariants and bounds,
-- and eventually `.axi`-anchored semantics (certificates refer to facts derived from canonical input).
-
-## Canonical `.axi` inputs (parsing parity)
-
-`.axi` is the canonical source format. During migration, we keep a “canonical corpus”
-of `.axi` modules that both Rust and Lean parsers must accept.
-
-- Corpus manifest: `examples/canonical/corpus.json`
-
-The corpus is parsed through a single **unified entrypoint** (`axi_v1`).
-
-For the initial Rust+Lean release we intentionally keep exactly one canonical
-surface syntax: `axi_v1` is the schema/theory/instance language implemented by
-`schema_v1` on both sides (no dialect splitting).
-
-In addition to the domain corpus, we also maintain a *reversible* PathDB snapshot export
-format (`PathDBExportV1`) rendered as `.axi`. This is not user-facing, but it is part of the
-auditable pipeline and is checked for Rust↔Lean parsing parity:
-
-- `make verify-pathdb-export-axi-v1`
-
-## How to run the checkers
-
-Focused semantics suite (recommended during migration):
-- `make verify-semantics`
+```bash
+make verify-canonical-spine
+```
 
 Lean build:
-- `make lean`
-- macOS note: building Lean **executables** (e.g. `axiograph_verify`) requires a
-  valid macOS SDK (`SDKROOT`). Prefer:
-  - `make lean-exe` (repo root; sets `SDKROOT` via `xcrun`), or
-  - `cd lean && lake script run buildExe`
-  - If you run `lake build axiograph_verify` directly, set:
-    `SDKROOT="$(xcrun --sdk macosx --show-sdk-path)"`.
 
-Lean `.axi` parsing (schema dialect):
-- `make verify-lean-axi-schema-v1`
+```bash
+make lean
+```
 
-Lean `.axi` parsing (canonical corpus via unified `axi_v1`):
-- `make verify-lean-axi-v1`
+Certificate fixtures:
 
-Lean certificate checks:
-- v1 sample: `make verify-lean`
-- v2 sample: `make verify-lean-v2`
-- v2 resolution sample: `make verify-lean-resolution-v2`
-- v2 normalize_path sample: `make verify-lean-normalize-path-v2`
+```bash
+make verify-lean-certificates
+```
 
-Rust → Lean end-to-end checks:
-- v1: `make verify-lean-e2e`
-- v2: `make verify-lean-e2e-v2`
-- axi well-typed gate: `make verify-lean-e2e-axi-well-typed-v1`
-- axi constraints gate: `make verify-lean-e2e-axi-constraints-ok-v1`
-- query results (anchored): `make verify-lean-e2e-query-result-v1`
-- query results (anchored, disjunction): `make verify-lean-e2e-query-result-v2`
-- query results (from canonical module): `make verify-lean-e2e-query-result-module-v3`
-- v2 resolution: `make verify-lean-e2e-resolution-v2`
-- v2 normalize_path: `make verify-lean-e2e-normalize-path-v2`
-- v3 rewrite_derivation (axi rules): `make verify-lean-e2e-rewrite-derivation-v3`
-- v2 path_equiv congruence: `make verify-lean-e2e-path-equiv-congr-v2`
+Current Rust-to-Lean certificate suite:
 
-## Rust-side verification (Verus, optional)
+```bash
+make verify-lean-e2e-suite
+```
 
-In addition to “untrusted engine, trusted checker” via Lean certificates, we use
-**Verus** to formally verify selected Rust invariants (e.g. probability bounds,
-bitmap bounds, and length-indexed path shapes).
+Finite category/dependent/groupoid theory, including Rust kernel gates, the
+regulated-shipment Rust-to-Lean certificate, adversarial explanation replay,
+and Rust non-closure regressions:
 
-The Verus-oriented crate lives at:
-- `rust/verus/`
+```bash
+make verify-lean-theory
+```
 
-Run (if Verus is installed and on your `PATH`):
-- `make verify-verus`
+Run only the anchored category-kernel certificate slice:
 
-Or directly:
-- `cd rust/verus && verus src/lib.rs`
+```bash
+make verify-lean-e2e-category-kernel-v3
+```
 
-## How this evolves (next milestones)
+That target checks the shared positive/rejection formation corpus, writes the
+regulated-shipment certificate under `build/category-kernel/`, and succeeds
+only if Lean accepts the exact presentation and rejects presentation,
+congruence, groupoid-normalization-trace, and saturation tampering.
 
-1. **Lean semantics completeness**
-   - Port remaining semantics modules to Lean (path verification, reconciliation, modalities).
-2. **`.axi` parsers in Lean and Rust**
-   - Keep `axi_v1` parsing parity and expand the canonical grammar as needed.
-3. **Certificate completeness**
-   - Extend v2 certificates beyond reachability into groupoid/rewrite derivations and reconciliation.
-4. **Operational engine alignment**
-   - Rust emits certificates for the actual runtime operations (normalization, reconciliation, queries).
-   - Lean checks those certificates against the formal semantics.
+Run the generic endpoint-indexed path normalization/equivalence parity and
+rejection slice:
 
-## Literature-driven production hardening (Appendix C.12)
+```bash
+make verify-lean-indexed-path-theory
+```
 
-Beyond semantic certificate checking, the Rust literature suggests layering complementary tools:
+Semantic VCS finite merge/rebase conformance:
 
-1. **Minimize and isolate `unsafe`**
-   - Keep invariants documented at module boundaries (FFI, binary parsing, custom indexes).
-2. **Fuzz untrusted surfaces**
-   - PathDB bytes/decoding, certificate JSON decoding, `.axi` parsing, and FFI entrypoints.
-3. **Run Miri**
-   - Detect UB in tests (especially around `unsafe` and tricky aliasing/lifetimes).
-4. **Use model checking selectively (Kani)**
-   - Fixed-point arithmetic, bounds checks, and “no panic/overflow” kernels.
-5. **Use Verus for local invariants that matter**
-   - Index consistency, bounds, witness endpoint alignment, determinism where feasible.
-6. **Concurrency schedule testing when we add concurrency**
-   - Loom for small exhaustive kernels; Shuttle for larger randomized schedules.
+```bash
+make verify-lean-semantic-vcs
+```
 
-These tools do not replace Lean’s semantic checking; they reduce the engine bug surface area.
+Transactional accepted-state and lineage integrity:
+
+```bash
+make verify-axi-store
+```
+
+AxiStore lineage proofs are runtime-authenticated objects, not Lean
+certificates. They require an exact current state digest for accepted main or an
+independently pinned subject commit; repository identity alone is rejected.
+`Axiograph.SemanticVCS.CheckMain` now checks only finite merge/rebase
+conformance and remains outside the trusted `VerifyMain` import closure.
+
+Full semantics gate:
+
+```bash
+make verify-semantics
+```
+
+Exact release decision, including the full locked Rust workspace, CLI feature
+matrix, adversarial certificate and AxiStore fixtures, and the semantics gate:
+
+```bash
+PATH="$(dirname "$(rustup which --toolchain 1.88.0 rustc)"):$PATH" \
+  make release-gate
+```
+
+The release target consumes the checked-in Lean toolchain and Lake manifest; it
+does not run `lake update`. Dependency refresh is an explicit, reviewable
+`make lean-update` operation.
+
+## Verify A Custom Certificate
+
+Most useful certificate families are anchored to a canonical `.axi` module:
+
+```bash
+make verify-lean-cert AXI=examples/manufacturing/SupplyChainHoTT.axi CERT=build/supply_chain_query_cert.json
+```
+
+The verifier rejects the certificate if the digest anchor cannot be matched to
+the supplied module.
+
+## Generate And Verify Common Certificates
+
+Typecheck gate:
+
+```bash
+axiograph cert typecheck examples/economics/EconomicFlows.axi --out build/axi_well_typed.json
+make verify-lean-cert AXI=examples/economics/EconomicFlows.axi CERT=build/axi_well_typed.json
+```
+
+Constraint gate:
+
+```bash
+axiograph cert constraints examples/ontology/OntologyRewrites.axi --out build/axi_constraints_ok.json
+make verify-lean-cert AXI=examples/ontology/OntologyRewrites.axi CERT=build/axi_constraints_ok.json
+```
+
+Typed query witness. Prefer `.cq`/question-first authoring for humans. The
+direct emission-only query command was removed; exercise the bound V4 checker
+through the semantic MCP route, `axiograph check finite-query`, or the focused
+Rust/Lean gate:
+
+```bash
+axiograph discover competency-questions examples/manufacturing/SupplyChainHoTT.axi \
+  --from-cq examples/competency_questions/supply_chain.cq \
+  --no-schema \
+  --out build/supply_chain_competency_questions.json
+
+make verify-lean-e2e-query-result-module-v4
+make verify-lean-certificate-rejections
+```
+
+## Parse/Digest Parity
+
+Canonical `.axi` parser parity:
+
+```bash
+make verify-lean-axi-v1
+make verify-axi-parse-e2e
+make verify-axi-digest-e2e
+```
+
+Parser/digest parity is useful for keeping Rust and Lean aligned. It is not the
+same thing as proving that every runtime report is certified.
+
+## Runtime Theory Reports Are Not Certificates
+
+`RuntimeTheoryCheckReportV1` is an operational admissibility report from Rust.
+It classifies typed obligations, evidence scope, transport status, blockers, and
+residuals. It does not saturate equations/rewrites or claim a theory fixpoint,
+completeness, or ontology closure. Legacy closure/claim fields were removed;
+`admissibility_scan` records unresolved judgments; the structured
+`closure_engine_not_implemented` entry is a non-claim, not a residual.
+
+`Axiograph.Theory.Finite` does perform finite saturation, but only for generator
+reachability and only under its explicit object and generator bounds. Its
+explanation certificate is replayable proof data. The `category_kernel_v3`
+projection of that data is dispatched by `VerifyMain`; the broader finite
+instance, refinement, context, and transport definitions remain theorem support.
+
+Runtime reports remain promotion-sensitive engineering artifacts. Their module
+summary uses typed scope, coverage counts, transport classifications, residual
+ids, and structured non-claims; it does not expose synthetic completeness or
+ontology-closure claim fields. A product proof claim requires an anchored
+payload dispatched through the supported Lean verifier boundary.
+
+## Rust-Side Verification
+
+The optional Verus-oriented crate is:
+
+```bash
+cd rust/verus
+verus src/lib.rs
+```
+
+Use it for selected Rust invariants such as probability bounds and low-level
+shape checks. It is complementary to the Lean certificate checker and does not
+replace the trusted semantic boundary.
+
+The exact Rust dependency graph has a separate advisory gate:
+
+```bash
+make verify-rustsec
+```
+
+It pins cargo-audit 0.22.2 and rejects every known vulnerability in both exact
+Rust lockfiles. RDF/XML uses an immutable upstream Oxigraph commit on
+quick-xml 0.41 until the next patched oxrdfxml crate release. See
+`docs/reference/SECURITY_BOUNDARIES.md` for the parser and source-pin scope.
+
+The bounded adversarial parser lane is executable separately:
+
+```bash
+make verify-fuzz
+```
+
+This lane pins `nightly-2026-07-23` and `cargo-fuzz 0.13.2`, preserves the
+checked seed corpora, builds every harness under a separate 600-second
+process-group limit, and fuzzes `.axi`, Certificate V2/V3 JSON, production REPL
+tokenization, the shared command/HTTP predictive-proposal response boundary,
+and authenticated `.axpd` image bytes. Fuzz success is runtime
+hardening evidence, not a semantic proof or a change to the Lean trust closure.
+
+The same pinned nightly supplies Miri for a deliberately pure kernel slice:
+
+```bash
+make verify-miri
+```
+
+This runs exact-byte identity, framing, domain-registry, Rust/Lean parity,
+scoped-reference, and strict ID parsing tests without enabling filesystem or
+network access. The pinned nightly must include both Miri and `rust-src`.
+`release-gate` uses `verify-miri-required`, which fails rather than skipping
+when either component is absent.
+
+The child-process concurrency limiter has a separate exhaustive small-state
+model:
+
+```bash
+make verify-loom
+```
+
+Loom executes the same reservation loop used by `ChildLimiter` with modeled
+atomics under two-thread contention. The model checks that a maximum of one is
+never exceeded and every acquired slot is released.
+
+Kani checks the fixed-point constructor across its full machine input domain:
+
+```bash
+make verify-kani
+```
+
+The named harness proves for every `u32` that construction accepts exactly the
+values at or below `FIXED_POINT_DENOMINATOR` and preserves accepted numerators.
+Release verification requires `cargo-kani 0.67.0`; this is a bounded runtime
+invariant, not a replacement for Lean certificate checking.
+
+## Hardening Guidance
+
+- Keep the verifier target small and audited.
+- Add Lean-readable projections for runtime objects before calling them trusted.
+- Fail closed when an anchor, compiled ref, certificate policy, or verifier is
+  missing.
+- Use fuzz/property/golden tests around `.axi`, AxQL, certificate JSON, `.axpd`,
+  semantic merge payloads, and backend projection artifacts.

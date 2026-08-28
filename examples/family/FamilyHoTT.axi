@@ -166,7 +166,8 @@ instance ExtendedFamily of Family:
     SiblingInLaw,
     
     -- Step relations (via spouse then parent)
-    StepParent, StepChild, StepSibling
+    StepParent, StepChild, StepSibling,
+    ParallelCousin
   }
 
   -- Primitive relationships (generators)
@@ -185,8 +186,11 @@ instance ExtendedFamily of Family:
 
   Spouse = {
     (p1=Alice, p2=Bob),
+    (p1=Bob, p2=Alice),
     (p1=Charles, p2=Diana),  -- Assume blended family
-    (p1=George, p2=Helen)
+    (p1=Diana, p2=Charles),
+    (p1=George, p2=Helen),
+    (p1=Helen, p2=George)
   }
 
   -- Kinship composition rules (the category structure!)
@@ -226,7 +230,9 @@ instance ExtendedFamily of Family:
     
     -- Combined paths
     MothersSibling, FathersSibling,
-    MothersParent, FathersParent
+    MothersParent, FathersParent,
+    MothersCousinPath, FathersCousinPath,
+    ThroughCharles, ThroughDiana
   }
 
   Degree = {D0, D1, D2, D3, D4}  -- 0 = self, 1 = parent/child/sibling, etc.
@@ -246,15 +252,21 @@ instance ExtendedFamily of Family:
   PathEquivalence = {
     -- Cousin via mother's side ≡ cousin via father's side (same degree!)
     (from=Alice, to=Bob, path1=MothersCousinPath, path2=FathersCousinPath, relType=Cousin),
+    (from=Bob, to=Alice, path1=FathersCousinPath, path2=MothersCousinPath, relType=Cousin),
+    (from=Alice, to=Alice, path1=MothersCousinPath, path2=MothersCousinPath, relType=Cousin),
+    (from=Bob, to=Bob, path1=FathersCousinPath, path2=FathersCousinPath, relType=Cousin),
     
     -- Two paths to grandparent
-    (from=Kevin, to=George, path1=ThroughCharles, path2=ThroughDiana, relType=Grandparent)
+    (from=Kevin, to=George, path1=ThroughCharles, path2=ThroughDiana, relType=Grandparent),
+    (from=George, to=Kevin, path1=ThroughDiana, path2=ThroughCharles, relType=Grandparent),
+    (from=Kevin, to=Kevin, path1=ThroughCharles, path2=ThroughCharles, relType=Grandparent),
+    (from=George, to=George, path1=ThroughDiana, path2=ThroughDiana, relType=Grandparent)
   }
 
   -- Cultural contexts (different "homotopy theories"!)
   CultureContext = {Western, Arabic, Chinese, Hawaiian}
 
-  Text = {ParallelEquiv, CrossEquiv, GenerationalResp}
+  Text = {ParallelEquiv, CrossEquiv, GenerationalResp, HawaiianKin}
 
   -- Cultural kinship equivalences
   CulturalEquivalence = {
