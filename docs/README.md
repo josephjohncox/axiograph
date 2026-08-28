@@ -17,6 +17,11 @@ git history, not in the active docs path.
 
 ## Start Here
 
+The curated web edition is published at
+<https://josephjohncox.github.io/axiograph/>. `docs/SUMMARY.md` defines its
+reading order; the chapter files remain the repository's documentation source
+of truth.
+
 1. `examples/regulated_shipment/README.md` — the primary executable usefulness workflow and its scoped claims.
 2. `README.md` — project intent, trust boundary, and quick commands.
 3. `docs/howto/CANONICAL_SEMANTIC_SPINE.md` — the current end-to-end workflow.
