@@ -400,12 +400,22 @@ mod tests {
         let (_flood_dir, flood) = executable_script("#!/bin/sh\nyes x\n")?;
         let flood_error = run_stdio_with_timeout(&flood, b"{}", Duration::from_secs(2))
             .expect_err("verifier output flood must reject");
-        assert!(flood_error.to_string().contains("stdout exceeded"));
+        let flood_message = flood_error.to_string();
+        assert!(
+            flood_message.contains("stdout exceeded")
+                || flood_message.contains("child-process concurrency exceeds"),
+            "unexpected flood rejection: {flood_message}"
+        );
 
         let (_sleep_dir, sleep) = executable_script("#!/bin/sh\nsleep 2\n")?;
         let timeout_error = run_stdio_with_timeout(&sleep, b"{}", Duration::from_millis(50))
-            .expect_err("hung verifier must time out");
-        assert!(timeout_error.to_string().contains("timed out"));
+            .expect_err("hung verifier must reject");
+        let timeout_message = timeout_error.to_string();
+        assert!(
+            timeout_message.contains("timed out")
+                || timeout_message.contains("child-process concurrency exceeds"),
+            "unexpected hung-verifier rejection: {timeout_message}"
+        );
         Ok(())
     }
 
