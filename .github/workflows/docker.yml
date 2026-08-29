@@ -7,17 +7,20 @@ on:
         description: Allow tag publication from the release-gated caller
         required: true
         type: boolean
+      release_version:
+        description: Validated YYYYMMDD.0.N application version
+        required: true
+        type: string
 
 permissions:
   contents: read
-
-env:
-  AXIOGRAPH_CLI_VERSION: 0.6.0
 
 jobs:
   build-and-push:
     name: Build, audit, and push linux/${{ matrix.arch }} by digest
     if: inputs.publish_tag
+    env:
+      AXIOGRAPH_CLI_VERSION: ${{ inputs.release_version }}
     permissions:
       contents: read
       packages: write
@@ -30,20 +33,20 @@ jobs:
           - arch: arm64
             runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
+    environment: release
     steps:
-      - name: Require release tag caller
-        run: |
-          case "$GITHUB_REF" in
-            refs/tags/*) ;;
-            *)
-              echo "container publication requires a refs/tags/* ref" >&2
-              exit 1
-              ;;
-          esac
       # actions/checkout pinned to an immutable commit.
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
         with:
           persist-credentials: false
+      - name: Require exact CalVer release tag caller
+        run: |
+          set -euo pipefail
+          python3 scripts/release_version.py validate \
+            "$AXIOGRAPH_CLI_VERSION" >/dev/null
+          python3 scripts/release_version.py validate-tag \
+            "$GITHUB_REF_NAME" "$AXIOGRAPH_CLI_VERSION" >/dev/null
+          test "$GITHUB_REF" = "refs/tags/$GITHUB_REF_NAME"
       # docker/setup-buildx-action pinned to an immutable commit.
       - uses: >-
           docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
@@ -55,6 +58,23 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Reject an existing release container tag
+        env:
+          IMAGE: ghcr.io/${{ github.repository }}
+        run: |
+          set -euo pipefail
+          release_ref="${IMAGE}:v${AXIOGRAPH_CLI_VERSION}"
+          if inspect_error="$(docker buildx imagetools inspect \
+            "$release_ref" 2>&1)"; then
+            echo "container tag already exists: $release_ref" >&2
+            exit 1
+          elif ! grep -Eiq \
+            'not found|manifest unknown|no such manifest' \
+            <<<"$inspect_error"; then
+            echo "$inspect_error" >&2
+            echo "could not prove container tag availability" >&2
+            exit 1
+          fi
       - name: Docker metadata
         id: meta
         # docker/metadata-action pinned to an immutable commit.
@@ -64,7 +84,55 @@ jobs:
           tags: |
             type=ref,event=tag,enable=${{ inputs.publish_tag }}
             type=sha
-      - name: Build and push untagged image digest
+      - name: Build local image for pre-publication audit
+        # docker/build-push-action pinned to an immutable commit.
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25
+        with:
+          context: .
+          file: Dockerfile
+          load: true
+          push: false
+          platforms: linux/${{ matrix.arch }}
+          tags: axiograph-release-audit:${{ matrix.arch }}
+          labels: ${{ steps.meta.outputs.labels }}
+      - name: Audit local image before registry write
+        env:
+          LOCAL_REF: axiograph-release-audit:${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          docker run --rm --entrypoint /bin/sh "$LOCAL_REF" -ec '
+            test "$(id -u)" = 10001
+            test "$(id -g)" = 10001
+            cd /usr/local/bin
+            sha256sum -c \
+              /usr/local/share/axiograph/axiograph_verify.sha256
+          '
+          docker run --rm "$LOCAL_REF" --version |
+            grep -Fx "axiograph ${AXIOGRAPH_CLI_VERSION}"
+          checker_dir="$(mktemp -d)"
+          container_id="$(docker create "$LOCAL_REF")"
+          cleanup() {
+            if [ -n "$container_id" ]; then
+              docker rm -f "$container_id" >/dev/null 2>&1 || true
+            fi
+            rm -rf "$checker_dir"
+          }
+          trap cleanup EXIT
+          docker cp \
+            "$container_id:/usr/local/bin/axiograph_verify" \
+            "$checker_dir/axiograph_verify"
+          docker rm "$container_id" >/dev/null
+          container_id=""
+          chmod 0755 "$checker_dir/axiograph_verify"
+          python3 scripts/run_release_fixture_suite.py \
+            --checker "$checker_dir/axiograph_verify" \
+            --manifest release/fixtures.json \
+            --repo-root "$PWD"
+          fixture="$PWD/examples/ontology/OntologyRewrites.axi"
+          docker run --rm \
+            -v "$fixture:/tmp/ContainerSmoke.axi:ro" \
+            "$LOCAL_REF" check validate /tmp/ContainerSmoke.axi
+      - name: Build and push audited image as an untagged digest
         id: build
         # docker/build-push-action pinned to an immutable commit.
         uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25
@@ -168,6 +236,9 @@ jobs:
     if: inputs.publish_tag
     runs-on: ubuntu-24.04
     needs: build-and-push
+    environment: release
+    env:
+      AXIOGRAPH_CLI_VERSION: ${{ inputs.release_version }}
     permissions:
       contents: read
       packages: write
@@ -185,25 +256,38 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Docker metadata
-        id: meta
-        # docker/metadata-action pinned to an immutable commit.
-        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051
-        with:
-          images: ghcr.io/${{ github.repository }}
-          tags: |
-            type=ref,event=tag,enable=${{ inputs.publish_tag }}
-            type=sha
       # actions/download-artifact pinned to an immutable commit.
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           path: /tmp/digests
-      - name: Create and push manifest list
+      - name: Create and verify exact release manifest
         env:
+          GH_TOKEN: ${{ github.token }}
           IMAGE: ghcr.io/${{ github.repository }}
-          TAGS: ${{ steps.meta.outputs.tags }}
         run: |
           set -euo pipefail
+          python3 scripts/release_version.py validate \
+            "$AXIOGRAPH_CLI_VERSION" >/dev/null
+          release_ref="${IMAGE}:v${AXIOGRAPH_CLI_VERSION}"
+          tag_path="repos/${GITHUB_REPOSITORY}/git/ref/tags/${GITHUB_REF_NAME}"
+          test "$(gh api "$tag_path" --jq '.object.type')" = tag
+          tag_object="$(gh api "$tag_path" --jq '.object.sha')"
+          tag_target="repos/${GITHUB_REPOSITORY}/git/tags/${tag_object}"
+          test "$(gh api "$tag_target" --jq '.object.type')" = commit
+          test "$(gh api "$tag_target" --jq '.object.sha')" = "$GITHUB_SHA"
+
+          if inspect_error="$(docker buildx imagetools inspect \
+            "$release_ref" 2>&1)"; then
+            echo "container tag already exists: $release_ref" >&2
+            exit 1
+          elif ! grep -Eiq \
+            'not found|manifest unknown|no such manifest' \
+            <<<"$inspect_error"; then
+            echo "$inspect_error" >&2
+            echo "could not prove container tag availability" >&2
+            exit 1
+          fi
+
           IFS= read -r amd64_digest \
             < /tmp/digests/image-digests-amd64/amd64.digest
           IFS= read -r arm64_digest \
@@ -212,7 +296,27 @@ jobs:
             "${IMAGE}@${amd64_digest}"
             "${IMAGE}@${arm64_digest}"
           )
-          while IFS= read -r tag; do
-            [ -n "$tag" ] || continue
-            docker buildx imagetools create -t "$tag" "${refs[@]}"
-          done <<< "$TAGS"
+          docker buildx imagetools create -t "$release_ref" "${refs[@]}"
+          docker buildx imagetools inspect "$release_ref" --raw \
+            > /tmp/release-manifest.json
+          python3 - "$amd64_digest" "$arm64_digest" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          manifest = json.loads(Path("/tmp/release-manifest.json").read_text())
+          expected = {
+              ("linux", "amd64"): sys.argv[1],
+              ("linux", "arm64"): sys.argv[2],
+          }
+          actual = {
+              (item["platform"]["os"], item["platform"]["architecture"]): item[
+                  "digest"
+              ]
+              for item in manifest.get("manifests", [])
+          }
+          if actual != expected:
+              raise SystemExit(
+                  f"release manifest platforms are not exact: {actual!r}"
+              )
+          PY

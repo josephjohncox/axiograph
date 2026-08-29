@@ -13,6 +13,7 @@ from scripts.generate_release_source_manifest import (
     ignored_release_source_candidates,
     validate_source_manifest_bytes,
 )
+from scripts.release_version import workspace_version
 from scripts.run_release_fixture_suite import FixtureSuiteError, load_manifest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -98,6 +99,32 @@ class ReleaseManifestTests(unittest.TestCase):
                 ),
                 ["rust/crates/demo/src/bin/required.rs"],
             )
+
+    def test_workspace_and_helm_application_versions_are_identical_calver(self) -> None:
+        version = workspace_version(REPO_ROOT)
+        chart = (REPO_ROOT / "deploy/helm/axiograph/Chart.yaml").read_text(
+            encoding="utf-8"
+        )
+        app_versions = [
+            line.removeprefix("appVersion:").strip().strip('"')
+            for line in chart.splitlines()
+            if line.startswith("appVersion:")
+        ]
+
+        self.assertEqual(app_versions, [version])
+
+        values = (REPO_ROOT / "deploy/helm/axiograph/values.yaml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("repository: ghcr.io/josephjohncox/axiograph", values)
+        self.assertIn('tag: ""', values)
+
+        manifest = (
+            REPO_ROOT / "deploy/k8s/axiograph-db-statefulset.yaml"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            f"image: ghcr.io/josephjohncox/axiograph:v{version}", manifest
+        )
 
     def test_checked_in_fixture_manifest_is_complete_and_hash_pinned(self) -> None:
         manifest_path = REPO_ROOT / "release" / "fixtures.json"

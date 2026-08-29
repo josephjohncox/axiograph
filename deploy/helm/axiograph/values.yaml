@@ -1,7 +1,8 @@
 ---
 image:
-  repository: ghcr.io/axiograph/axiograph
-  tag: "latest"
+  repository: ghcr.io/josephjohncox/axiograph
+  # Empty uses v<Chart.appVersion>; override only with an immutable release tag.
+  tag: ""
   pullPolicy: IfNotPresent
 
 service:

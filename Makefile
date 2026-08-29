@@ -34,7 +34,7 @@
 	verify-lean-e2e-resolution-v2 verify-lean-e2e-normalize-path-v2 verify-lean-e2e-path-equiv-v2 verify-lean-e2e-path-equiv-congr-v2 verify-lean-e2e-delta-f-v1 \
 	verify-lean-certificates verify-lean-certificate-rejections verify-lean-e2e-suite \
 	rust-test-semantics check-rust-toolchain check-node-toolchain check-clean-source-manifest check-example-catalog rust-fmt-check rust-test-locked rust-test-all-targets-features check-cli-feature-matrix verify-viz \
-	verify-release-fixtures verify-release-packaging rehearse-release-publication \
+	verify-release-fixtures verify-release-packaging rehearse-release-publication check-release-version \
 	release-gate check-no-unsafe check-no-panics verify-semantics verify-canonical-spine test-semantics test-backend-containers \
 	docs docs-rust book book-tool book-validate book-serve \
 	viz-install viz-build viz-dev \
@@ -649,6 +649,17 @@ verify-release-fixtures: lean-exe
 		--checker $(LEAN_DIR)/.lake/build/bin/axiograph_verify
 	@echo "✓ Packaged checker accepted one exact finite result and rejected every pinned adversary"
 
+check-release-version:
+	@echo "━━━ Validating canonical CalVer and exact locked graphs ━━━"
+	@set -eu; \
+		version="$$(python3 scripts/release_version.py workspace --repo-root .)"; \
+		chart_version="$$(awk -F'"' '/^appVersion:/ { print $$2 }' deploy/helm/axiograph/Chart.yaml)"; \
+		test "$$chart_version" = "$$version"; \
+		grep -Fq "image: ghcr.io/josephjohncox/axiograph:v$$version" deploy/k8s/axiograph-db-statefulset.yaml; \
+		$(CARGO) metadata --manifest-path $(RUST_DIR)/Cargo.toml --locked --format-version 1 --no-deps >/dev/null; \
+		$(CARGO) metadata --manifest-path $(RUST_DIR)/fuzz/Cargo.toml --locked --format-version 1 --no-deps >/dev/null; \
+		echo "✓ Axiograph $$version is canonical YYYYMMDD.0.N CalVer"
+
 verify-release-packaging:
 	@echo "━━━ Testing deterministic manifests, archives, corruption rejection, and publication ordering ━━━"
 	python3 -m unittest discover -s scripts/tests -p 'test_*.py' -v
@@ -659,7 +670,7 @@ rehearse-release-publication:
 	python3 scripts/rehearse_release_publication.py
 	@echo "✓ Every injected failure and corrupted asset remained unpublished; one audited set committed atomically"
 
-release-gate: check-rust-toolchain check-node-toolchain check-clean-source-manifest check-example-catalog check-greenfield-surface rust-fmt-check check-no-unsafe check-no-panics rust-test-all-targets-features check-cli-feature-matrix verify-viz verify-rustsec verify-fuzz verify-miri-required verify-loom verify-kani-required verify-release-packaging verify-release-fixtures verify-semantics
+release-gate: check-release-version check-rust-toolchain check-node-toolchain check-clean-source-manifest check-example-catalog check-greenfield-surface rust-fmt-check check-no-unsafe check-no-panics rust-test-all-targets-features check-cli-feature-matrix verify-viz verify-rustsec verify-fuzz verify-miri-required verify-loom verify-kani-required verify-release-packaging verify-release-fixtures verify-semantics
 	python3 scripts/generate_release_source_manifest.py --check-only >/dev/null
 	git diff --check
 	@echo ""

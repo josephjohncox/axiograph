@@ -32,7 +32,7 @@ except ImportError:
 HEX64 = re.compile(r"[0-9a-f]{64}")
 IMAGE_DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 INJECTION_POINTS = {"after-verification", "after-first-copy", "before-commit"}
-PUBLICATION_SCHEMA = "axiograph-local-publication-rehearsal-v2"
+PUBLICATION_SCHEMA = "axiograph-local-publication-rehearsal-v3"
 PUBLICATION_SCOPE = {
     "proved": "all local bundle bytes were verified before one atomic directory rename",
     "non_claims": [

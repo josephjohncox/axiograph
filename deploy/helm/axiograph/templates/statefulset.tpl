@@ -32,9 +32,10 @@ spec:
         - name: data
           emptyDir: {}
       {{- end }}
+      {{- $imageTag := .Values.image.tag | default (printf "v%s" .Chart.AppVersion) }}
       containers:
         - name: axiograph
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          image: "{{ .Values.image.repository }}:{{ $imageTag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           securityContext:
             allowPrivilegeEscalation: false
