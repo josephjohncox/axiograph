@@ -55,7 +55,9 @@
 
 # VI. Operate And Verify
 
+- [Development](DEVELOPMENT.md)
 - [Testing](howto/TESTING.md)
+- [Releasing](howto/RELEASING.md)
 - [Formal verification](howto/FORMAL_VERIFICATION.md)
 - [Snapshot store](howto/SNAPSHOT_STORE.md)
 - [Database server](howto/DB_SERVER.md)

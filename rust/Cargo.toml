@@ -35,12 +35,12 @@ members = [
 ]
 
 [workspace.package]
-version = "0.6.0"
+version = "20260829.0.0"
 edition = "2021"
 rust-version = "1.88"
 authors = ["Axiograph Team"]
-license = "PolyForm-Perimeter-1.0.1"
-repository = "https://github.com/axiograph/axiograph"
+license = "BSD-3-Clause"
+repository = "https://github.com/josephjohncox/axiograph"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

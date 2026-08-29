@@ -4,6 +4,7 @@ on:
   push:
     tags:
       - "v*"
+      - "!v*-rehearsal-fail-*"
   workflow_dispatch:
     inputs:
       inject_verify_failure:
@@ -16,6 +17,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 env:
   RUST_TOOLCHAIN: 1.88.0
   FUZZ_TOOLCHAIN: nightly-2026-07-23
@@ -23,7 +28,6 @@ env:
   CARGO_AUDIT_VERSION: 0.22.2
   KANI_VERSION: 0.67.0
   NODE_VERSION: 24.19.0
-  AXIOGRAPH_CLI_VERSION: 0.6.0
   AXIOGRAPH_CHECKER_PROTOCOL: axiograph-verifier-stdio-v2
   AXIOGRAPH_CHECKER_BUILD_ID: axiograph-verify-main-v3
   MACOSX_DEPLOYMENT_TARGET: "13.0"
@@ -32,25 +36,38 @@ jobs:
   verify:
     name: Exact clean-checkout release gate
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: read
+    outputs:
+      release_version: ${{ steps.release_version.outputs.version }}
     steps:
       # actions/checkout pinned to an immutable commit.
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
         with:
           persist-credentials: false
+          fetch-depth: 0
       # actions/setup-node pinned to an immutable commit.
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version-file: .node-version
           package-manager-cache: false
       - name: Validate immutable release inputs
+        id: release_version
         shell: bash
         env:
+          GH_TOKEN: ${{ github.token }}
           REHEARSAL_FAILURE: ${{ inputs.inject_verify_failure || false }}
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          version="$(python3 scripts/release_version.py workspace --repo-root .)"
+          python3 scripts/release_version.py validate "$version" >/dev/null
+          chart_version="$(awk -F'"' '/^appVersion:/ { print $2 }' \
+            deploy/helm/axiograph/Chart.yaml)"
+          test "$chart_version" = "$version"
           if [ "$GITHUB_REF_TYPE" = "tag" ]; then
-            expected="v${AXIOGRAPH_CLI_VERSION}"
+            expected="v${version}"
             if [ "$REHEARSAL_FAILURE" = true ]; then
               case "$GITHUB_REF_NAME" in
                 "$expected"-rehearsal-fail-*) ;;
@@ -61,7 +78,27 @@ jobs:
                   ;;
               esac
             else
-              test "$GITHUB_REF_NAME" = "$expected"
+              python3 scripts/release_version.py validate-tag \
+                "$GITHUB_REF_NAME" "$version" >/dev/null
+              tag_path="repos/${GITHUB_REPOSITORY}/git/ref/tags/${GITHUB_REF_NAME}"
+              tag_type="$(gh api "$tag_path" --jq '.object.type')"
+              tag_object="$(gh api "$tag_path" --jq '.object.sha')"
+              test "$tag_type" = tag
+              tag_target="repos/${GITHUB_REPOSITORY}/git/tags/${tag_object}"
+              test "$(gh api "$tag_target" --jq '.object.type')" = commit
+              test "$(gh api "$tag_target" --jq '.object.sha')" = "$GITHUB_SHA"
+              git fetch origin main --no-tags --depth=1
+              test "$(git rev-parse origin/main)" = "$GITHUB_SHA"
+              if release_error="$(gh api \
+                "repos/${GITHUB_REPOSITORY}/releases/tags/${GITHUB_REF_NAME}" \
+                2>&1)"; then
+                echo "GitHub release already exists for $GITHUB_REF_NAME" >&2
+                exit 1
+              elif ! grep -Fq '(HTTP 404)' <<<"$release_error"; then
+                echo "$release_error" >&2
+                echo "could not prove GitHub release tag availability" >&2
+                exit 1
+              fi
             fi
             test "$(git rev-list -n 1 "$GITHUB_REF_NAME")" = "$GITHUB_SHA"
           fi
@@ -74,6 +111,7 @@ jobs:
           test "$configured" = "$RUST_TOOLCHAIN"
           test "$(cat .node-version)" = "$NODE_VERSION"
           python3 scripts/validate_release_archive.py --help >/dev/null
+          printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
       - name: Inject requested negative rehearsal failure
         if: >-
           ${{ github.event_name == 'workflow_dispatch' &&
@@ -123,6 +161,8 @@ jobs:
     name: Build, reproduce, and audit ${{ matrix.host }} bundle
     needs: verify
     runs-on: ${{ matrix.runner }}
+    env:
+      AXIOGRAPH_CLI_VERSION: ${{ needs.verify.outputs.release_version }}
     strategy:
       fail-fast: false
       matrix:
@@ -277,19 +317,23 @@ jobs:
   container:
     name: Publish release-gated container
     if: startsWith(github.ref, 'refs/tags/')
-    needs: build
+    needs: [verify, build]
     permissions:
       contents: read
       packages: write
     uses: ./.github/workflows/docker.yml
     with:
       publish_tag: true
+      release_version: ${{ needs.verify.outputs.release_version }}
 
   publish:
     name: Publish audited bundles
     if: startsWith(github.ref, 'refs/tags/')
-    needs: [build, container]
+    needs: [verify, build, container]
     runs-on: ubuntu-24.04
+    environment: release
+    env:
+      AXIOGRAPH_CLI_VERSION: ${{ needs.verify.outputs.release_version }}
     permissions:
       contents: write
     steps:

@@ -16,9 +16,10 @@ LINK_RE = re.compile(r"!?\[[^]]*\]\(([^)]+)\)")
 
 
 def local_markdown_target(source: Path, raw_target: str) -> Path | None:
-    target = urlsplit(raw_target.strip()).path
-    if not target or target.startswith(("http:", "https:", "mailto:")):
+    parsed = urlsplit(raw_target.strip())
+    if parsed.scheme or parsed.netloc or not parsed.path:
         return None
+    target = parsed.path
     target = unquote(target)
     if not target.lower().endswith(".md"):
         return None

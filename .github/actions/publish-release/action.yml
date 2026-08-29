@@ -1,14 +1,16 @@
 ---
 name: Publish release assets
-description: Publish platform-qualified artifacts to the current GitHub release
+description: Stage, verify, and publish exact assets for the current tag
 inputs:
   files:
-    description: Newline-delimited artifact globs
+    description: Newline-delimited exact artifact paths
     required: true
 runs:
   using: composite
   steps:
-    # softprops/action-gh-release pinned to an immutable commit.
-    - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65
-      with:
-        files: ${{ inputs.files }}
+    - name: Stage, verify, and publish release
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        RELEASE_FILES: ${{ inputs.files }}
+      run: ./scripts/publish_github_release.sh

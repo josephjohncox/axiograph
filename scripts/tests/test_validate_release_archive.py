@@ -17,6 +17,7 @@ from scripts.generate_release_source_manifest import (
     build_source_manifest,
     canonical_bytes,
 )
+from scripts.release_version import workspace_version
 from scripts.validate_release_archive import (
     ArchivedFile,
     ArchiveValidationError,
@@ -110,7 +111,7 @@ class ReleaseArchiveValidationTests(unittest.TestCase):
                 first,
                 output,
                 expected_host="x86_64-unknown-linux-gnu",
-                expected_version="0.6.0",
+                expected_version=workspace_version(REPO_ROOT),
                 expected_source_commit=SOURCE_COMMIT,
                 expected_rust_toolchain="1.88.0",
             )

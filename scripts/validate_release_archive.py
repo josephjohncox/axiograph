@@ -34,6 +34,7 @@ try:
         SourceManifestError,
         validate_source_manifest_bytes,
     )
+    from .release_version import CalVerError, parse_calver
 except ImportError:
     from build_release_bundle import (
         CHECKER_BUILD_ID,
@@ -47,6 +48,7 @@ except ImportError:
         SourceManifestError,
         validate_source_manifest_bytes,
     )
+    from release_version import CalVerError, parse_calver
 
 MAX_ARCHIVE_BYTES = 512 * 1024 * 1024
 MAX_TOTAL_BYTES = 512 * 1024 * 1024
@@ -58,7 +60,6 @@ EXPECTED_ENTRY_COUNT = 5
 MAX_JSON_DEPTH = 64
 MAX_TAR_STREAM_BYTES = MAX_TOTAL_BYTES + 1024 * 1024
 HEX64 = re.compile(r"[0-9a-f]{64}")
-SEMVER_CORE = re.compile(r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)")
 EXACT_TOOLCHAIN = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+")
 
 
@@ -428,12 +429,11 @@ def validate_release_manifest(
         raise fail(f"unsupported release manifest schema {release['schema']!r}")
     if release["host"] != host:
         raise fail("release manifest host does not match archive name")
-    if (
-        not isinstance(release["version"], str)
-        or SEMVER_CORE.fullmatch(release["version"]) is None
-    ):
-        raise fail("release manifest version is not an unqualified SemVer core")
-    if expected_version is not None and release["version"] != expected_version:
+    try:
+        release_version = str(parse_calver(release["version"]))
+    except CalVerError as error:
+        raise fail(f"release manifest version is not canonical CalVer: {error}") from error
+    if expected_version is not None and release_version != expected_version:
         raise fail("release manifest version does not match caller expectation")
     if (
         not isinstance(release["rust_toolchain"], str)

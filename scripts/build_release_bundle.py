@@ -23,6 +23,7 @@ try:
         SourceManifestError,
         validate_source_manifest_bytes,
     )
+    from .release_version import CalVerError, parse_calver
     from .run_release_fixture_suite import FixtureSuiteError, validate_manifest_bytes
 except ImportError:
     from bounded_io import BoundedIoError, read_regular_bounded, sha256_regular_bounded
@@ -30,9 +31,10 @@ except ImportError:
         SourceManifestError,
         validate_source_manifest_bytes,
     )
+    from release_version import CalVerError, parse_calver
     from run_release_fixture_suite import FixtureSuiteError, validate_manifest_bytes
 
-SCHEMA = "axiograph-release-bundle-v2"
+SCHEMA = "axiograph-release-bundle-v3"
 CHECKER_PROTOCOL = "axiograph-verifier-stdio-v2"
 CHECKER_BUILD_ID = "axiograph-verify-main-v3"
 MAX_BINARY_BYTES = 256 * 1024 * 1024
@@ -110,10 +112,10 @@ def _workspace_version(repo_root: Path) -> str:
         version = data["workspace"]["package"]["version"]
     except (KeyError, TypeError) as error:
         raise _fail("Rust workspace version is missing") from error
-    semver_core = r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
-    if not isinstance(version, str) or re.fullmatch(semver_core, version) is None:
-        raise _fail("Rust workspace version must be an unqualified SemVer core")
-    return version
+    try:
+        return str(parse_calver(version))
+    except CalVerError as error:
+        raise _fail(f"Rust workspace version is not canonical CalVer: {error}") from error
 
 
 def _file_record(name: str, mode: int, data: bytes) -> dict[str, object]:

@@ -6,7 +6,7 @@ Axiograph docs are organized around the current canonical semantic spine:
 exact canonical .axi bytes + import closure + accepted snapshot handle
   -> CanonicalCompiler
   -> CompiledKernelSnapshot
-  -> KernelSnapshotIr + SchemaPresentationIr + InstanceModelIr
+  -> KernelSnapshotIr + SchemaPresentationIr + TypedTheoryIr + InstanceModelIr
   -> derived runtime indexes/reports
   -> optional Lean verifier for the supported fragment
 ```
@@ -23,11 +23,12 @@ reading order; the chapter files remain the repository's documentation source
 of truth.
 
 1. `examples/regulated_shipment/README.md` — the primary executable usefulness workflow and its scoped claims.
-2. `README.md` — project intent, trust boundary, and quick commands.
+2. `README.md` — product overview, canonical architecture, and primary user workflows.
 3. `docs/howto/CANONICAL_SEMANTIC_SPINE.md` — the current end-to-end workflow.
 4. `examples/README.md` — runnable teaching catalog.
 5. `docs/explanation/SYSTEM_OVERVIEW.md` — conceptual architecture.
-6. `docs/howto/TESTING.md` — verification and CI-style gates.
+6. `docs/DEVELOPMENT.md` — contributor builds, verification gates, and platform policy.
+7. `docs/howto/RELEASING.md` — CalVer and publication procedure.
 
 ## Current Navigation Spine
 
@@ -42,6 +43,7 @@ of truth.
 | Semantic VCS, reconciliation, merge/rebase | `docs/reference/SEMANTIC_VCS.md` |
 | Embeddings, RAG, and evidence overlays | `docs/reference/EMBEDDINGS_AND_EVIDENCE.md` |
 | Backend projection, semantic loss, and evidence-only readback | `docs/reference/BACKEND_PROJECTIONS.md`, `docs/reference/KERNEL_IR.md` |
+| Development, testing, and releases | `docs/DEVELOPMENT.md`, `docs/howto/TESTING.md`, `docs/howto/RELEASING.md` |
 | Agent working context and backlog | `docs/reference/AGENT_CONTEXT.md`, `docs/roadmaps/ROADMAP_AGENT_BACKLOG.md` |
 
 Repo-wide language rule:
@@ -73,6 +75,7 @@ Repo-wide language rule:
 ## How-To Guides
 
 - `docs/howto/TESTING.md` — running test suites and demos.
+- `docs/howto/RELEASING.md` — CalVer preparation, rehearsal, publication, and evidence.
 - `docs/howto/CANONICAL_SEMANTIC_SPINE.md` — one current workflow across validation, theory checks, typed queries, overlays, semantic VCS, embeddings, and backend projections.
 - `docs/howto/FORMAL_VERIFICATION.md` — Lean checks and certificate gates.
 - `docs/howto/DB_SERVER.md` — HTTP query/viz server.

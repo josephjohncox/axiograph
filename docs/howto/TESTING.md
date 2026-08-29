@@ -564,21 +564,14 @@ make verify-lean-semantic-vcs
 ### Hosted negative release rehearsal
 
 The release workflow exposes `inject_verify_failure` only on
-`workflow_dispatch`. Run it against a temporary tag that points at the exact
-candidate commit:
+`workflow_dispatch`. Run it against a disposable rehearsal tag that points at
+the exact candidate commit. The injected verify step must fail before any build
+or publication job, and neither GitHub Releases nor GHCR may contain the
+rehearsal version.
 
-```bash
-gh workflow run release.yml \
-  --ref v0.6.0-rehearsal-fail \
-  -f inject_verify_failure=true
-```
-
-The injected verify step exits before any build or publication job. A hosted
-rehearsal is complete only after the run records `verify` as failed, all bundle
-and publish jobs as skipped, `gh release view v0.6.0-rehearsal-fail` reports no
-release, and the registry has no matching GHCR tag. Delete the temporary remote
-tag after collecting that evidence. A local run or a dispatch against a branch
-does not satisfy the hosted-tag requirement.
+The complete tag grammar, command sequence, evidence requirements, cleanup,
+and never-reuse policy are in [Release Axiograph](RELEASING.md). A local run or
+a dispatch against a branch does not satisfy the hosted-tag requirement.
 
 ### Release platform claims
 

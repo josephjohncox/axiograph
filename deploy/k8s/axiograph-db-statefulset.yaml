@@ -29,7 +29,7 @@ spec:
             sizeLimit: 64Mi
       containers:
         - name: axiograph
-          image: ghcr.io/axiograph/axiograph:latest
+          image: ghcr.io/josephjohncox/axiograph:v20260829.0.0
           imagePullPolicy: IfNotPresent
           securityContext:
             allowPrivilegeEscalation: false
