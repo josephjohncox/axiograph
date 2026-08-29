@@ -8,6 +8,8 @@ import textwrap
 import unittest
 from pathlib import Path
 
+from scripts.release_version import workspace_version
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -65,13 +67,14 @@ class GithubReleasePublicationTests(unittest.TestCase):
             )
             fake_gh.chmod(0o755)
             sha = "a" * 40
+            version = workspace_version(REPO_ROOT)
             env = {
                 **os.environ,
                 "PATH": f"{root}:{os.environ['PATH']}",
                 "FAKE_GH_LOG": str(log),
                 "GH_TOKEN": "test-token",
-                "GITHUB_REF": "refs/tags/v20260829.0.0",
-                "GITHUB_REF_NAME": "v20260829.0.0",
+                "GITHUB_REF": f"refs/tags/v{version}",
+                "GITHUB_REF_NAME": f"v{version}",
                 "GITHUB_REPOSITORY": "josephjohncox/axiograph",
                 "GITHUB_SHA": sha,
                 "RELEASE_FILES": f"{first}\n{second}",

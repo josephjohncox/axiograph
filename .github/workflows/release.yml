@@ -143,6 +143,7 @@ jobs:
       # leanprover/lean-action pinned to an immutable commit.
       - uses: leanprover/lean-action@38fbc41a8c28c4cbaec22d7f7de508ec2e7c0dd9
         with:
+          lake-package-directory: lean
           auto-config: false
           build: false
           test: false
@@ -188,6 +189,7 @@ jobs:
       # leanprover/lean-action pinned to an immutable commit.
       - uses: leanprover/lean-action@38fbc41a8c28c4cbaec22d7f7de508ec2e7c0dd9
         with:
+          lake-package-directory: lean
           auto-config: false
           build: false
           test: false
