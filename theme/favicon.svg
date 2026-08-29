@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Axiograph">
+  <rect width="64" height="64" rx="14" fill="#14213d"/>
+  <path d="M14 47 29.5 15h5L50 47h-8.2l-3.2-7H25.1l-3.2 7H14Zm13.8-13h8.1L32 24.9 27.8 34Z" fill="#78d5cc"/>
+  <circle cx="32" cy="18" r="3" fill="#d19a2a"/>
+</svg>

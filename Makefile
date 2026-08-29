@@ -36,6 +36,7 @@
 	rust-test-semantics check-rust-toolchain check-node-toolchain check-clean-source-manifest check-example-catalog rust-fmt-check rust-test-locked rust-test-all-targets-features check-cli-feature-matrix verify-viz \
 	verify-release-fixtures verify-release-packaging rehearse-release-publication \
 	release-gate check-no-unsafe check-no-panics verify-semantics verify-canonical-spine test-semantics test-backend-containers \
+	docs docs-rust book book-tool book-validate book-serve \
 	viz-install viz-build viz-dev \
 	demo test clean install help
 
@@ -65,6 +66,8 @@ CARGO_FUZZ_VERSION ?= 0.13.2
 CARGO_AUDIT_VERSION ?= 0.22.2
 KANI_VERSION ?= 0.67.0
 NODE_VERSION := $(shell cat .node-version)
+MDBOOK_VERSION := 0.5.4
+MDBOOK ?= $(BUILD_DIR)/tools/mdbook/mdbook
 
 # Lean configuration (optional)
 LAKE := lake
@@ -764,10 +767,34 @@ verify-kani-required:
 # Documentation
 # ============================================================================
 
-docs: rust
-	@echo "━━━ Building Documentation ━━━"
+docs: docs-rust book
+	@echo "✓ API documentation and the Axiograph book are built"
+
+docs-rust: rust
+	@echo "━━━ Building Rust API documentation ━━━"
 	cd $(RUST_DIR) && $(CARGO) doc --no-deps --all-features
-	@echo "✓ Docs available at $(RUST_DIR)/target/doc/index.html"
+	@echo "✓ API docs available at $(RUST_DIR)/target/doc/index.html"
+
+book-tool:
+	@./scripts/install_mdbook.sh "$(MDBOOK)"
+	@test "$$($(MDBOOK) --version)" = "mdbook v$(MDBOOK_VERSION)" || { \
+		echo "error: expected mdBook v$(MDBOOK_VERSION)"; \
+		exit 1; \
+	}
+
+book-validate:
+	@python3 scripts/check_book.py
+
+book: book-tool book-validate
+	@echo "━━━ Building the Axiograph book ━━━"
+	@rm -rf $(BUILD_DIR)/book
+	@$(MDBOOK) build
+	@python3 scripts/check_book_output.py $(BUILD_DIR)/book
+	@echo "✓ Book available at $(BUILD_DIR)/book/index.html"
+
+book-serve: book-tool book-validate
+	@echo "Serving the Axiograph book at http://127.0.0.1:3000"
+	@$(MDBOOK) serve --hostname 127.0.0.1 --port 3000 --open
 
 # ============================================================================
 # Frontend (Viz)
@@ -823,7 +850,9 @@ help:
 	@echo "  release-gate Run the clean-checkout Rust + Lean publication decision"
 	@echo "  test-e2e     Run end-to-end tests"
 	@echo "  test-backend-containers  Run Docker-backed TypeDB / TerminusDB readback tests"
-	@echo "  docs         Build documentation"
+	@echo "  docs         Build Rust API docs and the published book"
+	@echo "  book         Validate and build the mdBook site"
+	@echo "  book-serve   Serve the book locally at http://127.0.0.1:3000"
 	@echo "  install      Install binaries to /usr/local/bin"
 	@echo "  clean        Remove build artifacts"
 	@echo ""
@@ -855,5 +884,6 @@ help:
 	@echo "Prerequisites:"
 	@echo "  - Rust $(RUST_VERSION) exactly for release-gate"
 	@echo "  - Node.js $(NODE_VERSION) for verify-viz and release-gate"
+	@echo "  - mdBook $(MDBOOK_VERSION) is downloaded and digest-checked by make book"
 	@echo "  - $(FUZZ_TOOLCHAIN) with Miri, cargo-fuzz $(CARGO_FUZZ_VERSION), and cargo-kani $(KANI_VERSION) for release-gate"
 	@echo "  - Lean4 + Lake (optional for verification)"

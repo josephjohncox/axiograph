@@ -2,6 +2,8 @@
 
 ![Axiograph Logo](axiograph.png)
 
+[Read the published Axiograph book](https://josephjohncox.github.io/axiograph/)
+
 **Runtime-typed ontology engineering for software, business rules, semantic VCS,
 and proof-carrying high-value claims.**
 
@@ -134,6 +136,7 @@ PATH="$(dirname "$(rustup which --toolchain 1.88.0 rustc)"):$PATH" \
 
 | Goal | Start Here |
 | --- | --- |
+| Read the published book | <https://josephjohncox.github.io/axiograph/> |
 | Learn the current workflow | `docs/howto/CANONICAL_SEMANTIC_SPINE.md` |
 | Understand the architecture | `docs/explanation/SYSTEM_OVERVIEW.md` |
 | Use examples | `examples/README.md` |
@@ -191,6 +194,8 @@ Prerequisites:
 - The Lean toolchain and mathlib revisions pinned by `lean/lean-toolchain` and
   `lean/lake-manifest.json`.
 - Docker only for container and optional backend projection/readback tests.
+- The book target downloads the pinned mdBook binary and verifies its SHA-256
+  digest before use.
 
 Common checks:
 
@@ -198,6 +203,7 @@ Common checks:
 cargo fmt --manifest-path rust/Cargo.toml --check
 cargo check --manifest-path rust/Cargo.toml -p axiograph-cli -p axiograph-pathdb
 lake build Axiograph.VerifyMain
+make book
 git diff --check
 ```
 
