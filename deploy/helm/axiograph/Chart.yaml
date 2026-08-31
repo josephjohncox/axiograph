@@ -4,4 +4,4 @@ description: >-
   Read-only Axiograph service for one authenticated SQLite materialization
 type: application
 version: 0.1.0
-appVersion: "20260829.0.2"
+appVersion: "20260829.0.3"
