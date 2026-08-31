@@ -138,6 +138,19 @@ class ReleaseManifestTests(unittest.TestCase):
             f"image: ghcr.io/josephjohncox/axiograph:v{version}", manifest
         )
 
+    def test_release_publication_downloads_only_native_bundle_artifacts(self) -> None:
+        workflow = (REPO_ROOT / ".github/workflows/release.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(
+            "with:\n"
+            "          path: dist\n"
+            "          pattern: axiograph-*\n"
+            "          merge-multiple: true\n"
+            "      - name: Re-verify exact downloaded release assets",
+            workflow,
+        )
+
     def test_checked_in_fixture_manifest_is_complete_and_hash_pinned(self) -> None:
         manifest_path = REPO_ROOT / "release" / "fixtures.json"
         manifest = load_manifest(manifest_path, REPO_ROOT)
