@@ -116,17 +116,16 @@ workflow.
 Release candidates build native bundles for:
 
 - `x86_64-unknown-linux-gnu`;
-- `aarch64-apple-darwin`;
-- `x86_64-pc-windows-msvc`.
+- `aarch64-apple-darwin`.
 
 A platform is supported only for a release whose exact hosted-runner lane
 records successful archive extraction, checksum, mode, CLI, and anchored
 checker smokes. No support is inferred before that evidence exists.
 
 Linux arm64 is a container candidate only. Native Linux arm64, macOS Intel,
-Windows arm64, and unexecuted runner paths remain unsupported. The Linux bundle
-uses the Ubuntu 24.04 glibc/OpenSSL 3 ABI baseline. The macOS arm64 deployment
-target is 13.0.
+and unexecuted runner paths remain unsupported. Windows native bundles are not
+built or published. The Linux bundle uses the Ubuntu 24.04 glibc/OpenSSL 3 ABI
+baseline. The macOS arm64 deployment target is 13.0.
 
 Axiograph releases use the Cargo-compatible CalVer policy documented in
 [Releasing](howto/RELEASING.md). The Rust workspace version is authoritative.
