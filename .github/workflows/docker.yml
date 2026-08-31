@@ -296,27 +296,14 @@ jobs:
             "${IMAGE}@${amd64_digest}"
             "${IMAGE}@${arm64_digest}"
           )
+          docker buildx imagetools inspect "${refs[0]}" --raw \
+            > /tmp/audited-amd64-index.json
+          docker buildx imagetools inspect "${refs[1]}" --raw \
+            > /tmp/audited-arm64-index.json
           docker buildx imagetools create -t "$release_ref" "${refs[@]}"
           docker buildx imagetools inspect "$release_ref" --raw \
             > /tmp/release-manifest.json
-          python3 - "$amd64_digest" "$arm64_digest" <<'PY'
-          import json
-          import sys
-          from pathlib import Path
-
-          manifest = json.loads(Path("/tmp/release-manifest.json").read_text())
-          expected = {
-              ("linux", "amd64"): sys.argv[1],
-              ("linux", "arm64"): sys.argv[2],
-          }
-          actual = {
-              (item["platform"]["os"], item["platform"]["architecture"]): item[
-                  "digest"
-              ]
-              for item in manifest.get("manifests", [])
-          }
-          if actual != expected:
-              raise SystemExit(
-                  f"release manifest platforms are not exact: {actual!r}"
-              )
-          PY
+          python3 scripts/validate_container_manifest.py \
+            --final /tmp/release-manifest.json \
+            --input linux/amd64=/tmp/audited-amd64-index.json \
+            --input linux/arm64=/tmp/audited-arm64-index.json
