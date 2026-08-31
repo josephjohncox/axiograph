@@ -139,8 +139,24 @@ class ReleaseArchiveValidationTests(unittest.TestCase):
             first = build_valid_bundle(root, "x86_64-pc-windows-msvc", "first")
             second = build_valid_bundle(root, "x86_64-pc-windows-msvc", "second")
             self.assertEqual(first.read_bytes(), second.read_bytes())
-            report = validate_archive(first, expected_host="x86_64-pc-windows-msvc")
+            report = validate_archive(
+                first,
+                expected_host="x86_64-pc-windows-msvc",
+                expected_runtime=root / "runtime-first",
+                expected_checker=root / "checker-first",
+            )
             self.assertTrue(report["validated"])
+            wrong_runtime = root / "wrong-runtime"
+            wrong_runtime.write_bytes(b"wrong\n")
+            with self.assertRaisesRegex(
+                ArchiveValidationError, "packaged runtime byte count differs"
+            ):
+                validate_archive(first, expected_runtime=wrong_runtime)
+            wrong_runtime.write_bytes(b"tampered data\n")
+            with self.assertRaisesRegex(
+                ArchiveValidationError, "packaged runtime differs from built bytes"
+            ):
+                validate_archive(first, expected_runtime=wrong_runtime)
 
     @unittest.skipIf(
         os.name == "nt", "Windows does not permit replacing this open fixture"
