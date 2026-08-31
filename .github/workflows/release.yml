@@ -289,21 +289,30 @@ jobs:
           if hashlib.sha256(archive.read_bytes()).hexdigest() != match.group(1):
               raise SystemExit("outer archive SHA-256 mismatch")
           PY
-          verify_dir="$(mktemp -d)"
-          trap 'rm -rf "$verify_dir"' EXIT
-          "$python" scripts/validate_release_archive.py \
-            "dist/$ARCHIVE" \
-            --extract-to "$verify_dir" \
-            --expected-host "$EXPECTED_HOST" \
-            --expected-version "$AXIOGRAPH_CLI_VERSION" \
-            --expected-source-commit "$GITHUB_SHA" \
-            --expected-fixture-manifest-sha256 "$fixture_sha" \
+          validator_args=(
+            --expected-host "$EXPECTED_HOST"
+            --expected-version "$AXIOGRAPH_CLI_VERSION"
+            --expected-source-commit "$GITHUB_SHA"
+            --expected-fixture-manifest-sha256 "$fixture_sha"
             --expected-rust-toolchain "$RUST_TOOLCHAIN"
-          runtime="$verify_dir/axiograph"
-          checker="$verify_dir/axiograph_verify"
+          )
           if [ "${{ runner.os }}" = "Windows" ]; then
-            runtime="${runtime}.exe"
-            checker="${checker}.exe"
+            runtime="rust/target/release/axiograph.exe"
+            checker="lean/.lake/build/bin/axiograph_verify.exe"
+            "$python" scripts/validate_release_archive.py \
+              "dist/$ARCHIVE" \
+              --expected-runtime "$runtime" \
+              --expected-checker "$checker" \
+              "${validator_args[@]}"
+          else
+            verify_dir="$(mktemp -d)"
+            trap 'rm -rf "$verify_dir"' EXIT
+            "$python" scripts/validate_release_archive.py \
+              "dist/$ARCHIVE" \
+              --extract-to "$verify_dir" \
+              "${validator_args[@]}"
+            runtime="$verify_dir/axiograph"
+            checker="$verify_dir/axiograph_verify"
           fi
           "$runtime" --version | grep -Fx "axiograph ${AXIOGRAPH_CLI_VERSION}"
           "$python" scripts/run_release_fixture_suite.py \

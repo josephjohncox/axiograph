@@ -158,6 +158,16 @@ def sha256_stream(stream: BinaryIO) -> str:
     return digest.hexdigest()
 
 
+def validate_external_payload(
+    path: Path, archived: ArchivedFile, label: str
+) -> None:
+    with open_regular_archive(path) as (source, source_size):
+        if source_size != len(archived.data):
+            raise fail(f"packaged {label} byte count differs from built bytes")
+        if sha256_stream(source) != hashlib.sha256(archived.data).hexdigest():
+            raise fail(f"packaged {label} differs from built bytes")
+
+
 def snapshot_archive(source: BinaryIO, target: BinaryIO, expected_size: int) -> str:
     """Copy the opened archive once; hashing and parsing use this private image."""
     source.seek(0)
@@ -566,6 +576,8 @@ def validate_archive(
     expected_source_commit: str | None = None,
     expected_fixture_manifest_sha256: str | None = None,
     expected_rust_toolchain: str | None = None,
+    expected_runtime: Path | None = None,
+    expected_checker: Path | None = None,
 ) -> dict[str, object]:
     host, suffix = _host_from_archive_name(path)
     if expected_host is not None and host != expected_host:
@@ -589,6 +601,16 @@ def validate_archive(
         expected_fixture_manifest_sha256,
         expected_rust_toolchain,
     )
+    if expected_runtime is not None:
+        validate_external_payload(
+            expected_runtime, entries[f"axiograph{suffix}"], "runtime"
+        )
+    if expected_checker is not None:
+        validate_external_payload(
+            expected_checker,
+            entries[f"axiograph_verify{suffix}"],
+            "trusted checker",
+        )
     if extract_to is not None:
         extract_validated(entries, extract_to)
     return {
@@ -616,6 +638,8 @@ def main() -> int:
     parser.add_argument("--expected-source-commit")
     parser.add_argument("--expected-fixture-manifest-sha256")
     parser.add_argument("--expected-rust-toolchain")
+    parser.add_argument("--expected-runtime", type=Path)
+    parser.add_argument("--expected-checker", type=Path)
     args = parser.parse_args()
     try:
         report = validate_archive(
@@ -626,6 +650,8 @@ def main() -> int:
             expected_source_commit=args.expected_source_commit,
             expected_fixture_manifest_sha256=args.expected_fixture_manifest_sha256,
             expected_rust_toolchain=args.expected_rust_toolchain,
+            expected_runtime=args.expected_runtime,
+            expected_checker=args.expected_checker,
         )
     except (
         ArchiveValidationError,
