@@ -174,9 +174,6 @@ jobs:
           - runner: macos-15
             host: aarch64-apple-darwin
             archive: tar.gz
-          - runner: windows-2025
-            host: x86_64-pc-windows-msvc
-            archive: zip
     steps:
       # actions/checkout pinned to an immutable commit.
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
@@ -233,10 +230,8 @@ jobs:
           set -euo pipefail
           python=python3
           command -v "$python" >/dev/null 2>&1 || python=python
-          ext=""
-          if [ "${{ runner.os }}" = "Windows" ]; then ext=".exe"; fi
-          runtime="rust/target/release/axiograph${ext}"
-          checker="lean/.lake/build/bin/axiograph_verify${ext}"
+          runtime="rust/target/release/axiograph"
+          checker="lean/.lake/build/bin/axiograph_verify"
           source_manifest="build/release-source-manifest.json"
           rm -rf build/release-source-manifest.json dist dist-first dist-second
           "$python" scripts/generate_release_source_manifest.py \
@@ -296,24 +291,14 @@ jobs:
             --expected-fixture-manifest-sha256 "$fixture_sha"
             --expected-rust-toolchain "$RUST_TOOLCHAIN"
           )
-          if [ "${{ runner.os }}" = "Windows" ]; then
-            runtime="rust/target/release/axiograph.exe"
-            checker="lean/.lake/build/bin/axiograph_verify.exe"
-            "$python" scripts/validate_release_archive.py \
-              "dist/$ARCHIVE" \
-              --expected-runtime "$runtime" \
-              --expected-checker "$checker" \
-              "${validator_args[@]}"
-          else
-            verify_dir="$(mktemp -d)"
-            trap 'rm -rf "$verify_dir"' EXIT
-            "$python" scripts/validate_release_archive.py \
-              "dist/$ARCHIVE" \
-              --extract-to "$verify_dir" \
-              "${validator_args[@]}"
-            runtime="$verify_dir/axiograph"
-            checker="$verify_dir/axiograph_verify"
-          fi
+          verify_dir="$(mktemp -d)"
+          trap 'rm -rf "$verify_dir"' EXIT
+          "$python" scripts/validate_release_archive.py \
+            "dist/$ARCHIVE" \
+            --extract-to "$verify_dir" \
+            "${validator_args[@]}"
+          runtime="$verify_dir/axiograph"
+          checker="$verify_dir/axiograph_verify"
           "$runtime" --version | grep -Fx "axiograph ${AXIOGRAPH_CLI_VERSION}"
           "$python" scripts/run_release_fixture_suite.py \
             --checker "$checker" \
@@ -366,7 +351,6 @@ jobs:
           set -euo pipefail
           expected=(
             axiograph-aarch64-apple-darwin.tar.gz
-            axiograph-x86_64-pc-windows-msvc.zip
             axiograph-x86_64-unknown-linux-gnu.tar.gz
           )
           expected_files=()
@@ -402,7 +386,5 @@ jobs:
           files: |
             dist/axiograph-aarch64-apple-darwin.tar.gz
             dist/axiograph-aarch64-apple-darwin.tar.gz.sha256
-            dist/axiograph-x86_64-pc-windows-msvc.zip
-            dist/axiograph-x86_64-pc-windows-msvc.zip.sha256
             dist/axiograph-x86_64-unknown-linux-gnu.tar.gz
             dist/axiograph-x86_64-unknown-linux-gnu.tar.gz.sha256

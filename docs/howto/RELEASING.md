@@ -148,7 +148,7 @@ The release action generates release notes from the repository history.
 Retain evidence that:
 
 - the tag and release point to the tested commit;
-- all three archives and three checksum files exist;
+- both native archives and both checksum files exist;
 - each checksum verifies;
 - archive manifests contain the exact source commit and CalVer;
 - packaged CLIs report `axiograph <version>`;
