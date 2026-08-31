@@ -11,6 +11,7 @@ from scripts.generate_release_source_manifest import (
     canonical_bytes,
     dirty_status_entries,
     ignored_release_source_candidates,
+    require_real_directory,
     validate_source_manifest_bytes,
 )
 from scripts.release_version import workspace_version
@@ -20,6 +21,17 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 class ReleaseManifestTests(unittest.TestCase):
+    def test_release_output_parent_must_be_a_real_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            require_real_directory(directory, "output parent")
+            regular_file = directory / "not-a-directory"
+            regular_file.write_text("file\n", encoding="utf-8")
+            with self.assertRaisesRegex(
+                SourceManifestError, "output parent must be a real directory"
+            ):
+                require_real_directory(regular_file, "output parent")
+
     def test_source_manifest_is_sorted_canonical_and_deterministic(self) -> None:
         entries = [
             ("z.txt", "100644", "1" * 40, b"z\n"),
