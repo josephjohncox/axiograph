@@ -211,11 +211,15 @@ jobs:
           "$python" scripts/generate_release_source_manifest.py \
             --check-only >/dev/null
       - name: Fetch pinned Lean dependencies
+        shell: bash
         working-directory: lean
-        run: lake exe cache get
+        run: |
+          "$HOME/.elan/bin/lake" exe cache get
       - name: Build trusted checker
+        shell: bash
         working-directory: lean
-        run: lake build axiograph_verify
+        run: |
+          "$HOME/.elan/bin/lake" build axiograph_verify
       - name: Build untrusted Rust runtime
         working-directory: rust
         run: cargo build -p axiograph-cli --release --locked
