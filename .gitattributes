@@ -1,0 +1,9 @@
+# Release source manifests require identical checkout bytes on every runner.
+* text=auto eol=lf
+
+*.bin binary
+*.binpb binary
+*.jpg binary
+*.onnx binary
+*.png binary
+*.woff2 binary

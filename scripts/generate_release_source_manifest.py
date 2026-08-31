@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import re
+import stat
 import subprocess
 import sys
 from pathlib import Path, PurePosixPath
@@ -46,6 +47,12 @@ class SourceManifestError(RuntimeError):
 
 def _fail(message: str) -> SourceManifestError:
     return SourceManifestError(message)
+
+
+def require_real_directory(path: Path, label: str) -> None:
+    metadata = path.lstat()
+    if not stat.S_ISDIR(metadata.st_mode) or path.is_symlink():
+        raise _fail(f"{label} must be a real directory")
 
 
 def _git(
@@ -479,9 +486,7 @@ def main() -> int:
         if args.output is not None:
             parent = args.output.parent if args.output.parent != Path("") else Path(".")
             parent.mkdir(parents=True, exist_ok=True)
-            parent_metadata = parent.lstat()
-            if not parent_metadata.is_dir() or parent.is_symlink():
-                raise _fail("source manifest output parent must be a real directory")
+            require_real_directory(parent, "source manifest output parent")
             with args.output.open("xb") as output:
                 output.write(raw)
                 output.flush()
