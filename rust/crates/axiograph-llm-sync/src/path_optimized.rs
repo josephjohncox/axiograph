@@ -19,9 +19,9 @@ use uuid::Uuid;
 /// Materialized path index for fast queries
 #[derive(Debug, Clone)]
 pub struct PathIndex {
-    /// Direct edges: from -> [(to, confidence, relation)]
+    /// Direct edges: from -> [(to, confidence)]
     forward: HashMap<Uuid, Vec<IndexedEdge>>,
-    /// Reverse edges: to -> [(from, confidence, relation)]
+    /// Reverse edges: to -> [(from, confidence)]
     backward: HashMap<Uuid, Vec<IndexedEdge>>,
     /// 2-hop paths: from -> [(via, to, combined_confidence)]
     two_hop_cache: HashMap<Uuid, Vec<TwoHopPath>>,
