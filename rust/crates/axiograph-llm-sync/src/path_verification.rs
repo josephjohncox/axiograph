@@ -13,10 +13,7 @@
 //! connections form valid paths that can be audited and (where appropriate)
 //! certificate-checked in Lean.
 
-#![allow(unused_imports, unused_variables, dead_code)]
-
-use crate::reconciliation::*;
-use crate::{ConflictType, StructuredFact};
+use crate::{StructuredFact, Weight};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::marker::PhantomData;
@@ -542,99 +539,6 @@ impl PathConflict {
             PathConflict::ImpossibleCycle { .. } => PathResolution::HumanReview,
         }
     }
-}
-
-// ============================================================================
-// Path-Verified Reconciliation
-// ============================================================================
-
-/// Reconciliation with path verification
-pub struct PathVerifiedReconciliation {
-    graph: VerifiedGraph,
-    engine: ReconciliationEngine,
-}
-
-impl PathVerifiedReconciliation {
-    pub fn new(config: ReconciliationConfig) -> Self {
-        Self {
-            graph: VerifiedGraph::new(),
-            engine: ReconciliationEngine::new(config),
-        }
-    }
-
-    /// Add a fact with path verification
-    pub fn add_fact(
-        &mut self,
-        fact: StructuredFact,
-        weight: f32,
-        connections: Vec<(Uuid, String, f32)>, // (target, relation, confidence)
-    ) -> Result<Uuid, PathVerificationError> {
-        let fact_id = Uuid::new_v4();
-
-        // Create node
-        let node = FactNode {
-            id: fact_id,
-            fact_type: fact.type_name(),
-            content: fact.clone(),
-            weight,
-        };
-
-        // Add to graph
-        self.graph.add_node(node)?;
-
-        // Add connections and check for conflicts
-        for (target, relation, confidence) in connections {
-            self.graph
-                .add_edge::<GenericRel>(fact_id, target, confidence)?;
-
-            // Check if this creates any path conflicts
-            for existing in self.graph.nodes() {
-                if existing.id != fact_id && existing.id != target {
-                    if let Some(conflict) = self.graph.check_path_conflicts(fact_id, existing.id) {
-                        // Resolve or report
-                        match conflict.resolve() {
-                            PathResolution::HumanReview => {
-                                return Err(PathVerificationError::ConflictNeedsReview(conflict));
-                            }
-                            PathResolution::NeedMoreEvidence => {
-                                return Err(PathVerificationError::InsufficientEvidence);
-                            }
-                            _ => {
-                                // Auto-resolved, continue
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        Ok(fact_id)
-    }
-
-    /// Query paths between facts
-    pub fn query_paths(&self, from: Uuid, to: Uuid) -> Vec<Path> {
-        self.graph.find_paths(from, to, 5)
-    }
-
-    /// Get best path
-    pub fn best_path(&self, from: Uuid, to: Uuid) -> Option<Path> {
-        self.graph.best_path(from, to)
-    }
-
-    /// Get underlying graph
-    pub fn graph(&self) -> &VerifiedGraph {
-        &self.graph
-    }
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum PathVerificationError {
-    #[error(transparent)]
-    Graph(#[from] GraphError),
-    #[error("Conflict needs human review: {0:?}")]
-    ConflictNeedsReview(PathConflict),
-    #[error("Insufficient evidence to establish connection")]
-    InsufficientEvidence,
 }
 
 // ============================================================================

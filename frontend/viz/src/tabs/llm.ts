@@ -367,15 +367,12 @@ async function llmAgentAsk() {
 
     const body = { question: q, contexts, history: historyToSend };
     if (snapshot) body.snapshot = snapshot;
-    if (llmCertifyEl && llmCertifyEl.checked) body.certify_queries = true;
-    if (llmVerifyEl && llmVerifyEl.checked) {
-      body.verify_queries = true;
-      body.certify_queries = true;
-    }
     if (llmRequireVerifiedEl && llmRequireVerifiedEl.checked) {
-      body.require_verified_queries = true;
-      body.verify_queries = true;
-      body.certify_queries = true;
+      body.query_certificate_policy = "require_verified";
+    } else if (llmVerifyEl && llmVerifyEl.checked) {
+      body.query_certificate_policy = "verify";
+    } else if (llmCertifyEl && llmCertifyEl.checked) {
+      body.query_certificate_policy = "emit";
     }
     if (wantsAutoCommit) {
       body.auto_commit = true;

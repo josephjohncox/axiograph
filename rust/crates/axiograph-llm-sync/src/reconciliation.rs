@@ -26,10 +26,8 @@
 //!                     └──► Schema Conflict ──► Reject or Schema Extension
 //! ```
 
-#![allow(unused_imports)]
-
-use crate::{Conflict, ConflictType, ExtractedFact, FactId, Resolution, StructuredFact};
-use chrono::{DateTime, Duration, Utc};
+use crate::{ConflictType, ExtractedFact, FactId, Resolution, StructuredFact};
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use uuid::Uuid;
@@ -920,6 +918,7 @@ impl std::fmt::Display for crate::LLMProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Duration;
     use std::collections::HashMap;
 
     #[test]

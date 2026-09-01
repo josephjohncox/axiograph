@@ -156,24 +156,27 @@ pub enum PathResolution {
 }
 ```
 
-## Reconciliation with Path Verification
+## Runtime Path Guardrails
+
+`VerifiedGraph` validates node weights, edge endpoints, and edge confidence.
+Callers add typed relationships explicitly and decide how reported path
+conflicts enter the separate review and reconciliation workflow:
 
 ```rust
-let mut pvr = PathVerifiedReconciliation::new(config);
+let mut graph = VerifiedGraph::new();
+graph.add_node(material_node)?;
+graph.add_node(steel_node)?;
+graph.add_edge::<IsA>(steel_id, material_id, 0.95)?;
 
-// Add base knowledge
-let material_id = pvr.add_fact(make_entity("Material"), 0.9, vec![])?;
-
-// Add fact with connection - automatically checks for conflicts
-let steel_id = pvr.add_fact(
-    make_entity("Steel"),
-    0.85,
-    vec![(material_id, "is_a".to_string(), 0.95)],
-)?;
-
-// Query verified paths
-let paths = pvr.query_paths(steel_id, material_id);
+let paths = graph.find_paths(steel_id, material_id, 5);
+if let Some(conflict) = graph.check_path_conflicts(steel_id, material_id) {
+    send_for_review(conflict)?;
+}
 ```
+
+This runtime graph does not accept ontology changes and does not itself perform
+reconciliation. Accepted meaning still changes only through reviewed `.axi`
+and AxiStore promotion.
 
 ## Lean Certificate Verification
 

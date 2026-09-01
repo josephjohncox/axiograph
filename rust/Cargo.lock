@@ -312,7 +312,6 @@ name = "axiograph-ingest-rdfowl"
 version = "20260829.0.3"
 dependencies = [
  "anyhow",
- "axiograph-dsl",
  "axiograph-ingest-docs",
  "axiograph-kernel",
  "axiograph-security",
@@ -353,7 +352,6 @@ version = "20260829.0.3"
 dependencies = [
  "anyhow",
  "async-trait",
- "axiograph-dsl",
  "axiograph-kernel",
  "axiograph-pathdb",
  "axiograph-security",
@@ -363,7 +361,6 @@ dependencies = [
  "parking_lot",
  "proptest",
  "regex",
- "reqwest",
  "roaring",
  "serde",
  "serde_json",
@@ -426,7 +423,6 @@ name = "axiograph-software-authoring"
 version = "20260829.0.3"
 dependencies = [
  "anyhow",
- "axiograph-pathdb",
  "axiograph-security",
  "axiograph-tooling-overlays",
  "clap",
