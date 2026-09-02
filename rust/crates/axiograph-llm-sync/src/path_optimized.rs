@@ -7,11 +7,9 @@
 //! 4. Early termination
 //! 5. Beam search for top-k paths
 
-#![allow(unused_imports, private_interfaces, dead_code)]
-
 use crate::path_verification::*;
 use std::cmp::Ordering;
-use std::collections::{BinaryHeap, HashMap, HashSet};
+use std::collections::{BinaryHeap, HashMap};
 use uuid::Uuid;
 
 // ============================================================================
@@ -21,9 +19,9 @@ use uuid::Uuid;
 /// Materialized path index for fast queries
 #[derive(Debug, Clone)]
 pub struct PathIndex {
-    /// Direct edges: from -> [(to, confidence, relation)]
+    /// Direct edges: from -> [(to, confidence)]
     forward: HashMap<Uuid, Vec<IndexedEdge>>,
-    /// Reverse edges: to -> [(from, confidence, relation)]
+    /// Reverse edges: to -> [(from, confidence)]
     backward: HashMap<Uuid, Vec<IndexedEdge>>,
     /// 2-hop paths: from -> [(via, to, combined_confidence)]
     two_hop_cache: HashMap<Uuid, Vec<TwoHopPath>>,
@@ -36,7 +34,6 @@ pub struct PathIndex {
 struct IndexedEdge {
     target: Uuid,
     confidence: f32,
-    relation: String,
 }
 
 #[derive(Debug, Clone)]
@@ -80,7 +77,6 @@ impl PathIndex {
             let indexed = IndexedEdge {
                 target: edge.target,
                 confidence: edge.confidence.value(),
-                relation: edge.relation.clone(),
             };
             index
                 .forward
@@ -91,7 +87,6 @@ impl PathIndex {
             let reverse = IndexedEdge {
                 target: edge.source,
                 confidence: edge.confidence.value(),
-                relation: edge.relation.clone(),
             };
             index.backward.entry(edge.target).or_default().push(reverse);
 
@@ -136,7 +131,7 @@ impl PathIndex {
     }
 
     /// Get direct neighbors
-    pub fn neighbors(&self, node: Uuid) -> impl Iterator<Item = &IndexedEdge> {
+    fn neighbors(&self, node: Uuid) -> impl Iterator<Item = &IndexedEdge> {
         self.forward
             .get(&node)
             .map(|v| v.iter())
@@ -145,7 +140,7 @@ impl PathIndex {
     }
 
     /// Get reverse neighbors
-    pub fn reverse_neighbors(&self, node: Uuid) -> impl Iterator<Item = &IndexedEdge> {
+    fn reverse_neighbors(&self, node: Uuid) -> impl Iterator<Item = &IndexedEdge> {
         self.backward
             .get(&node)
             .map(|v| v.iter())

@@ -233,18 +233,24 @@ fn examples_readme_keeps_storage_debug_roundtrips_out_of_teaching_path() {
 #[test]
 fn viz_explorer_uses_query_certificate_policy_not_boolean_aliases() {
     let repo_root = repo_root();
-    let template_path = repo_root.join("rust/crates/axiograph-cli/templates/viz_explorer.html");
-    let text = fs::read_to_string(&template_path).expect("read viz explorer template");
+    let source_path = repo_root.join("frontend/viz/src/tabs/llm.ts");
+    let text = fs::read_to_string(&source_path).expect("read viz explorer LLM source");
 
     assert!(
-        text.contains("query_certificate_policy"),
-        "viz explorer should use the shared query certificate policy object"
+        text.contains("body.query_certificate_policy"),
+        "viz explorer should emit the shared query certificate policy"
     );
+    for policy in ["emit", "verify", "require_verified"] {
+        assert!(
+            text.contains(&format!("query_certificate_policy = \"{policy}\"")),
+            "viz explorer should map its controls to canonical policy `{policy}`"
+        );
+    }
     for removed_alias in [
-        "certify_queries",
-        "verify_queries",
-        "require_query_certs",
-        "require_verified_queries",
+        "body.certify_queries",
+        "body.verify_queries",
+        "body.require_query_certs",
+        "body.require_verified_queries",
     ] {
         assert!(
             !text.contains(removed_alias),

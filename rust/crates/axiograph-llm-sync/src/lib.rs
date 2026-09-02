@@ -53,16 +53,12 @@
 //! - Reconciliation inputs for review
 //! - Human-in-the-loop promotion through Axiograph semantic workflows
 
-#![allow(dead_code)]
-
 pub mod extraction;
 pub mod format;
 pub mod grounding;
-pub mod llm;
 pub mod path_optimized;
 pub mod path_verification;
 pub mod probabilistic;
-pub mod providers;
 pub mod reconciliation;
 pub mod reconciliation_format;
 pub mod sync;
@@ -563,24 +559,8 @@ pub enum Resolution {
 }
 
 // ============================================================================
-// Main Sync Engine
+// Sync Configuration
 // ============================================================================
-
-/// The main LLM-KG sync engine
-pub struct LLMSyncEngine {
-    /// The knowledge graph
-    pathdb: PathDB,
-    /// Current sync state
-    state: SyncState,
-    /// Extraction pipeline
-    extractor: Box<dyn FactExtractor>,
-    /// Validation pipeline
-    validator: Box<dyn FactValidator>,
-    /// Conflict resolver
-    resolver: Box<dyn ConflictResolver>,
-    /// Configuration
-    config: SyncConfig,
-}
 
 /// Configuration for sync behavior
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -656,35 +636,6 @@ pub enum ValidationResult {
     Valid,
     Invalid { errors: Vec<String> },
     NeedsSchemaExtension { suggestions: Vec<String> },
-}
-
-// ============================================================================
-// LLM Interface Trait
-// ============================================================================
-
-/// Interface for LLM providers
-#[async_trait::async_trait]
-pub trait LLMInterface: Send + Sync {
-    /// Generate response with grounding context
-    async fn generate_grounded(
-        &self,
-        prompt: &str,
-        context: &GroundingContext,
-    ) -> anyhow::Result<String>;
-
-    /// Extract structured facts from text
-    async fn extract_facts(
-        &self,
-        text: &str,
-        schema: &SchemaContext,
-    ) -> anyhow::Result<Vec<StructuredFact>>;
-
-    /// Validate a claim against knowledge
-    async fn validate_claim(
-        &self,
-        claim: &str,
-        evidence: &[GroundedFact],
-    ) -> anyhow::Result<(bool, f32, String)>; // (valid, confidence, reasoning)
 }
 
 // ============================================================================

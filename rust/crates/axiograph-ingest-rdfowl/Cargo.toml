@@ -11,7 +11,6 @@ description = "RDF/OWL ingestion for Axiograph"
 workspace = true
 
 [dependencies]
-axiograph-dsl = { path = "../axiograph-dsl" }
 axiograph-kernel = { path = "../axiograph-kernel" }
 axiograph-ingest-docs = { path = "../axiograph-ingest-docs" }
 axiograph-security = { path = "../axiograph-security" }

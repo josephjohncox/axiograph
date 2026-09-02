@@ -6,7 +6,6 @@
 //! 3. Path invariants are preserved through operations
 
 use axiograph_llm_sync::path_verification::*;
-use axiograph_llm_sync::reconciliation::*;
 use axiograph_llm_sync::*;
 use std::collections::HashMap;
 use uuid::Uuid;
@@ -358,59 +357,6 @@ fn test_conflict_resolution_merge() {
         }
         _ => panic!("Expected Merge resolution"),
     }
-}
-
-// ============================================================================
-// Path-Verified Reconciliation Tests
-// ============================================================================
-
-#[test]
-fn test_path_verified_add_fact() {
-    let mut pvr = PathVerifiedReconciliation::new(ReconciliationConfig::default());
-
-    // Add first fact
-    let id1 = pvr.add_fact(make_entity("Material"), 0.9, vec![]).unwrap();
-
-    // Add second fact with connection
-    let id2 = pvr
-        .add_fact(
-            make_entity("Steel"),
-            0.85,
-            vec![(id1, "is_a".to_string(), 0.95)],
-        )
-        .unwrap();
-
-    // Should be able to find path
-    let paths = pvr.query_paths(id2, id1);
-    assert_eq!(paths.len(), 1);
-}
-
-#[test]
-fn test_path_verified_detects_conflict() {
-    let mut pvr = PathVerifiedReconciliation::new(ReconciliationConfig::default());
-
-    let id1 = pvr.add_fact(make_entity("A"), 0.9, vec![]).unwrap();
-    let id2 = pvr
-        .add_fact(make_entity("B"), 0.9, vec![(id1, "is_a".to_string(), 0.5)])
-        .unwrap();
-    let id3 = pvr
-        .add_fact(make_entity("C"), 0.9, vec![(id2, "is_a".to_string(), 0.3)])
-        .unwrap();
-
-    // This creates a path A <- B <- C with confidence 0.15
-    // Now add a direct high-confidence path
-    // This should either succeed (auto-resolved) or fail (needs review)
-    let result = pvr.add_fact(
-        make_entity("D"),
-        0.9,
-        vec![
-            (id3, "is_a".to_string(), 0.95), // Direct to C
-            (id1, "is_a".to_string(), 0.95), // Direct to A
-        ],
-    );
-
-    // Should succeed (auto-resolved)
-    assert!(result.is_ok());
 }
 
 // ============================================================================

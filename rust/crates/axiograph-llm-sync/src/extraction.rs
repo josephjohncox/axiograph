@@ -1,7 +1,5 @@
 //! Fact Extraction: Pattern-based and LLM-assisted extraction from text
 
-#![allow(dead_code)]
-
 use crate::{ConversationTurn, ExtractedFact, FactSource, FactStatus, LLMProvider, StructuredFact};
 use chrono::Utc;
 use regex::Regex;
@@ -201,7 +199,6 @@ impl PatternExtractor {
 
 /// Domain-specific extraction patterns
 pub struct DomainExtractor {
-    domain: String,
     patterns: Vec<ExtractionPattern>,
 }
 
@@ -209,7 +206,6 @@ impl DomainExtractor {
     /// Create machining domain extractor
     pub fn machining() -> Result<Self, regex::Error> {
         Ok(Self {
-            domain: "machining".to_string(),
             patterns: vec![
                 ExtractionPattern {
                     name: "speed_limit",
@@ -261,7 +257,6 @@ impl DomainExtractor {
     /// Create physics domain extractor
     pub fn physics() -> Result<Self, regex::Error> {
         Ok(Self {
-            domain: "physics".to_string(),
             patterns: vec![ExtractionPattern {
                 name: "unit_equation",
                 regex: Regex::new(r"(?i)(\w+)\s*=\s*(\w+)\s*/\s*(\w+)")?,

@@ -7,8 +7,6 @@
 //! 4. Validates envelope integrity and schema-version invariants. Semantic
 //!    claims still require the Axiograph certificate/trust boundary.
 
-#![allow(unused_imports)]
-
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 

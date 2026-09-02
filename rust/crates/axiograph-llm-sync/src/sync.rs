@@ -7,16 +7,12 @@
 //! 4. Evidence/cache materialization
 //! 5. Provenance and version tracking
 
-#![allow(unused_imports, unused_mut, unused_variables)]
-
 use crate::{
-    Conflict, ConflictResolver, ConflictType, ConversationTurn, ExtractedFact, FactExtractor,
-    FactId, FactSource, FactStatus, FactValidator, GroundedFact, GroundingContext,
-    GroundingProvenanceV1, GuardrailContext, LLMProvider, Resolution, SchemaContext, SessionId,
-    StructuredFact, SyncConfig, SyncState, ValidationResult,
+    Conflict, ConflictType, ConversationTurn, ExtractedFact, FactId, FactSource, FactStatus,
+    GroundingContext, GroundingProvenanceV1, LLMProvider, Resolution, SessionId, StructuredFact,
+    SyncConfig, SyncState,
 };
-use axiograph_pathdb::PathDB;
-use axiograph_storage::{Change, ChangeId, ChangeSource, StorableFact, UnifiedStorage};
+use axiograph_storage::{ChangeId, ChangeSource, StorableFact, UnifiedStorage};
 use chrono::Utc;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
@@ -431,7 +427,7 @@ impl SyncManager {
         facts: &[ExtractedFact],
     ) -> anyhow::Result<(Vec<ExtractedFact>, Vec<ExtractedFact>, Vec<ExtractedFact>)> {
         let mut valid = Vec::new();
-        let mut invalid = Vec::new();
+        let invalid = Vec::new();
         let mut needs_review = Vec::new();
 
         for fact in facts {
@@ -496,10 +492,7 @@ impl SyncManager {
 
         for fact in facts {
             // Check for duplicate entities
-            if let StructuredFact::Entity {
-                name, entity_type, ..
-            } = &fact.structured
-            {
+            if let StructuredFact::Entity { entity_type, .. } = &fact.structured {
                 // Look for existing entity with same name
                 // Simplified - would use actual name lookup
                 if let Some(existing) = db.find_by_type(entity_type.as_str()) {
@@ -890,7 +883,7 @@ pub struct SyncStats {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axiograph_storage::{ReviewPolicy, StorageConfig};
+    use axiograph_storage::{Change, ReviewPolicy, StorageConfig};
     use tempfile::tempdir;
 
     fn write_test_schema(dir: &tempfile::TempDir, objects: &[&str]) {

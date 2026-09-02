@@ -16,7 +16,7 @@
 //! ```
 
 use crate::reconciliation::{ResolvedConflict, SourceCredibility, WeightedFact};
-use crate::{ConflictType, Resolution};
+use crate::Resolution;
 use serde::{Deserialize, Serialize};
 
 /// Current reconciliation state schema version.
@@ -26,28 +26,6 @@ const MAX_RECONCILIATION_FACTS: usize = 100_000;
 const MAX_RECONCILIATION_CONFLICTS: usize = 100_000;
 const MAX_RECONCILIATION_NESTED_ITEMS: usize = 500_000;
 const MAX_RECONCILIATION_COUNTER: u32 = 100_000_000;
-
-// ============================================================================
-// Type Tags
-// ============================================================================
-
-pub(crate) fn conflict_type_to_byte(ct: &ConflictType) -> u8 {
-    match ct {
-        ConflictType::Contradiction => 0,
-        ConflictType::AttributeMismatch => 1,
-        ConflictType::ConfidenceConflict => 2,
-        ConflictType::SchemaViolation => 3,
-    }
-}
-
-pub(crate) fn resolution_to_byte(r: &Resolution) -> u8 {
-    match r {
-        Resolution::ReplaceOld => 0,
-        Resolution::KeepOld => 1,
-        Resolution::Merge { .. } => 2,
-        Resolution::HumanReview => 3,
-    }
-}
 
 // ============================================================================
 // Full State Serialization
