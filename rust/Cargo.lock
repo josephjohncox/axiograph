@@ -170,10 +170,9 @@ dependencies = [
  "anyhow",
  "axiograph-dsl",
  "axiograph-ingest-docs",
- "axiograph-ingest-json",
  "axiograph-ingest-proto",
  "axiograph-ingest-rdfowl",
- "axiograph-ingest-sql",
+ "axiograph-ingest-structured",
  "axiograph-kernel",
  "axiograph-pathdb",
  "axiograph-projections",
@@ -288,14 +287,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "axiograph-ingest-json"
-version = "20260829.0.3"
-dependencies = [
- "anyhow",
- "serde_json",
-]
-
-[[package]]
 name = "axiograph-ingest-proto"
 version = "20260829.0.3"
 dependencies = [
@@ -324,10 +315,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "axiograph-ingest-sql"
+name = "axiograph-ingest-structured"
 version = "20260829.0.3"
 dependencies = [
  "anyhow",
+ "serde_json",
  "sqlparser",
 ]
 

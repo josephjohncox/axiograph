@@ -76,8 +76,7 @@ Workspace: `rust/`
 - `axiograph-cli`: CLI/server/MCP/LSP orchestration for validation, ingestion, typed reports, promotion, and projections
 - `axiograph-dsl`: canonical `.axi` parsing (`axi_v1` entrypoint + dialects)
 - `axiograph-ingest-docs`: docs/conversations → `proposals.json` (+chunks/facts)
-- `axiograph-ingest-sql`: SQL DDL → `proposals.json`
-- `axiograph-ingest-json`: JSON schema → `proposals.json`
+- `axiograph-ingest-structured`: SQL DDL and JSON samples → `proposals.json`
 - `axiograph-pathdb`: runtime graph engine, compiled IR, theory checks, query, and certificate emission types
 - `axiograph-storage`: runtime evidence storage and PathDB cache materialization
 - `axiograph-llm-sync`: evidence-plane extraction, grounding, and reconciliation inputs
