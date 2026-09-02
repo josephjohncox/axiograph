@@ -16,9 +16,8 @@ workspace = true
 
 [dependencies]
 axiograph-dsl = { path = "../axiograph-dsl" }
-axiograph-ingest-sql = { path = "../axiograph-ingest-sql" }
 axiograph-ingest-docs = { path = "../axiograph-ingest-docs" }
-axiograph-ingest-json = { path = "../axiograph-ingest-json" }
+axiograph-ingest-structured = { path = "../axiograph-ingest-structured" }
 axiograph-ingest-proto = { path = "../axiograph-ingest-proto" }
 axiograph-ingest-rdfowl = { path = "../axiograph-ingest-rdfowl" }
 axiograph-kernel = { path = "../axiograph-kernel" }

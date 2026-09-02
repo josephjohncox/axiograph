@@ -5,11 +5,8 @@
 //! - Arrays as relations
 //! - Nested objects as compositions
 
-#![allow(unused_imports)]
-
-use anyhow::Result;
 use serde_json::Value;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 /// Inferred JSON schema
 #[derive(Debug, Clone, Default)]
@@ -80,6 +77,39 @@ fn infer_type(value: &Value, name: &str, schema: &mut JsonSchema) -> String {
     }
 }
 
-// Note: this crate intentionally does *not* emit `.axi` directly. Ingestion
+// This adapter intentionally does *not* emit `.axi` directly. Ingestion
 // produces untrusted `proposals.json` first; promotion into canonical `.axi`
 // is explicit and reviewable.
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn infers_nested_object_and_array_types() {
+        let value = serde_json::json!({
+            "name": "Axiograph",
+            "profile": { "active": true },
+            "tags": ["ontology"]
+        });
+
+        let schema = infer_schema(&value, "Root");
+
+        assert_eq!(schema.root_type.as_deref(), Some("Root"));
+        assert!(matches!(
+            schema.types.get("Root_profile"),
+            Some(JsonType::Object { .. })
+        ));
+        assert!(matches!(
+            schema.types.get("Root_tags"),
+            Some(JsonType::Array { .. })
+        ));
+        let Some(JsonType::Object { fields }) = schema.types.get("Root") else {
+            panic!("Root should be inferred as an object");
+        };
+        assert!(matches!(
+            fields.get("profile"),
+            Some(JsonFieldType::Required(name)) if name == "Root_profile"
+        ));
+    }
+}

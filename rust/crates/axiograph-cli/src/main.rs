@@ -2481,7 +2481,7 @@ fn sanitize_id_component(s: &str) -> String {
 }
 
 fn proposals_from_sql_schema(
-    sql_schema: &axiograph_ingest_sql::SqlSchema,
+    sql_schema: &axiograph_ingest_structured::sql::SqlSchema,
     evidence_locator: Option<String>,
     chunks: &[axiograph_ingest_docs::Chunk],
 ) -> Vec<axiograph_ingest_docs::ProposalV1> {
@@ -2689,8 +2689,8 @@ fn proposals_from_sql_schema(
     out
 }
 
-fn json_field_type_to_string(ft: &axiograph_ingest_json::JsonFieldType) -> String {
-    use axiograph_ingest_json::JsonFieldType;
+fn json_field_type_to_string(ft: &axiograph_ingest_structured::json::JsonFieldType) -> String {
+    use axiograph_ingest_structured::json::JsonFieldType;
     match ft {
         JsonFieldType::Required(t) => format!("{t} (required)"),
         JsonFieldType::Optional(t) => format!("{t} (optional)"),
@@ -2699,12 +2699,12 @@ fn json_field_type_to_string(ft: &axiograph_ingest_json::JsonFieldType) -> Strin
 }
 
 fn proposals_from_json_schema(
-    schema: &axiograph_ingest_json::JsonSchema,
+    schema: &axiograph_ingest_structured::json::JsonSchema,
     evidence_locator: Option<String>,
     chunks: &[axiograph_ingest_docs::Chunk],
 ) -> Vec<axiograph_ingest_docs::ProposalV1> {
     use axiograph_ingest_docs::{EvidencePointer, ProposalMetaV1, ProposalV1};
-    use axiograph_ingest_json::{JsonType, JsonType as JT};
+    use axiograph_ingest_structured::json::{JsonType, JsonType as JT};
     use std::collections::HashMap;
 
     fn evidence_for_field(
@@ -2854,9 +2854,9 @@ fn proposals_from_json_schema(
 
             // If this field points to another inferred object type, record a link.
             let target_ty = match field_ty {
-                axiograph_ingest_json::JsonFieldType::Required(t)
-                | axiograph_ingest_json::JsonFieldType::Optional(t)
-                | axiograph_ingest_json::JsonFieldType::Array(t) => t,
+                axiograph_ingest_structured::json::JsonFieldType::Required(t)
+                | axiograph_ingest_structured::json::JsonFieldType::Optional(t)
+                | axiograph_ingest_structured::json::JsonFieldType::Array(t) => t,
             };
 
             if matches!(schema.types.get(target_ty), Some(JsonType::Object { .. })) {
@@ -2905,7 +2905,7 @@ fn cmd_sql(input: &Path, out: &Path, chunks_path: Option<&Path>) -> Result<()> {
         crate::security::MAX_TEXT_INPUT_BYTES,
         "CLI input",
     )?;
-    let sql_schema = axiograph_ingest_sql::parse_sql_ddl(&text)?;
+    let sql_schema = axiograph_ingest_structured::sql::parse_sql_ddl(&text)?;
     let generated_at = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -3205,7 +3205,7 @@ fn cmd_json(input: &Path, out: &Path, chunks_path: Option<&Path>) -> Result<()> 
         crate::security::MAX_JSON_INPUT_BYTES,
         "CLI JSON input",
     )?;
-    let schema = axiograph_ingest_json::infer_schema(&value, "Root");
+    let schema = axiograph_ingest_structured::json::infer_schema(&value, "Root");
     let generated_at = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -7300,7 +7300,7 @@ fn cmd_ingest_dir(
                 }
                 all_chunks.extend(chunks.clone());
 
-                if let Ok(sql_schema) = axiograph_ingest_sql::parse_sql_ddl(&text) {
+                if let Ok(sql_schema) = axiograph_ingest_structured::sql::parse_sql_ddl(&text) {
                     all_proposals.extend(proposals_from_sql_schema(
                         &sql_schema,
                         Some(doc_id.clone()),
@@ -7327,7 +7327,7 @@ fn cmd_ingest_dir(
                     max_file_bytes as usize,
                     "directory JSON input",
                 ) {
-                    let schema = axiograph_ingest_json::infer_schema(&value, "Root");
+                    let schema = axiograph_ingest_structured::json::infer_schema(&value, "Root");
                     let doc_id = rel_path.to_string_lossy().to_string();
                     let doc_digest = axiograph_kernel::object_blob_digest_v2(doc_id.as_bytes());
                     let pretty = serde_json::to_string_pretty(&value).unwrap_or(text.clone());

@@ -122,6 +122,35 @@ pub fn parse_sql_ddl(sql: &str) -> Result<SqlSchema> {
     Ok(schema)
 }
 
-// Note: this crate intentionally does *not* emit `.axi` directly. Ingestion
+// This adapter intentionally does *not* emit `.axi` directly. Ingestion
 // produces untrusted `proposals.json` first; promotion into canonical `.axi`
 // is explicit and reviewable.
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extracts_table_key_and_foreign_key_structure() -> Result<()> {
+        let schema = parse_sql_ddl(
+            "CREATE TABLE parent (id INTEGER, PRIMARY KEY (id));\n\
+             CREATE TABLE child (\n\
+               id INTEGER,\n\
+               parent_id INTEGER NOT NULL,\n\
+               PRIMARY KEY (id),\n\
+               UNIQUE (parent_id),\n\
+               FOREIGN KEY (parent_id) REFERENCES parent (id)\n\
+             );",
+        )?;
+
+        assert_eq!(schema.tables.len(), 2);
+        assert_eq!(schema.tables[1].name, "child");
+        assert_eq!(schema.tables[1].primary_key, ["id"]);
+        assert!(!schema.tables[1].columns[1].nullable);
+        assert_eq!(schema.unique_keys.len(), 1);
+        assert_eq!(schema.foreign_keys.len(), 1);
+        assert_eq!(schema.foreign_keys[0].from_table, "child");
+        assert_eq!(schema.foreign_keys[0].to_table, "parent");
+        Ok(())
+    }
+}
