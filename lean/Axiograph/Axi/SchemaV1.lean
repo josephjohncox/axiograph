@@ -281,7 +281,7 @@ def failAt {α : Type} (line : Nat) (message : String) : Except ParseError α :=
   throw { line, message }
 
 def trimTrailingColon (s : String) : String :=
-  let trimmed := s.trim
+  let trimmed := s.trimAscii.toString
   match trimmed.toList.reverse with
   | ':' :: restRev => String.ofList restRev.reverse
   | _ => trimmed
@@ -591,7 +591,7 @@ def parseGeneratorDecl (line : String) : Except String GeneratorDeclV1 := do
 -- =============================================================================
 
 def parseConstraint (rest : String) : Except String ConstraintV1 := do
-  let trimmed := rest.trim
+  let trimmed := rest.trimAscii.toString
 
   let relField : LineParser (Name × Name) := do
     let rel ← identifier
@@ -884,7 +884,7 @@ def collectIndentedBlock (lines : Array String) (startIndex : Nat) : (String × 
     let mut out : Array String := #[]
     let mut i := startIndex
     while _h : i < lines.size do
-      let trimmed := stripComment (lines[i]!) |>.trim
+      let trimmed := stripComment (lines[i]!) |>.trimAscii.toString
       if trimmed.isEmpty then
         i := i + 1
         continue
@@ -899,7 +899,7 @@ def collectIndentedBlockLines (lines : Array String) (startIndex : Nat) : (Array
     let mut out : Array String := #[]
     let mut i := startIndex
     while _h : i < lines.size do
-      let trimmed := stripComment (lines[i]!) |>.trim
+      let trimmed := stripComment (lines[i]!) |>.trimAscii.toString
       if trimmed.isEmpty then
         i := i + 1
         continue
@@ -914,7 +914,7 @@ def collectIndentedBlockLines (lines : Array String) (startIndex : Nat) : (Array
 -- =============================================================================
 
 def parseRewriteOrientation (s : String) : Except String RewriteOrientationV1 := do
-  match s.trim with
+  match s.trimAscii.toString with
   | "forward" => pure .forward
   | "backward" => pure .backward
   | "bidirectional" | "both" => pure .bidirectional
@@ -1050,34 +1050,34 @@ def parseRewriteRuleBlock (ruleName : Name) (lines : Array String) : Except Stri
   let mut orientation? : Option RewriteOrientationV1 := none
 
   for raw in lines do
-    let line := raw.trim
+    let line := raw.trimAscii.toString
     if line.isEmpty then
       continue
 
     if let some rest := stripPrefix? line "vars:" then
       current := .vars
-      let rest := rest.trim
+      let rest := rest.trimAscii.toString
       if !rest.isEmpty then
         varsLines := varsLines.push rest
       continue
 
     if let some rest := stripPrefix? line "lhs:" then
       current := .lhs
-      let rest := rest.trim
+      let rest := rest.trimAscii.toString
       if !rest.isEmpty then
         lhsLines := lhsLines.push rest
       continue
 
     if let some rest := stripPrefix? line "rhs:" then
       current := .rhs
-      let rest := rest.trim
+      let rest := rest.trimAscii.toString
       if !rest.isEmpty then
         rhsLines := rhsLines.push rest
       continue
 
     if let some rest := stripPrefix? line "orientation:" then
       current := .orientation
-      let rest := rest.trim
+      let rest := rest.trimAscii.toString
       if !rest.isEmpty then
         orientation? := some (← parseRewriteOrientation rest)
         current := .none
@@ -1099,9 +1099,9 @@ def parseRewriteRuleBlock (ruleName : Name) (lines : Array String) : Except Stri
 
   let lhsText := String.intercalate " " lhsLines.toList
   let rhsText := String.intercalate " " rhsLines.toList
-  if lhsText.trim.isEmpty then
+  if lhsText.trimAscii.toString.isEmpty then
     throw s!"rewrite `{ruleName}`: missing `lhs:`"
-  if rhsText.trim.isEmpty then
+  if rhsText.trimAscii.toString.isEmpty then
     throw s!"rewrite `{ruleName}`: missing `rhs:`"
 
   let lhs ← parsePathExprV3FromString lhsText
@@ -1118,8 +1118,8 @@ def parseRewriteRuleBlock (ruleName : Name) (lines : Array String) : Except Stri
 def splitEquation (equationText : String) : Except String (String × String) := do
   match splitOnceChar equationText '=' with
   | some (lhs, rhs) =>
-      let lhs := lhs.trim
-      let rhs := rhs.trim
+      let lhs := lhs.trimAscii.toString
+      let rhs := rhs.trimAscii.toString
       if lhs.isEmpty || rhs.isEmpty then
         throw "equation must have non-empty lhs and rhs"
       pure (lhs, rhs)
@@ -1129,8 +1129,8 @@ def splitEquation (equationText : String) : Except String (String × String) := 
 def splitAssignment (line : String) : Option (String × String) :=
   match splitOnceChar line '=' with
   | some (lhs, rhs) =>
-      let lhs := lhs.trim
-      let rhs := rhs.trim
+      let lhs := lhs.trimAscii.toString
+      let rhs := rhs.trimAscii.toString
       if lhs.isEmpty || rhs.isEmpty then none else some (lhs, rhs)
   | none => none
 
@@ -1153,7 +1153,7 @@ partial def collectBalancedParens (lines : Array String) (startIndex : Nat) (key
   let mut i := startIndex
 
   while _h : i < lines.size do
-    let line := stripComment (lines[i]!) |>.trim
+    let line := stripComment (lines[i]!) |>.trimAscii.toString
     if line.isEmpty then
       i := i + 1
       continue
@@ -1188,7 +1188,7 @@ partial def collectBalancedBraces (lines : Array String) (startIndex : Nat) (fir
   let mut combined : Array String := #[]
   let mut depth : Int := 0
 
-  let rhs := stripComment firstRhs |>.trim
+  let rhs := stripComment firstRhs |>.trimAscii.toString
   combined := combined.push rhs
   depth ← adjustBraceDepth depth rhs
 
@@ -1196,7 +1196,7 @@ partial def collectBalancedBraces (lines : Array String) (startIndex : Nat) (fir
   while _h : i < lines.size do
     if depth <= 0 then
       break
-    let line := stripComment (lines[i]!) |>.trim
+    let line := stripComment (lines[i]!) |>.trimAscii.toString
     if !line.isEmpty then
       combined := combined.push line
       depth ← adjustBraceDepth depth line
@@ -1280,7 +1280,7 @@ partial def parseSchemaV1 (text : String) : Except ParseError SchemaV1Module := 
 
   while _h : i < lines.size do
     let lineNo := i + 1
-    let line := stripComment (lines[i]!) |>.trim
+    let line := stripComment (lines[i]!) |>.trimAscii.toString
 
     if line.isEmpty then
       i := i + 1
@@ -1291,7 +1291,7 @@ partial def parseSchemaV1 (text : String) : Except ParseError SchemaV1Module := 
     -- ----------------------------------------------------------------------
     if let some name := stripPrefix? line "module " then
       let moduleName ←
-        match runLineParser identifier name.trim with
+        match runLineParser identifier name.trimAscii.toString with
         | .ok value => pure value
         | .error _ => return (← failAt lineNo "module header expects exactly `module <Name>`")
       match state.moduleHeaderLine with
@@ -1311,7 +1311,7 @@ partial def parseSchemaV1 (text : String) : Except ParseError SchemaV1Module := 
       if state.moduleHeaderLine.isNone || state.currentSection != .none then
         return (← failAt lineNo "imports must follow the module header and precede all sections")
       let importName ←
-        match runLineParser identifier importText.trim with
+        match runLineParser identifier importText.trimAscii.toString with
         | .ok value => pure value
         | .error _ => return (← failAt lineNo "import expects exactly `import <Module>`")
       if state.moduleAst.imports.contains importName then
@@ -1370,7 +1370,7 @@ partial def parseSchemaV1 (text : String) : Except ParseError SchemaV1Module := 
 
     | .schema schemaIndex =>
         if let some name := stripPrefix? line "object " then
-          let objectName := name.trim
+          let objectName := name.trimAscii.toString
           if objectName.isEmpty then
             return (← failAt lineNo "object name missing")
           let some schemas :=
@@ -1428,7 +1428,7 @@ partial def parseSchemaV1 (text : String) : Except ParseError SchemaV1Module := 
 
     | .theory theoryIndex =>
         if let some rest := stripPrefix? line "constraint " then
-          let restTrim := rest.trim
+          let restTrim := rest.trimAscii.toString
           if restTrim.endsWith ":" then
             let name := trimTrailingColon restTrim
             if name.isEmpty then
@@ -1446,7 +1446,7 @@ partial def parseSchemaV1 (text : String) : Except ParseError SchemaV1Module := 
           -- a few lines). We join the block and try to parse it as a known
           -- constraint; otherwise it remains `unknown` (visible to tooling).
           let (extra, nextIndex) := collectIndentedBlock lines (i + 1)
-          let combined := if extra.isEmpty then restTrim else s!"{restTrim} {extra}".trim
+          let combined := if extra.isEmpty then restTrim else s!"{restTrim} {extra}".trimAscii.toString
           let constraint ←
             match parseConstraint combined with
             | .ok v => pure v

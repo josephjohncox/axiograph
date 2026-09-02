@@ -61,11 +61,12 @@ CARGO := cargo
 CARGO_OPTS := --release
 CARGO_FEATURES ?=
 RUST_VERSION := $(shell python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])')
-FUZZ_TOOLCHAIN ?= nightly-2026-07-23
+FUZZ_TOOLCHAIN ?= nightly-2026-09-01
 CARGO_FUZZ_VERSION ?= 0.13.2
 CARGO_AUDIT_VERSION ?= 0.22.2
 KANI_VERSION ?= 0.67.0
 NODE_VERSION := $(shell cat .node-version)
+NPM_VERSION := $(shell cat .npm-version)
 MDBOOK_VERSION := 0.5.4
 MDBOOK ?= $(BUILD_DIR)/tools/mdbook/mdbook
 
@@ -149,8 +150,12 @@ check-node-toolchain:
 		node --version; \
 		exit 1; \
 	}
-	@npm --version >/dev/null
-	@echo "✓ Node.js and npm come from the exact frontend toolchain"
+	@test "$$(npm --version)" = "$(NPM_VERSION)" || { \
+		echo "error: frontend gate requires npm $(NPM_VERSION)"; \
+		npm --version; \
+		exit 1; \
+	}
+	@echo "✓ Node.js $(NODE_VERSION) and npm $(NPM_VERSION) match the exact frontend toolchain"
 
 check-clean-source-manifest:
 	@echo "━━━ Proving release inputs come from one clean Git checkout ━━━"
@@ -736,7 +741,8 @@ verify-miri:
 		exit 0; \
 	fi; \
 	toolchain_bin="$$(dirname "$$(rustup which --toolchain "$(FUZZ_TOOLCHAIN)" cargo)")"; \
-	cd $(RUST_DIR) && PATH="$$toolchain_bin:$$PATH" cargo miri test \
+	cd $(RUST_DIR) && PATH="$$toolchain_bin:$$PATH" \
+		RUSTFLAGS='--cfg sha2_backend="soft"' cargo miri test \
 		-p axiograph-kernel --lib --locked 'identity::tests'
 
 verify-miri-required:

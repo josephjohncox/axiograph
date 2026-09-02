@@ -55,14 +55,10 @@ pub fn parse_sql_ddl(sql: &str) -> Result<SqlSchema> {
     let mut schema = SqlSchema::default();
 
     for stmt in statements {
-        if let Statement::CreateTable {
-            name,
-            columns: sql_columns,
-            constraints: sql_constraints,
-            ..
-        } = stmt
-        {
-            let table_name = name.to_string();
+        if let Statement::CreateTable(create_table) = stmt {
+            let table_name = create_table.name.to_string();
+            let sql_columns = create_table.columns;
+            let sql_constraints = create_table.constraints;
             let mut columns = Vec::new();
             let mut primary_key = Vec::new();
 
@@ -80,32 +76,38 @@ pub fn parse_sql_ddl(sql: &str) -> Result<SqlSchema> {
             // Extract constraints
             for constraint in &sql_constraints {
                 match constraint {
-                    TableConstraint::ForeignKey {
-                        columns: fk_cols,
-                        foreign_table,
-                        referred_columns,
-                        ..
-                    } => {
+                    TableConstraint::ForeignKey(foreign_key) => {
                         schema.foreign_keys.push(ForeignKey {
                             from_table: table_name.clone(),
-                            from_columns: fk_cols.iter().map(|c| c.to_string()).collect(),
-                            to_table: foreign_table.to_string(),
-                            to_columns: referred_columns.iter().map(|c| c.to_string()).collect(),
+                            from_columns: foreign_key
+                                .columns
+                                .iter()
+                                .map(ToString::to_string)
+                                .collect(),
+                            to_table: foreign_key.foreign_table.to_string(),
+                            to_columns: foreign_key
+                                .referred_columns
+                                .iter()
+                                .map(ToString::to_string)
+                                .collect(),
                         });
                     }
-                    TableConstraint::Unique {
-                        columns: uq_cols,
-                        is_primary,
-                        ..
-                    } => {
-                        if *is_primary {
-                            primary_key = uq_cols.iter().map(|c| c.to_string()).collect();
-                        } else {
-                            schema.unique_keys.push(UniqueKey {
-                                table: table_name.clone(),
-                                columns: uq_cols.iter().map(|c| c.to_string()).collect(),
-                            });
-                        }
+                    TableConstraint::PrimaryKey(primary_key_constraint) => {
+                        primary_key = primary_key_constraint
+                            .columns
+                            .iter()
+                            .map(|column| column.column.expr.to_string())
+                            .collect();
+                    }
+                    TableConstraint::Unique(unique_constraint) => {
+                        schema.unique_keys.push(UniqueKey {
+                            table: table_name.clone(),
+                            columns: unique_constraint
+                                .columns
+                                .iter()
+                                .map(|column| column.column.expr.to_string())
+                                .collect(),
+                        });
                     }
                     _ => {}
                 }

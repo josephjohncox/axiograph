@@ -22,12 +22,13 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  RUST_TOOLCHAIN: 1.88.0
-  FUZZ_TOOLCHAIN: nightly-2026-07-23
+  RUST_TOOLCHAIN: 1.98.0
+  FUZZ_TOOLCHAIN: nightly-2026-09-01
   CARGO_FUZZ_VERSION: 0.13.2
   CARGO_AUDIT_VERSION: 0.22.2
   KANI_VERSION: 0.67.0
-  NODE_VERSION: 24.19.0
+  NODE_VERSION: 26.8.1
+  NPM_VERSION: 11.19.0
   AXIOGRAPH_CHECKER_PROTOCOL: axiograph-verifier-stdio-v2
   AXIOGRAPH_CHECKER_BUILD_ID: axiograph-verify-main-v3
   MACOSX_DEPLOYMENT_TARGET: "13.0"
@@ -43,7 +44,7 @@ jobs:
       release_version: ${{ steps.release_version.outputs.version }}
     steps:
       # actions/checkout pinned to an immutable commit.
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
           fetch-depth: 0
@@ -110,6 +111,7 @@ jobs:
           )"
           test "$configured" = "$RUST_TOOLCHAIN"
           test "$(cat .node-version)" = "$NODE_VERSION"
+          test "$(cat .npm-version)" = "$NPM_VERSION"
           python3 scripts/validate_release_archive.py --help >/dev/null
           printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
       - name: Inject requested negative rehearsal failure
@@ -122,7 +124,7 @@ jobs:
           echo "build and publish jobs must remain skipped" >&2
           exit 1
       # dtolnay/rust-toolchain pinned to an immutable commit.
-      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
       - name: Install exact deep-verification tools
@@ -141,7 +143,7 @@ jobs:
             --locked kani-verifier --version "=$KANI_VERSION"
           cargo kani setup
       # leanprover/lean-action pinned to an immutable commit.
-      - uses: leanprover/lean-action@38fbc41a8c28c4cbaec22d7f7de508ec2e7c0dd9
+      - uses: leanprover/lean-action@50fcf42d2e460296f1a34b402e990d1b24f8b596
         with:
           lake-package-directory: lean
           auto-config: false
@@ -176,15 +178,15 @@ jobs:
             archive: tar.gz
     steps:
       # actions/checkout pinned to an immutable commit.
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
       # dtolnay/rust-toolchain pinned to an immutable commit.
-      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
       # leanprover/lean-action pinned to an immutable commit.
-      - uses: leanprover/lean-action@38fbc41a8c28c4cbaec22d7f7de508ec2e7c0dd9
+      - uses: leanprover/lean-action@50fcf42d2e460296f1a34b402e990d1b24f8b596
         with:
           lake-package-directory: lean
           auto-config: false
@@ -306,7 +308,7 @@ jobs:
             --repo-root "$PWD"
       - name: Upload audited build artifacts
         # actions/upload-artifact pinned to an immutable commit.
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: axiograph-${{ matrix.host }}
           path: |
@@ -338,11 +340,11 @@ jobs:
       contents: write
     steps:
       # Pinned checkout is required for the local composite action.
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
       # actions/download-artifact pinned to an immutable commit.
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
           path: dist
           pattern: axiograph-*

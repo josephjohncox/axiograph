@@ -35,8 +35,8 @@ use nom::character::complete::{char as pchar, digit1, multispace0, multispace1};
 use nom::combinator::{all_consuming, map, map_res, opt, recognize};
 use nom::multi::{many0, separated_list1};
 use nom::number::complete::recognize_float;
-use nom::sequence::{delimited, preceded, tuple};
-use nom::IResult;
+use nom::sequence::{delimited, preceded};
+use nom::{IResult, Parser};
 use roaring::RoaringBitmap;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -906,7 +906,8 @@ impl AxqlQuery {
 
 pub fn parse_axql_query(input: &str) -> Result<AxqlQuery> {
     validate_surface_nesting(input, MAX_AXQL_TEXT_BYTES, "AxQL query")?;
-    let (_, mut q) = all_consuming(ws(axql_query))(input)
+    let (_, mut q) = all_consuming(ws(axql_query))
+        .parse(input)
         .map_err(|e| anyhow!("failed to parse axql query: {e:?}"))?;
     if let Some(c) = q.min_confidence {
         if !c.is_finite() || !(0.0..=1.0).contains(&c) {
@@ -923,7 +924,8 @@ pub fn parse_axql_query(input: &str) -> Result<AxqlQuery> {
 
 pub fn parse_axql_path_expr(input: &str) -> Result<AxqlPathExpr> {
     validate_surface_nesting(input, MAX_AXQL_PATH_BYTES, "AxQL path expression")?;
-    let (_, p) = all_consuming(ws(path_expr))(input)
+    let (_, p) = all_consuming(ws(path_expr))
+        .parse(input)
         .map_err(|e| anyhow!("failed to parse axql path expr: {e:?}"))?;
     let nodes = regex_shape(&p.regex, 1)?;
     if nodes > MAX_QUERY_REGEX_NODES {
@@ -2046,12 +2048,12 @@ fn axql_query(input: &str) -> IResult<&str, AxqlQuery> {
     // (implicit select *)
 
     let (input, explicit_select) =
-        opt(preceded(ws(tag_no_case("select")), ws(select_list)))(input)?;
+        opt(preceded(ws(tag_no_case("select")), ws(select_list))).parse(input)?;
     let select_vars = explicit_select.unwrap_or_default();
 
-    let (input, _) = ws(tag_no_case("where"))(input)?;
-    let (input, disjuncts) = separated_list1(ws(tag_no_case("or")), ws(atom_list))(input)?;
-    let (input, opts) = many0(ws(query_option))(input)?;
+    let (input, _) = ws(tag_no_case("where")).parse(input)?;
+    let (input, disjuncts) = separated_list1(ws(tag_no_case("or")), ws(atom_list)).parse(input)?;
+    let (input, opts) = many0(ws(query_option)).parse(input)?;
 
     let mut limit: Option<usize> = None;
     let mut max_hops: Option<u32> = None;
@@ -2088,7 +2090,7 @@ fn axql_query(input: &str) -> IResult<&str, AxqlQuery> {
 
 fn select_list(input: &str) -> IResult<&str, Vec<String>> {
     // `select *` means “implicit select” (all non-anonymous vars).
-    alt((map(pchar('*'), |_| Vec::new()), var_list))(input)
+    alt((map(pchar('*'), |_| Vec::new()), var_list)).parse(input)
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -2123,14 +2125,16 @@ fn query_option(input: &str) -> IResult<&str, QueryOption> {
             preceded(ws(tag_no_case("in")), ws(context_spec_set)),
             QueryOption::InContexts,
         ),
-    ))(input)
+    ))
+    .parse(input)
 }
 
 fn context_spec(input: &str) -> IResult<&str, AxqlContextSpec> {
     alt((
         map(u32_number, AxqlContextSpec::EntityId),
         map(string_lit_or_ident, AxqlContextSpec::Name),
-    ))(input)
+    ))
+    .parse(input)
 }
 
 fn context_spec_set(input: &str) -> IResult<&str, Vec<AxqlContextSpec>> {
@@ -2144,11 +2148,12 @@ fn context_spec_set(input: &str) -> IResult<&str, Vec<AxqlContextSpec>> {
             |items| items,
         ),
         map(context_spec, |c| vec![c]),
-    ))(input)
+    ))
+    .parse(input)
 }
 
 fn atom_list(input: &str) -> IResult<&str, Vec<AxqlAtom>> {
-    separated_list1(ws(pchar(',')), ws(axql_atom))(input)
+    separated_list1(ws(pchar(',')), ws(axql_atom)).parse(input)
 }
 
 fn axql_atom(input: &str) -> IResult<&str, AxqlAtom> {
@@ -2166,7 +2171,8 @@ fn axql_atom(input: &str) -> IResult<&str, AxqlAtom> {
         type_atom_infix,
         fact_atom,
         edge_atom,
-    ))(input)
+    ))
+    .parse(input)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2179,12 +2185,12 @@ enum ShapeItem {
 fn shape_literal_atom(input: &str) -> IResult<&str, AxqlAtom> {
     // ?x { rel_0, rel_1, name="node_42", is Node }
     map(
-        tuple((
+        (
             ws(axql_term),
             ws(pchar('{')),
             ws(separated_list1(ws(pchar(',')), ws(shape_item))),
             ws(pchar('}')),
-        )),
+        ),
         |(term, _, items, _)| {
             let mut type_name: Option<String> = None;
             let mut rels: Vec<String> = Vec::new();
@@ -2205,7 +2211,8 @@ fn shape_literal_atom(input: &str) -> IResult<&str, AxqlAtom> {
                 attrs,
             }
         },
-    )(input)
+    )
+    .parse(input)
 }
 
 fn shape_item(input: &str) -> IResult<&str, ShapeItem> {
@@ -2231,76 +2238,83 @@ fn shape_item(input: &str) -> IResult<&str, ShapeItem> {
         map(ws(attr_pair), |(k, v)| ShapeItem::Attr(k, v)),
         // rel_0
         map(ws(string_lit_or_ident), ShapeItem::Rel),
-    ))(input)
+    ))
+    .parse(input)
 }
 
 fn type_atom(input: &str) -> IResult<&str, AxqlAtom> {
     map(
-        tuple((ws(axql_term), ws(pchar(':')), ws(type_name))),
+        (ws(axql_term), ws(pchar(':')), ws(type_name)),
         |(term, _, type_name)| AxqlAtom::Type { term, type_name },
-    )(input)
+    )
+    .parse(input)
 }
 
 fn type_atom_infix(input: &str) -> IResult<&str, AxqlAtom> {
     // ?x is TypeName
     map(
-        tuple((ws(axql_term), ws(tag_no_case("is")), ws(type_name))),
+        (ws(axql_term), ws(tag_no_case("is")), ws(type_name)),
         |(term, _, type_name)| AxqlAtom::Type { term, type_name },
-    )(input)
+    )
+    .parse(input)
 }
 
 fn edge_atom(input: &str) -> IResult<&str, AxqlAtom> {
     map(
-        tuple((
+        (
             ws(axql_term),
             ws(pchar('-')),
             ws(bracketed_or_plain_path_expr),
             ws(tag("->")),
             ws(axql_term),
-        )),
+        ),
         |(left, _, path, _, right)| AxqlAtom::Edge { left, path, right },
-    )(input)
+    )
+    .parse(input)
 }
 
 fn bracketed_or_plain_path_expr(input: &str) -> IResult<&str, AxqlPathExpr> {
     alt((
         delimited(ws(pchar('[')), ws(path_expr), ws(pchar(']'))),
         path_expr,
-    ))(input)
+    ))
+    .parse(input)
 }
 
 fn path_expr(input: &str) -> IResult<&str, AxqlPathExpr> {
-    map(rpq_alt, |regex| AxqlPathExpr { regex })(input)
+    map(rpq_alt, |regex| AxqlPathExpr { regex }).parse(input)
 }
 
 fn rpq_alt(input: &str) -> IResult<&str, AxqlRegex> {
-    map(separated_list1(ws(pchar('|')), rpq_seq), mk_alt)(input)
+    map(separated_list1(ws(pchar('|')), rpq_seq), mk_alt).parse(input)
 }
 
 fn rpq_seq(input: &str) -> IResult<&str, AxqlRegex> {
-    map(separated_list1(ws(pchar('/')), rpq_rep), mk_seq)(input)
+    map(separated_list1(ws(pchar('/')), rpq_rep), mk_seq).parse(input)
 }
 
 fn rpq_rep(input: &str) -> IResult<&str, AxqlRegex> {
     map(
-        tuple((
+        (
             ws(rpq_atom),
             opt(ws(alt((pchar('*'), pchar('+'), pchar('?'))))),
-        )),
+        ),
         |(atom, op)| match op {
             Some('*') => AxqlRegex::Star(Box::new(atom)),
             Some('+') => AxqlRegex::Plus(Box::new(atom)),
             Some('?') => AxqlRegex::Opt(Box::new(atom)),
             _ => atom,
         },
-    )(input)
+    )
+    .parse(input)
 }
 
 fn rpq_atom(input: &str) -> IResult<&str, AxqlRegex> {
     alt((
         map(identifier_with_dots, AxqlRegex::Rel),
         delimited(ws(pchar('(')), rpq_alt, ws(pchar(')'))),
-    ))(input)
+    ))
+    .parse(input)
 }
 
 fn mk_seq(parts: Vec<AxqlRegex>) -> AxqlRegex {
@@ -2337,7 +2351,7 @@ fn mk_alt(parts: Vec<AxqlRegex>) -> AxqlRegex {
 fn attr_atom(input: &str) -> IResult<&str, AxqlAtom> {
     // attr(?x, "key", "value")
     map(
-        tuple((
+        (
             ws(tag_no_case("attr")),
             ws(pchar('(')),
             ws(axql_term),
@@ -2346,15 +2360,16 @@ fn attr_atom(input: &str) -> IResult<&str, AxqlAtom> {
             ws(pchar(',')),
             ws(string_lit_or_ident),
             ws(pchar(')')),
-        )),
+        ),
         |(_, _, term, _, key, _, value, _)| AxqlAtom::AttrEq { term, key, value },
-    )(input)
+    )
+    .parse(input)
 }
 
 fn contains_atom(input: &str) -> IResult<&str, AxqlAtom> {
     // contains(?x, "key", "needle")
     map(
-        tuple((
+        (
             ws(tag_no_case("contains")),
             ws(pchar('(')),
             ws(axql_term),
@@ -2363,15 +2378,16 @@ fn contains_atom(input: &str) -> IResult<&str, AxqlAtom> {
             ws(pchar(',')),
             ws(string_lit_or_ident),
             ws(pchar(')')),
-        )),
+        ),
         |(_, _, term, _, key, _, needle, _)| AxqlAtom::AttrContains { term, key, needle },
-    )(input)
+    )
+    .parse(input)
 }
 
 fn fts_atom(input: &str) -> IResult<&str, AxqlAtom> {
     // fts(?x, "key", "query")
     map(
-        tuple((
+        (
             ws(tag_no_case("fts")),
             ws(pchar('(')),
             ws(axql_term),
@@ -2380,15 +2396,16 @@ fn fts_atom(input: &str) -> IResult<&str, AxqlAtom> {
             ws(pchar(',')),
             ws(string_lit_or_ident),
             ws(pchar(')')),
-        )),
+        ),
         |(_, _, term, _, key, _, query, _)| AxqlAtom::AttrFts { term, key, query },
-    )(input)
+    )
+    .parse(input)
 }
 
 fn fuzzy_atom(input: &str) -> IResult<&str, AxqlAtom> {
     // fuzzy(?x, "key", "needle", 2)
     map(
-        tuple((
+        (
             ws(tag_no_case("fuzzy")),
             ws(pchar('(')),
             ws(axql_term),
@@ -2399,80 +2416,84 @@ fn fuzzy_atom(input: &str) -> IResult<&str, AxqlAtom> {
             ws(pchar(',')),
             ws(u64_number),
             ws(pchar(')')),
-        )),
+        ),
         |(_, _, term, _, key, _, needle, _, max_dist, _)| AxqlAtom::AttrFuzzy {
             term,
             key,
             needle,
             max_dist: max_dist as usize,
         },
-    )(input)
+    )
+    .parse(input)
 }
 
 fn attr_prop_atom(input: &str) -> IResult<&str, AxqlAtom> {
     // ?x.key = "value"
     map(
-        tuple((
+        (
             ws(axql_term),
             ws(pchar('.')),
             ws(string_lit_or_ident),
             ws(pchar('=')),
             ws(string_lit_or_ident),
-        )),
+        ),
         |(term, _, key, _, value)| AxqlAtom::AttrEq { term, key, value },
-    )(input)
+    )
+    .parse(input)
 }
 
 fn has_atom(input: &str) -> IResult<&str, AxqlAtom> {
     // has(?x, rel_0, rel_1, ...)
-    let (input, _) = ws(tag_no_case("has"))(input)?;
-    let (input, _) = ws(pchar('('))(input)?;
-    let (input, term) = ws(axql_term)(input)?;
-    let (input, _) = ws(pchar(','))(input)?;
-    let (input, rels) = separated_list1(ws(pchar(',')), ws(string_lit_or_ident))(input)?;
-    let (input, _) = ws(pchar(')'))(input)?;
+    let (input, _) = ws(tag_no_case("has")).parse(input)?;
+    let (input, _) = ws(pchar('(')).parse(input)?;
+    let (input, term) = ws(axql_term).parse(input)?;
+    let (input, _) = ws(pchar(',')).parse(input)?;
+    let (input, rels) = separated_list1(ws(pchar(',')), ws(string_lit_or_ident)).parse(input)?;
+    let (input, _) = ws(pchar(')')).parse(input)?;
     Ok((input, AxqlAtom::HasOut { term, rels }))
 }
 
 fn has_infix_atom(input: &str) -> IResult<&str, AxqlAtom> {
     // ?x has rel_0
     map(
-        tuple((
+        (
             ws(axql_term),
             ws(tag_no_case("has")),
             ws(string_lit_or_ident),
-        )),
+        ),
         |(term, _, rel)| AxqlAtom::HasOut {
             term,
             rels: vec![rel],
         },
-    )(input)
+    )
+    .parse(input)
 }
 
 fn attrs_atom(input: &str) -> IResult<&str, AxqlAtom> {
     // attrs(?x, key="value", ...)
-    let (input, _) = ws(tag_no_case("attrs"))(input)?;
-    let (input, _) = ws(pchar('('))(input)?;
-    let (input, term) = ws(axql_term)(input)?;
-    let (input, _) = ws(pchar(','))(input)?;
-    let (input, pairs) = separated_list1(ws(pchar(',')), ws(attr_pair))(input)?;
-    let (input, _) = ws(pchar(')'))(input)?;
+    let (input, _) = ws(tag_no_case("attrs")).parse(input)?;
+    let (input, _) = ws(pchar('(')).parse(input)?;
+    let (input, term) = ws(axql_term).parse(input)?;
+    let (input, _) = ws(pchar(',')).parse(input)?;
+    let (input, pairs) = separated_list1(ws(pchar(',')), ws(attr_pair)).parse(input)?;
+    let (input, _) = ws(pchar(')')).parse(input)?;
     Ok((input, AxqlAtom::Attrs { term, pairs }))
 }
 
 fn attr_pair(input: &str) -> IResult<&str, (String, String)> {
     map(
-        tuple((
+        (
             ws(string_lit_or_ident),
             ws(pchar('=')),
             ws(string_lit_or_ident),
-        )),
+        ),
         |(k, _, v)| (k, v),
-    )(input)
+    )
+    .parse(input)
 }
 
 fn var_list(input: &str) -> IResult<&str, Vec<String>> {
-    separated_list1(multispace1, variable)(input)
+    separated_list1(multispace1, variable).parse(input)
 }
 
 fn axql_term(input: &str) -> IResult<&str, AxqlTerm> {
@@ -2487,7 +2508,8 @@ fn axql_term(input: &str) -> IResult<&str, AxqlTerm> {
             key: "name".to_string(),
             value,
         }),
-    ))(input)
+    ))
+    .parse(input)
 }
 
 fn fact_atom(input: &str) -> IResult<&str, AxqlAtom> {
@@ -2503,14 +2525,14 @@ fn fact_atom(input: &str) -> IResult<&str, AxqlAtom> {
 
     // With binder
     let with_binder = map(
-        tuple((
+        (
             ws(binder_term),
             ws(pchar('=')),
             ws(identifier_with_dots),
             ws(pchar('(')),
             ws(opt(separated_list1(ws(pchar(',')), ws(fact_field_binding)))),
             ws(pchar(')')),
-        )),
+        ),
         |(fact, _, relation, _, fields, _)| AxqlAtom::Fact {
             fact: match fact {
                 AxqlTerm::Wildcard => None,
@@ -2523,12 +2545,12 @@ fn fact_atom(input: &str) -> IResult<&str, AxqlAtom> {
 
     // Without binder
     let without_binder = map(
-        tuple((
+        (
             ws(identifier_with_dots),
             ws(pchar('(')),
             ws(opt(separated_list1(ws(pchar(',')), ws(fact_field_binding)))),
             ws(pchar(')')),
-        )),
+        ),
         |(relation, _, fields, _)| AxqlAtom::Fact {
             fact: None,
             relation,
@@ -2536,53 +2558,56 @@ fn fact_atom(input: &str) -> IResult<&str, AxqlAtom> {
         },
     );
 
-    alt((with_binder, without_binder))(input)
+    alt((with_binder, without_binder)).parse(input)
 }
 
 fn fact_field_binding(input: &str) -> IResult<&str, (String, AxqlTerm)> {
     map(
-        tuple((ws(identifier_with_dots), ws(pchar('=')), ws(axql_term))),
+        (ws(identifier_with_dots), ws(pchar('=')), ws(axql_term)),
         |(field, _, term)| (field, term),
-    )(input)
+    )
+    .parse(input)
 }
 
 fn lookup_term(input: &str) -> IResult<&str, AxqlTerm> {
-    alt((name_term, entity_term))(input)
+    alt((name_term, entity_term)).parse(input)
 }
 
 fn name_term(input: &str) -> IResult<&str, AxqlTerm> {
     // name("node_42")  ≡  Lookup { key = "name", value = "node_42" }
     map(
-        tuple((
+        (
             ws(tag_no_case("name")),
             ws(pchar('(')),
             ws(string_lit_or_ident),
             ws(pchar(')')),
-        )),
+        ),
         |(_, _, value, _)| AxqlTerm::Lookup {
             key: "name".to_string(),
             value,
         },
-    )(input)
+    )
+    .parse(input)
 }
 
 fn entity_term(input: &str) -> IResult<&str, AxqlTerm> {
     // entity("key", "value")  ≡  Lookup { key, value }
     map(
-        tuple((
+        (
             ws(tag_no_case("entity")),
             ws(pchar('(')),
             ws(string_lit_or_ident),
             ws(pchar(',')),
             ws(string_lit_or_ident),
             ws(pchar(')')),
-        )),
+        ),
         |(_, _, key, _, value, _)| AxqlTerm::Lookup { key, value },
-    )(input)
+    )
+    .parse(input)
 }
 
 fn variable(input: &str) -> IResult<&str, String> {
-    map(preceded(pchar('?'), identifier), |s| format!("?{s}"))(input)
+    map(preceded(pchar('?'), identifier), |s| format!("?{s}")).parse(input)
 }
 
 fn type_name(input: &str) -> IResult<&str, String> {
@@ -2592,22 +2617,21 @@ fn type_name(input: &str) -> IResult<&str, String> {
 
 fn identifier(input: &str) -> IResult<&str, String> {
     map(
-        recognize(tuple((
-            take_while1(is_ident_start),
-            take_while(is_ident_continue),
-        ))),
+        recognize((take_while1(is_ident_start), take_while(is_ident_continue))),
         |s: &str| s.to_string(),
-    )(input)
+    )
+    .parse(input)
 }
 
 fn identifier_with_dots(input: &str) -> IResult<&str, String> {
     map(
-        recognize(tuple((
+        recognize((
             take_while1(is_ident_start),
             take_while(is_ident_continue_or_dot),
-        ))),
+        )),
         |s: &str| s.to_string(),
-    )(input)
+    )
+    .parse(input)
 }
 
 fn is_ident_start(c: char) -> bool {
@@ -2623,19 +2647,19 @@ fn is_ident_continue_or_dot(c: char) -> bool {
 }
 
 fn u32_number(input: &str) -> IResult<&str, u32> {
-    map_res(digit1, |s: &str| s.parse::<u32>())(input)
+    map_res(digit1, |s: &str| s.parse::<u32>()).parse(input)
 }
 
 fn u64_number(input: &str) -> IResult<&str, u64> {
-    map_res(digit1, |s: &str| s.parse::<u64>())(input)
+    map_res(digit1, |s: &str| s.parse::<u64>()).parse(input)
 }
 
 fn f32_number(input: &str) -> IResult<&str, f32> {
-    map_res(recognize_float, |s: &str| s.parse::<f32>())(input)
+    map_res(recognize_float, |s: &str| s.parse::<f32>()).parse(input)
 }
 
 fn string_lit_or_ident(input: &str) -> IResult<&str, String> {
-    alt((string_lit, single_string_lit, identifier_with_dots))(input)
+    alt((string_lit, single_string_lit, identifier_with_dots)).parse(input)
 }
 
 fn string_lit(input: &str) -> IResult<&str, String> {
@@ -2650,7 +2674,7 @@ fn string_lit(input: &str) -> IResult<&str, String> {
             map(tag("r"), |_| "\r"),
         )),
     );
-    delimited(pchar('"'), esc, pchar('"'))(input)
+    delimited(pchar('"'), esc, pchar('"')).parse(input)
 }
 
 fn single_string_lit(input: &str) -> IResult<&str, String> {
@@ -2665,12 +2689,12 @@ fn single_string_lit(input: &str) -> IResult<&str, String> {
             map(tag("r"), |_| "\r"),
         )),
     );
-    delimited(pchar('\''), esc, pchar('\''))(input)
+    delimited(pchar('\''), esc, pchar('\'')).parse(input)
 }
 
-fn ws<'a, F, O>(inner: F) -> impl FnMut(&'a str) -> IResult<&'a str, O>
+fn ws<'a, F, O>(inner: F) -> impl Parser<&'a str, Output = O, Error = nom::error::Error<&'a str>>
 where
-    F: FnMut(&'a str) -> IResult<&'a str, O>,
+    F: Parser<&'a str, Output = O, Error = nom::error::Error<&'a str>>,
 {
     delimited(multispace0, inner, multispace0)
 }

@@ -156,7 +156,7 @@ impl StagedApprovedExecutable {
 
 pub fn sha256_file_bounded(path: &Path, limit: usize, label: &str) -> Result<String> {
     let bytes = read_file_bounded(path, limit, label)?;
-    Ok(format!("{:x}", Sha256::digest(bytes)))
+    Ok(hex::encode(Sha256::digest(bytes)))
 }
 
 pub fn stage_approved_executable(
@@ -182,7 +182,7 @@ pub fn stage_approved_executable(
     }
 
     let bytes = read_file_bounded(source, limit, label)?;
-    let actual_sha256 = format!("{:x}", Sha256::digest(&bytes));
+    let actual_sha256 = hex::encode(Sha256::digest(&bytes));
     if actual_sha256 != approved_sha256 {
         return Err(anyhow!(
             "{label} SHA-256 mismatch: expected {approved_sha256}, got {actual_sha256}"

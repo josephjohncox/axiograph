@@ -875,7 +875,7 @@ def checkModule (m : Axiograph.Axi.AxiV1.AxiV1Module) : Except String Constraint
       msg := msg ++ s!"  {i}: theory `{thName}`: {text}\n"
     if unknown.size > 8 then
       msg := msg ++ s!"  ... ({unknown.size - 8} more)\n"
-    throw msg.trimRight
+    throw msg.trimAsciiEnd.toString
 
   let constraints := gatherCoreConstraints m
   let mut checkCount : Nat := 0

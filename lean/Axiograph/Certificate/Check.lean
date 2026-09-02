@@ -309,7 +309,7 @@ def lookupAxiRule (m : Axiograph.Axi.AxiV1.AxiV1Module) (theoryName ruleName : S
 def parseRuleRefV3 (ruleRef : String) :
     Except String (Sum PathRewriteRuleV2 (String × String × String)) := do
   if ruleRef.startsWith "builtin:" then
-    let tag := ruleRef.drop "builtin:".length |>.trim
+    let tag := (ruleRef.drop "builtin:".length |>.trimAscii).toString
     pure (.inl (← PathRewriteRuleV2.parse tag))
   else if ruleRef.startsWith "axi-rule-v2|" then
     match ruleRef.splitOn "|" with
@@ -432,7 +432,7 @@ def factIdPrefixV2 : String := "axi:fact:v2:sha256:"
 
 def stripFactPrefixV1 (s : String) : Option String :=
   if s.startsWith factIdPrefixV2 then
-    some (s.drop factIdPrefixV2.length)
+    some ((s.drop factIdPrefixV2.length).toString)
   else
     none
 

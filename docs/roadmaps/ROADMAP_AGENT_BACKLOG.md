@@ -331,7 +331,7 @@ Related roadmaps:
   loop, and `make verify-kani` proves constructor bounds over every `u32`.
   Release verification requires the exact applicable tools.
 - [x] Pin and audit the visualization supply chain. `make verify-viz` requires
-  Node.js 24.19.0, performs an exact lock install with scripts disabled, rejects
+  Node.js 26.8.1, performs an exact lock install with scripts disabled, rejects
   moderate-or-higher advisories, and builds the production frontend.
 - [ ] Keep expanding `make verify-semantics` as the must-pass Rust+Lean
   semantics suite.

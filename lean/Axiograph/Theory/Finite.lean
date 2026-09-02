@@ -571,21 +571,21 @@ private def stripSuffix? (value suffix : String) : Option String :=
     none
 
 private def schemaPathLooksExplicit (text : String) : Bool :=
-  text.contains ';' || Axiograph.Axi.SchemaV1.startsWith text.trim "id("
+  text.contains ';' || Axiograph.Axi.SchemaV1.startsWith text.trimAscii.toString "id("
 
 private def compileAxiSchemaPath (core : PresentationCore) (text equationName : String) :
     Except (Array ResidualObligation) (Option RawPath) := do
-  let text := text.trim
+  let text := text.trimAscii.toString
   if let some rest := Axiograph.Axi.SchemaV1.stripPrefix? text "id(" then
     let some objectName := stripSuffix? rest ")"
       | throw #[residual s!"equation:{equationName}" .illTypedEquation
           "identity path is missing its closing `)`"]
-    let some object := core.objectNames.findIdx? (· == objectName.trim)
+    let some object := core.objectNames.findIdx? (· == objectName.trimAscii.toString)
       | throw #[residual s!"equation:{equationName}" .illTypedEquation
-          s!"identity path references unknown object `{objectName.trim}`"]
+          s!"identity path references unknown object `{objectName.trimAscii.toString}`"]
     return some (.identity object)
 
-  let labels := (text.splitToList (· == ';')).map String.trim |>.filter (!·.isEmpty)
+  let labels := (text.splitToList (· == ';')).map (·.trimAscii.toString) |>.filter (!·.isEmpty)
   if labels.isEmpty then return none
   let mut indices : Array Nat := #[]
   for label in labels do
@@ -1200,12 +1200,12 @@ structure ContextTransport {p : PresentationCore} {model : FiniteInterpretation 
     family.visible source object value = true →
     family.visible target object value = true
 
-def ContextTransport.identity {p : PresentationCore} {model : FiniteInterpretation p}
+theorem ContextTransport.identity {p : PresentationCore} {model : FiniteInterpretation p}
     (family : ContextFamily model) (context : Fin family.contextNames.size) :
     ContextTransport family context context where
   preserves := fun _ _ visible => visible
 
-def ContextTransport.trans {p : PresentationCore} {model : FiniteInterpretation p}
+theorem ContextTransport.trans {p : PresentationCore} {model : FiniteInterpretation p}
     {family : ContextFamily model} {first second third : Fin family.contextNames.size}
     (left : ContextTransport family first second)
     (right : ContextTransport family second third) :

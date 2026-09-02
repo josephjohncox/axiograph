@@ -36,7 +36,7 @@ jobs:
     environment: release
     steps:
       # actions/checkout pinned to an immutable commit.
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
       - name: Require exact CalVer release tag caller
@@ -49,11 +49,11 @@ jobs:
           test "$GITHUB_REF" = "refs/tags/$GITHUB_REF_NAME"
       # docker/setup-buildx-action pinned to an immutable commit.
       - uses: >-
-          docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
+          docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e
       - name: Validate Dockerfile with BuildKit
         run: docker buildx build --check --progress=plain -f Dockerfile .
       # docker/login-action pinned to an immutable commit.
-      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -78,7 +78,7 @@ jobs:
       - name: Docker metadata
         id: meta
         # docker/metadata-action pinned to an immutable commit.
-        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302
         with:
           images: ghcr.io/${{ github.repository }}
           tags: |
@@ -86,7 +86,7 @@ jobs:
             type=sha
       - name: Build local image for pre-publication audit
         # docker/build-push-action pinned to an immutable commit.
-        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a
         with:
           context: .
           file: Dockerfile
@@ -135,7 +135,7 @@ jobs:
       - name: Build and push audited image as an untagged digest
         id: build
         # docker/build-push-action pinned to an immutable commit.
-        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a
         with:
           context: .
           file: Dockerfile
@@ -225,7 +225,7 @@ jobs:
           printf '%s\n' "$IMAGE_DIGEST" > "$digest_file"
       - name: Upload audited digest artifact
         # actions/upload-artifact pinned to an immutable commit.
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: image-digests-${{ matrix.arch }}
           path: /tmp/digests/${{ matrix.arch }}.digest
@@ -244,20 +244,20 @@ jobs:
       packages: write
     steps:
       # actions/checkout pinned to an immutable commit.
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
       # docker/setup-buildx-action pinned to an immutable commit.
       - uses: >-
-          docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
+          docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e
       # docker/login-action pinned to an immutable commit.
-      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       # actions/download-artifact pinned to an immutable commit.
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
           path: /tmp/digests
       - name: Create and verify exact release manifest

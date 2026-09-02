@@ -113,7 +113,7 @@ class ReleaseArchiveValidationTests(unittest.TestCase):
                 expected_host="x86_64-unknown-linux-gnu",
                 expected_version=workspace_version(REPO_ROOT),
                 expected_source_commit=SOURCE_COMMIT,
-                expected_rust_toolchain="1.88.0",
+                expected_rust_toolchain="1.98.0",
             )
             self.assertTrue(report["validated"])
             self.assertEqual(report["source_tree"], SOURCE_TREE)

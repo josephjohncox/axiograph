@@ -110,7 +110,7 @@ def copy_seed_corpus(target: str, destination: Path) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--toolchain", default="nightly-2026-07-23")
+    parser.add_argument("--toolchain", default="nightly-2026-09-01")
     parser.add_argument("--cargo-fuzz-version", default="0.13.2")
     parser.add_argument("--build-timeout-seconds", type=int, default=600)
     parser.add_argument("--subprocess-timeout-seconds", type=int, default=180)

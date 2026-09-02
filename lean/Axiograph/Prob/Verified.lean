@@ -63,6 +63,10 @@ theorem numeratorBounded (p : VProb) : toNat p ≤ Precision :=
 def ofNat (n : Nat) (h : n ≤ Precision) : VProb :=
   MkVProb ⟨n, Nat.lt_succ_of_le h⟩
 
+@[simp]
+theorem toNat_ofNat (n : Nat) (h : n ≤ Precision) : toNat (ofNat n h) = n :=
+  rfl
+
 /-| Clamp a raw numerator into `[0, Precision]` (useful when parsing untrusted input). -/
 def ofNatClamped (n : Nat) : VProb :=
   ofNat (Nat.min n Precision) (Nat.min_le_right _ _)
@@ -155,7 +159,7 @@ def uniform (n : Nat) (_hn : 0 < n) : VDist n :=
     -- `n * (Precision / n) ≤ Precision`
     -- and `toNat single = Precision / n` by construction.
     have : n * toNat single ≤ Precision := by
-      simpa [single, probVal, toNat] using Nat.mul_div_le Precision n
+      simpa [single, probVal, toNat, ofNat] using Nat.mul_div_le Precision n
     simpa [hsum] using this
   { probs := fun _ => single, sumValid := sumBound }
 
@@ -337,7 +341,8 @@ def pathConfidence : List VProb → VProb
 
 theorem pathConfidenceDecreases (firstStepConfidence : VProb) (rest : List VProb) :
     toNat (pathConfidence (firstStepConfidence :: rest)) ≤ toNat (pathConfidence rest) := by
-  simpa [pathConfidence] using combineReducesRight firstStepConfidence (pathConfidence rest)
+  simpa [pathConfidence, combineIndependent] using
+    combineReducesRight firstStepConfidence (pathConfidence rest)
 
 theorem emptyPathConfidence : pathConfidence ([] : List VProb) = vOne :=
   rfl

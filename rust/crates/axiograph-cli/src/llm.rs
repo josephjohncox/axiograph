@@ -2698,8 +2698,10 @@ instance FamilyInst of Family:
 
     #[test]
     fn tool_loop_parser_rejects_unbounded_options_and_batched_calls() {
-        let mut invalid = super::ToolLoopOptions::default();
-        invalid.max_steps = 0;
+        let invalid = super::ToolLoopOptions {
+            max_steps: 0,
+            ..super::ToolLoopOptions::default()
+        };
         let error = super::parse_tool_loop_response_json(
             r#"{"final_answer":{"answer":"Done.","citations":[],"queries":[],"notes":[]}}"#,
             invalid,

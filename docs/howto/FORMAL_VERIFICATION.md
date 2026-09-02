@@ -200,7 +200,7 @@ Exact release decision, including the full locked Rust workspace, CLI feature
 matrix, adversarial certificate and AxiStore fixtures, and the semantics gate:
 
 ```bash
-PATH="$(dirname "$(rustup which --toolchain 1.88.0 rustc)"):$PATH" \
+PATH="$(dirname "$(rustup which --toolchain 1.98.0 rustc)"):$PATH" \
   make release-gate
 ```
 
@@ -314,7 +314,7 @@ The bounded adversarial parser lane is executable separately:
 make verify-fuzz
 ```
 
-This lane pins `nightly-2026-07-23` and `cargo-fuzz 0.13.2`, preserves the
+This lane pins `nightly-2026-09-01` and `cargo-fuzz 0.13.2`, preserves the
 checked seed corpora, builds every harness under a separate 600-second
 process-group limit, and fuzzes `.axi`, Certificate V2/V3 JSON, production REPL
 tokenization, the shared command/HTTP predictive-proposal response boundary,
@@ -329,7 +329,10 @@ make verify-miri
 
 This runs exact-byte identity, framing, domain-registry, Rust/Lean parity,
 scoped-reference, and strict ID parsing tests without enabling filesystem or
-network access. The pinned nightly must include both Miri and `rust-src`.
+network access. It forces SHA-2's documented portable software backend so Miri
+interprets the identity code instead of executing target-specific AArch64 or
+x86 intrinsics. Production builds retain SHA-2's runtime-selected accelerated
+backend. The pinned nightly must include both Miri and `rust-src`.
 `release-gate` uses `verify-miri-required`, which fails rather than skipping
 when either component is absent.
 
@@ -352,8 +355,11 @@ make verify-kani
 
 The named harness proves for every `u32` that construction accepts exactly the
 values at or below `FIXED_POINT_DENOMINATOR` and preserves accepted numerators.
-Release verification requires `cargo-kani 0.67.0`; this is a bounded runtime
-invariant, not a replacement for Lean certificate checking.
+Release verification requires `cargo-kani 0.67.0`. Its bundled Rust 1.93
+compiler matches the workspace's separately tested minimum Rust version; normal
+development and release compilation uses the pinned Rust 1.98.0 toolchain.
+This is a bounded runtime invariant, not a replacement for Lean certificate
+checking.
 
 ## Hardening Guidance
 
