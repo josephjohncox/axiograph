@@ -387,7 +387,7 @@ def typecheckInstance
   pure ()
 
 def looksLikeUnsupportedFreePathVariable (source : String) : Bool :=
-  let text := source.trim
+  let text := source.trimAscii.toString
   !text.isEmpty && text.toList.all (fun c => c.isAlphanum || c == '_')
 
 def typecheckModule (m : Axiograph.Axi.AxiV1.AxiV1Module) : Except String TypeCheckSummaryV1 := do
@@ -404,7 +404,7 @@ def typecheckModule (m : Axiograph.Axi.AxiV1.AxiV1Module) : Except String TypeCh
     if theories.contains (theory.schema, theory.name) then
       throw s!"duplicate theory `{theory.name}` on schema `{theory.schema}`"
     for equation in theory.equations do
-      if equation.lhs.trim.isEmpty || equation.rhs.trim.isEmpty then
+      if equation.lhs.trimAscii.toString.isEmpty || equation.rhs.trimAscii.toString.isEmpty then
         throw s!"theory `{theory.name}` equation `{equation.name}` must have non-empty sides"
       if looksLikeUnsupportedFreePathVariable equation.lhs && looksLikeUnsupportedFreePathVariable equation.rhs then
         throw s!"theory `{theory.name}` equation `{equation.name}` uses unsupported free path variables"

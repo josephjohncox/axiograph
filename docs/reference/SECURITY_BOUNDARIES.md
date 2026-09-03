@@ -191,7 +191,8 @@ exceptions are closed identity framing, process-local DB-token exhaustion, and
 serialization of schemars' JSON-representable schema model; each exception is
 attached to the exact expression with a machine-checked lint reason.
 
-`make verify-viz` runs under Node.js 24.19.0, installs the exact npm lock with
+`make verify-viz` runs under Node.js 26.8.1 with its bundled npm 11.19.0,
+installs the exact npm lock with
 lifecycle scripts disabled, rejects moderate-or-higher advisories, and builds
 the production bundle. This blocks the release decision on known frontend
 supply-chain findings rather than relying only on default-branch alerts.
@@ -199,13 +200,13 @@ supply-chain findings rather than relying only on default-branch alerts.
 `make verify-rustsec` runs cargo-audit 0.22.2 over the exact workspace and
 isolated fuzz lockfiles without ignored vulnerabilities. RDF/XML parsing uses
 Oxigraph's upstream commit
-`e115a6a8dd9213fdf89a20cb72494ab333878218`, which migrates oxrdfxml 0.2.3 to
-quick-xml 0.41. The source is immutable in both lockfiles and replaces the
-published oxrdfxml dependency only until a crate release contains that
+`786d00170224cb5589b03dc5283b1c25df8c0357`, which migrates oxrdfxml 0.3.0-dev
+to quick-xml 0.42. The source is immutable in both lockfiles and replaces the
+published oxrdfxml dependency only until a patched crate release contains that
 migration. Sophia remains the Turtle/N-Triples/N-Quads/TriG parser and no
 longer enables its quick-xml 0.37 RDF/XML path.
 
-Every RDF/XML byte sequence first passes a bounded structural quick-xml 0.41
+Every RDF/XML byte sequence first passes a bounded structural quick-xml 0.42
 pass before semantic decoding by the same patched XML line. The preflight uses
 checked attribute iteration, a per-element limit of 64 attributes, the patched
 namespace declaration limit, a depth limit of 128, an event limit of 1,000,000,

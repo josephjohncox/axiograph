@@ -4,8 +4,8 @@ use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
 use rmcp::model::{
-    CallToolRequestParams, CallToolResult, ErrorData, Implementation, JsonObject, ListToolsResult,
-    PaginatedRequestParams, ServerCapabilities, ServerInfo, Tool, ToolAnnotations,
+    CallToolRequestParams, CallToolResponse, CallToolResult, ErrorData, Implementation, JsonObject,
+    ListToolsResult, PaginatedRequestParams, ServerCapabilities, ServerInfo, Tool, ToolAnnotations,
 };
 use rmcp::service::RequestContext;
 use rmcp::{RoleServer, ServiceExt};
@@ -105,12 +105,12 @@ impl rmcp::handler::server::ServerHandler for SemanticRmcpServer {
         &self,
         request: CallToolRequestParams,
         _context: RequestContext<RoleServer>,
-    ) -> std::result::Result<CallToolResult, ErrorData> {
+    ) -> std::result::Result<CallToolResponse, ErrorData> {
         let name = request.name.to_string();
         let arguments = Value::Object(request.arguments.unwrap_or_default());
         match self.server.call_tool(&name, arguments) {
-            Ok(structured) => Ok(rmcp_tool_result(structured, false)),
-            Err(err) => Ok(rmcp_tool_result(json!({ "error": err.to_string() }), true)),
+            Ok(structured) => Ok(rmcp_tool_result(structured, false).into()),
+            Err(err) => Ok(rmcp_tool_result(json!({ "error": err.to_string() }), true).into()),
         }
     }
 }

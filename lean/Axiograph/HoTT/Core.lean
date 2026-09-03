@@ -67,7 +67,7 @@ abbrev Path2 {α : Sort u} {x y : α} (p q : Path x y) : Prop := p = q
 abbrev Path3 {α : Sort u} {x y : α} {p q : Path x y} (pe1 pe2 : Path2 p q) : Prop := pe1 = pe2
 
 /-| Left whiskering: horizontal composition of 2-paths. -/
-def whiskerLeft {α : Sort u} {x y z : α} {p q : Path x y} (r : Path y z) :
+theorem whiskerLeft {α : Sort u} {x y z : α} {p q : Path x y} (r : Path y z) :
     Path2 p q → Path2 (p @@ r) (q @@ r)
   | h => by cases h; rfl
 
@@ -76,7 +76,7 @@ abbrev whiskerL {α : Sort u} {x y z : α} {p q : Path x y} (r : Path y z) :
   whiskerLeft (α := α) (x := x) (y := y) (z := z) (p := p) (q := q) r
 
 /-| Right whiskering: horizontal composition of 2-paths. -/
-def whiskerRight {α : Sort u} {x y z : α} {q r : Path y z} (p : Path x y) :
+theorem whiskerRight {α : Sort u} {x y z : α} {q r : Path y z} (p : Path x y) :
     Path2 q r → Path2 (p @@ q) (p @@ r)
   | h => by cases h; rfl
 
@@ -172,7 +172,7 @@ transported along `p` equals `py`.
 def PathOver {α : Sort u} (P : α → Sort v) {x y : α} (p : x = y) (px : P x) (py : P y) : Prop :=
   transport P p px = py
 
-def transOver {α : Sort u} {P : α → Sort v} {x y z : α} {p₁ : x = y} {p₂ : y = z}
+theorem transOver {α : Sort u} {P : α → Sort v} {x y z : α} {p₁ : x = y} {p₂ : y = z}
     {px : P x} {py : P y} {pz : P z} :
     PathOver P p₁ px py → PathOver P p₂ py pz → PathOver P (p₁ @@ p₂) px pz := by
   intro h₁ h₂
@@ -225,7 +225,7 @@ abbrev Quotient (α : Sort u) (r : α → α → Prop) : Sort u := Quot r
 abbrev QInject {α : Sort u} {r : α → α → Prop} (x : α) : Quotient α r :=
   Quot.mk r x
 
-def qpath {α : Sort u} {r : α → α → Prop} (x y : α) (h : r x y) :
+theorem qpath {α : Sort u} {r : α → α → Prop} (x y : α) (h : r x y) :
     (QInject (r := r) x) = (QInject (r := r) y) :=
   Quot.sound h
 
@@ -234,7 +234,7 @@ def qelim {α : Sort u} {r : α → α → Prop} {β : Sort v} (f : α → β)
     Quotient α r → β :=
   Quot.lift f respect
 
-def qelimProp {α : Sort u} {r : α → α → Prop} (p : Quotient α r → Prop)
+theorem qelimProp {α : Sort u} {r : α → α → Prop} (p : Quotient α r → Prop)
     (base : (x : α) → p (QInject (r := r) x)) :
     (q : Quotient α r) → p q :=
   fun q => Quot.inductionOn q base

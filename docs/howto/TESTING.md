@@ -33,7 +33,7 @@ The Axiograph test suite provides comprehensive coverage across all layers:
 ## Quick Start
 
 ```bash
-# From repo root, with rustc 1.88.0 plus the pinned fuzz tools: publication decision
+# From repo root, with rustc 1.98.0 plus the pinned fuzz tools: publication decision
 make release-gate
 
 # From repo root: focused semantics suite (Rust + Lean)
@@ -111,17 +111,17 @@ cargo run -p axiograph-cli --release -- tools perf scenario --scenario proto_api
 
 | Gate | Use it for | Notes |
 | --- | --- | --- |
-| `make release-gate` | The only binary/container publication decision | Requires rustc 1.88.0, Node.js 24.19.0, cargo-audit 0.22.2, `nightly-2026-07-23` with Miri and `rust-src`, `cargo-fuzz 0.13.2`, and `cargo-kani 0.67.0` exactly; then runs catalog validation, Rust formatting, the no-unsafe and no-panic gates, full locked workspace tests, the CLI feature matrix, locked frontend and RustSec advisory audits, bounded fuzz targets, pure identity-kernel Miri tests, the Loom child-limiter model, the Kani fixed-point-constructor proof, `make verify-semantics` (including the regulated-shipment fixture), and `git diff --check`. Publication workflows must depend on this result. |
+| `make release-gate` | The only binary/container publication decision | Requires rustc 1.98.0, Node.js 26.8.1, npm 11.19.0, cargo-audit 0.22.2, `nightly-2026-09-01` with Miri and `rust-src`, `cargo-fuzz 0.13.2`, and `cargo-kani 0.67.0` exactly; then runs catalog validation, Rust formatting, the no-unsafe and no-panic gates, full locked workspace tests, the CLI feature matrix, locked frontend and RustSec advisory audits, bounded fuzz targets, pure identity-kernel Miri tests, the Loom child-limiter model, the Kani fixed-point-constructor proof, `make verify-semantics` (including the regulated-shipment fixture), and `git diff --check`. Publication workflows must depend on this result. |
 | `make verify-regulated-shipment` | Primary usefulness and CI fixture | Compiles baseline/candidate canonical modules; checks runtime theory, CQ, evolution, behavior/codegen, TypeDB/PathDB projections, VerifyMain type/constraint/category certificates; runs `axiograph check finite-query` for baseline and candidate; binds the accepted exact-answer receipt into each reviewed trust gate; materializes a reviewed typed merge; reopens authenticated SQLite/PathDB state; builds accepted-derived grounding bound to the reopened receipt and exact query; compiles the generated Rust test; and requires adversarial reviewer, path, query, placeholder-receipt, explanation, and materialization cases to reject. |
 | `make check-no-unsafe` | First-party Rust safety policy | Verifies every workspace package inherits `unsafe_code = "forbid"`, scans every checked-in Rust source file for the `unsafe` keyword outside comments and literals, then checks all targets and features with the compiler lint enabled. |
 | `make check-no-panics` | First-party production panic policy | Runs Clippy over every workspace library and binary with all features and rejects `unwrap`, `expect`, `panic!`, and `unreachable!`. Three closed, resource-impossible or serializer-infallible invariants carry local reviewed lint exceptions; test-only assertion paths are outside this production target. |
-| `make verify-viz` | Frontend dependency and production-build gate | Requires Node.js 24.19.0 from `.node-version`, installs only `package-lock.json` with lifecycle scripts disabled, rejects moderate-or-higher npm advisories, and builds the Vite production bundle. Current pins are Vite 8.2.1, esbuild 0.28.2, PostCSS 8.5.26, and Rolldown 1.2.4; obsolete vulnerable Rollup is absent. |
+| `make verify-viz` | Frontend dependency and production-build gate | Requires Node.js 26.8.1 and npm 11.19.0 from `.node-version` and `.npm-version`, installs only `package-lock.json` with lifecycle scripts disabled, rejects moderate-or-higher npm advisories, and builds the Vite production bundle. Current pins are Vite 8.2.2, TypeScript 7.0.2, esbuild 0.28.2, PostCSS 8.5.26, and Rolldown 1.2.4; obsolete vulnerable Rollup is absent. |
 | `make book` | Published documentation gate | Downloads the pinned mdBook 0.5.4 binary for the current host, verifies the platform-specific SHA-256 digest, validates the curated chapter graph, builds the static site, and rejects broken rendered links or missing search/theme artifacts. Pull requests build the same book; pushes to `main` publish it through immutable GitHub Pages actions. |
-| `make verify-rustsec` | Exact Rust lockfile advisory gate | Requires cargo-audit 0.22.2 and audits both workspace and isolated fuzz lockfiles without ignored vulnerabilities. RDF/XML uses Oxigraph's immutable upstream quick-xml 0.41 migration commit until its next crate release; the structural preflight and semantic parser therefore share the patched XML line. The remaining `ttf-parser` notice is informational and unmaintained, not a RustSec vulnerability. |
-| `make verify-fuzz` | Bounded adversarial parser smoke | Requires pinned `nightly-2026-07-23` and `cargo-fuzz 0.13.2`; first compiles all five harnesses under a separate 600-second process-group bound, then copies checked seed corpora into a temporary directory and runs named `.axi`, certificate JSON, REPL-command, predictive-proposal adapter response, and authenticated `.axpd` byte targets with case-time, process-time, output, input-size, run-count, RSS, and single-artifact bounds. CI and release verification install and run the exact tool versions. |
-| `make verify-miri` | Interpreter-level identity-kernel hardening | Runs seven pure tests for exact-byte identities, authenticated-field sensitivity, framing, registry closure, Rust/Lean domain parity, scoped semantic refs, and strict ID parsing under Miri. It explicitly reports `SKIP` when Miri or `rust-src` is unavailable; `release-gate` instead uses `verify-miri-required` and fails if either pinned component is missing. |
+| `make verify-rustsec` | Exact Rust lockfile advisory gate | Requires cargo-audit 0.22.2 and audits both workspace and isolated fuzz lockfiles without ignored vulnerabilities. RDF/XML uses Oxigraph's immutable upstream quick-xml 0.42 migration commit until a patched crate release; the structural preflight and semantic parser therefore share the patched XML line. The remaining `ttf-parser` notice is informational and unmaintained, not a RustSec vulnerability. |
+| `make verify-fuzz` | Bounded adversarial parser smoke | Requires pinned `nightly-2026-09-01` and `cargo-fuzz 0.13.2`; first compiles all five harnesses under a separate 600-second process-group bound, then copies checked seed corpora into a temporary directory and runs named `.axi`, certificate JSON, REPL-command, predictive-proposal adapter response, and authenticated `.axpd` byte targets with case-time, process-time, output, input-size, run-count, RSS, and single-artifact bounds. CI and release verification install and run the exact tool versions. |
+| `make verify-miri` | Interpreter-level identity-kernel hardening | Runs seven pure tests for exact-byte identities, authenticated-field sensitivity, framing, registry closure, Rust/Lean domain parity, scoped semantic refs, and strict ID parsing under Miri. The lane forces SHA-2's portable software backend because Miri must interpret Rust code rather than target-specific cryptographic intrinsics; production builds retain runtime-selected acceleration. It explicitly reports `SKIP` when Miri or `rust-src` is unavailable; `release-gate` instead uses `verify-miri-required` and fails if either pinned component is missing. |
 | `make verify-loom` | Exhaustive small-state concurrency model | Runs the production child-slot reservation algorithm with Loom atomics under two-thread contention and proves the configured maximum is never exceeded and every acquired slot is released. This models real shared mutable state rather than a synthetic concurrency example. |
-| `make verify-kani` | Bounded model checking over the complete constructor input domain | With `cargo-kani 0.67.0`, proves for every `u32` that `FixedPointProbability::try_new` accepts exactly the numerators at or below the shared denominator and preserves accepted values exactly. It explicitly reports `SKIP` when Kani is unavailable; `release-gate` uses `verify-kani-required` and fails if the exact version is missing. |
+| `make verify-kani` | Bounded model checking over the complete constructor input domain | With `cargo-kani 0.67.0` and its bundled Rust 1.93 compiler, proves for every `u32` that `FixedPointProbability::try_new` accepts exactly the numerators at or below the shared denominator and preserves accepted values exactly. Workspace packages declare Rust 1.93 as their minimum while normal release compilation uses Rust 1.98.0. It explicitly reports `SKIP` when Kani is unavailable; `release-gate` uses `verify-kani-required` and fails if the exact version is missing. |
 | Focused security commands below | Untrusted I/O, parser, process, network, saturation, and mutation boundaries | Covers no-follow same-handle reads, atomic outputs, JSON/CBOR depth, process descendants and floods, public/loopback peer pinning, Git URL/ref policy, MCP/LSP frames, SQLite substitution/limits, and strict archive extraction. See `docs/reference/SECURITY_BOUNDARIES.md`. |
 | `make verify-canonical-spine` | Current user/agent cleanup across the canonical spine | Runs the no-unsafe gate, Rust formatting, runtime theory checker tests, prepared-query tests, semantic VCS tests, software-authoring examples, embeddings tests, typed projection/readback tests, Lean `SemanticVCS`, `verify-lean-semantic-vcs`, and `git diff --check`. |
 | `make verify-w02-compiler` | Exact-byte canonical compiler changes | Runs canonical compiler unit/property/source-gate tests, including imported-schema visibility, builds Rust and Lean parser/typechecker executables, and checks all W02 positive/adversarial corpus expectations in both implementations. The full workspace suite additionally checks canonical-backed runtime-index retention and import-aware REPL loading. |
@@ -196,7 +196,7 @@ make verify-lean-semantic-vcs
 make verify-axi-store
 ```
 
-`make verify-fuzz` requires pinned `nightly-2026-07-23` and `cargo-fuzz
+`make verify-fuzz` requires pinned `nightly-2026-09-01` and `cargo-fuzz
 0.13.2`. It builds all named harnesses under a separate 600-second cold-build
 bound, copies each checked seed corpus to a private temporary directory, runs
 with hard input, case-time, process-time, run-count, RSS, and artifact bounds,
@@ -529,7 +529,7 @@ The checked-in workflows are the executable policy; do not copy an abbreviated
 workflow from this document:
 
 - `.github/workflows/ci.yml` runs `make release-gate` on pinned Ubuntu 24.04
-  with rustc 1.88.0 and the checked-in Lean/Lake manifest. Native container
+  with rustc 1.98.0 and the checked-in Lean/Lake manifest. Native container
   lanes run the checked-in smoke and checker-integrity policy.
 - `.github/workflows/release.yml` is the only tag entry point. Bundle jobs and
   the reusable container publisher depend on the same successful
@@ -550,8 +550,8 @@ receipt decision is `accepted`.
 ### Local CI
 
 ```bash
-# Exact release decision; requires rustc 1.88.0.
-PATH="$(dirname "$(rustup which --toolchain 1.88.0 rustc)"):$PATH" \
+# Exact release decision; requires rustc 1.98.0.
+PATH="$(dirname "$(rustup which --toolchain 1.98.0 rustc)"):$PATH" \
   make release-gate
 
 # Focused Rust+Lean semantics suite.
@@ -592,7 +592,7 @@ A Docker multi-architecture manifest does not imply native binary support.
 | Release requirement | Executable evidence |
 | --- | --- |
 | One decision | `make release-gate`; both publication jobs depend on the release workflow's `verify` job. |
-| Pinned language inputs | rustc 1.88.0 is asserted; `rust/Cargo.lock` is checked in and every release command uses `--locked`; Lean uses `lean-toolchain` and `lake-manifest.json` without `lake update`. |
+| Pinned language inputs | rustc 1.98.0 is asserted; `rust/Cargo.lock` is checked in and every release command uses `--locked`; Lean uses `lean-toolchain` and `lake-manifest.json` without `lake update`. |
 | Binary integrity | The package audit verifies the host-triple name, deterministic archive, outer and inner SHA-256, extraction, mode, CLI version, and an accepted stdio V2 receipt. |
 | Container integrity | CI and release run BuildKit `--check`, installed-checker checksum, non-root/mode checks, canonical `.axi` validation, authenticated DB command checks, and bare-`.axpd` rejection. |
 | Fail-closed server readiness | Unit tests `verifier_status_requires_explicit_operator_approval` and `verifier_status_reports_complete_v2_readiness`. |

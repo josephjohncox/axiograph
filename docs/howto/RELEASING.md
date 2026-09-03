@@ -79,7 +79,7 @@ Commit the complete candidate before running the clean-source gate. Then run:
 python3 -m unittest discover -s scripts/tests -p 'test_*.py' -v
 make verify-release-packaging
 make rehearse-release-publication
-PATH="$(dirname "$(rustup which --toolchain 1.88.0 rustc)"):$PATH" \
+PATH="$(dirname "$(rustup which --toolchain 1.98.0 rustc)"):$PATH" \
   make release-gate
 git status --short
 git diff --check

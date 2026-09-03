@@ -15,7 +15,7 @@ use nom::{
     character::complete::{char as pchar, multispace0, multispace1},
     combinator::{all_consuming, opt, recognize},
     multi::separated_list1,
-    sequence::{preceded, tuple},
+    sequence::preceded,
     IResult, Parser,
 };
 use serde::{Deserialize, Serialize};
@@ -954,14 +954,12 @@ fn is_ident_continue(c: char) -> bool {
 }
 
 fn parse_ident(input: &str) -> IResult<&str, &str> {
-    recognize(tuple((
-        take_while1(is_ident_start),
-        take_while(is_ident_continue),
-    )))(input)
+    recognize((take_while1(is_ident_start), take_while(is_ident_continue))).parse(input)
 }
 
 fn parse_module_header(rest: &str) -> Result<Name, String> {
-    all_consuming(preceded(multispace0, tuple((parse_ident, multispace0))))(rest)
+    all_consuming(preceded(multispace0, (parse_ident, multispace0)))
+        .parse(rest)
         .map(|(_, (name, _))| name.to_string())
         .map_err(|_| "module header expects exactly `module <Name>`".to_string())
 }
@@ -970,16 +968,17 @@ fn parse_theory_header(rest: &str) -> Result<(Name, Name), String> {
     fn parser(input: &str) -> IResult<&str, (Name, Name)> {
         let (input, name) = parse_ident(input)?;
         let (input, _) = multispace1(input)?;
-        let (input, _) = tag("on")(input)?;
+        let (input, _) = tag("on").parse(input)?;
         let (input, _) = multispace1(input)?;
         let (input, schema) = parse_ident(input)?;
         let (input, _) = multispace0(input)?;
-        let (input, _) = opt(pchar(':'))(input)?;
+        let (input, _) = opt(pchar(':')).parse(input)?;
         let (input, _) = multispace0(input)?;
         Ok((input, (name.to_string(), schema.to_string())))
     }
 
-    all_consuming(parser)(rest.trim())
+    all_consuming(parser)
+        .parse(rest.trim())
         .map(|(_, v)| v)
         .map_err(|_| "theory header expects: `theory <Name> on <Schema>:`".to_string())
 }
@@ -988,16 +987,17 @@ fn parse_instance_header(rest: &str) -> Result<(Name, Name), String> {
     fn parser(input: &str) -> IResult<&str, (Name, Name)> {
         let (input, name) = parse_ident(input)?;
         let (input, _) = multispace1(input)?;
-        let (input, _) = tag("of")(input)?;
+        let (input, _) = tag("of").parse(input)?;
         let (input, _) = multispace1(input)?;
         let (input, schema) = parse_ident(input)?;
         let (input, _) = multispace0(input)?;
-        let (input, _) = opt(pchar(':'))(input)?;
+        let (input, _) = opt(pchar(':')).parse(input)?;
         let (input, _) = multispace0(input)?;
         Ok((input, (name.to_string(), schema.to_string())))
     }
 
-    all_consuming(parser)(rest.trim())
+    all_consuming(parser)
+        .parse(rest.trim())
         .map(|(_, v)| v)
         .map_err(|_| "instance header expects: `instance <Name> of <Schema>:`".to_string())
 }
@@ -1006,11 +1006,11 @@ fn parse_subtype_decl(rest: &str) -> Result<SubtypeDeclV1, String> {
     fn parser(input: &str) -> IResult<&str, SubtypeDeclV1> {
         let (input, sub) = parse_ident(input)?;
         let (input, _) = multispace1(input)?;
-        let (input, _) = alt((tag("<:"), tag("<")))(input)?;
+        let (input, _) = alt((tag("<:"), tag("<"))).parse(input)?;
         let (input, _) = multispace1(input)?;
         let (input, sup) = parse_ident(input)?;
         let (input, inclusion) =
-            opt(tuple((multispace1, tag("as"), multispace1, parse_ident)))(input)?;
+            opt((multispace1, tag("as"), multispace1, parse_ident)).parse(input)?;
         let (input, _) = multispace0(input)?;
         Ok((
             input,
@@ -1022,7 +1022,8 @@ fn parse_subtype_decl(rest: &str) -> Result<SubtypeDeclV1, String> {
         ))
     }
 
-    all_consuming(parser)(rest.trim())
+    all_consuming(parser)
+        .parse(rest.trim())
         .map(|(_, v)| v)
         .map_err(|_| {
             "subtype expects canonical `subtype <Sub> < <Sup>` (optionally `as Incl`)".to_string()
@@ -1291,7 +1292,8 @@ fn split_at_top_level(text: &str, separator: char) -> Vec<&str> {
 }
 
 fn parse_identifier_text(text: &str, what: &str) -> Result<(), String> {
-    all_consuming(parse_ident)(text)
+    all_consuming(parse_ident)
+        .parse(text)
         .map(|_| ())
         .map_err(|_| format!("{what} must be an identifier, got `{text}`"))
 }
@@ -2034,32 +2036,33 @@ fn parse_rewrite_orientation(s: &str) -> Result<RewriteOrientationV1, String> {
 pub fn parse_rewrite_var_decl_list_v1(line: &str) -> Result<Vec<RewriteVarDeclV1>, String> {
     fn comma(input: &str) -> IResult<&str, ()> {
         let (input, _) = multispace0(input)?;
-        let (input, _) = pchar(',')(input)?;
+        let (input, _) = pchar(',').parse(input)?;
         let (input, _) = multispace0(input)?;
         Ok((input, ()))
     }
 
     fn var_type(input: &str) -> IResult<&str, RewriteVarTypeV1> {
         let (input, _) = multispace0(input)?;
-        if let Ok((input2, _)) = tag::<&str, &str, nom::error::Error<&str>>("Path")(input) {
+        if let Ok((input2, _)) = tag::<&str, &str, nom::error::Error<&str>>("Path").parse(input) {
             let (input2, _) = multispace0(input2)?;
             let (input2, (from, to)) = alt((
                 // Path(x,y)
                 preceded(
                     pchar('('),
-                    tuple((
+                    (
                         preceded(multispace0, parse_ident),
-                        preceded(tuple((multispace0, pchar(','), multispace0)), parse_ident),
+                        preceded((multispace0, pchar(','), multispace0), parse_ident),
                         preceded(multispace0, pchar(')')),
-                    )),
+                    ),
                 )
                 .map(|(from, to, _)| (from, to)),
                 // Path x y
-                tuple((
+                (
                     preceded(multispace1, parse_ident),
                     preceded(multispace1, parse_ident),
-                )),
-            ))(input2)?;
+                ),
+            ))
+            .parse(input2)?;
             Ok((
                 input2,
                 RewriteVarTypeV1::Path {
@@ -2074,8 +2077,8 @@ pub fn parse_rewrite_var_decl_list_v1(line: &str) -> Result<Vec<RewriteVarDeclV1
     }
 
     fn var_decl(input: &str) -> IResult<&str, RewriteVarDeclV1> {
-        let (input, name) = preceded(multispace0, parse_ident)(input)?;
-        let (input, _) = preceded(multispace0, pchar(':'))(input)?;
+        let (input, name) = preceded(multispace0, parse_ident).parse(input)?;
+        let (input, _) = preceded(multispace0, pchar(':')).parse(input)?;
         let (input, ty) = var_type(input)?;
         Ok((
             input,
@@ -2087,7 +2090,7 @@ pub fn parse_rewrite_var_decl_list_v1(line: &str) -> Result<Vec<RewriteVarDeclV1
     }
 
     fn parser(input: &str) -> IResult<&str, Vec<RewriteVarDeclV1>> {
-        let (input, decls) = separated_list1(comma, var_decl)(input)?;
+        let (input, decls) = separated_list1(comma, var_decl).parse(input)?;
         let (input, _) = multispace0(input)?;
         Ok((input, decls))
     }
@@ -2097,28 +2100,31 @@ pub fn parse_rewrite_var_decl_list_v1(line: &str) -> Result<Vec<RewriteVarDeclV1
         return Ok(Vec::new());
     }
 
-    all_consuming(parser)(trimmed).map(|(_, v)| v).map_err(|_| {
-        format!("invalid rewrite vars line: `{trimmed}` (expected `x: Ty, p: Path(x,y)` etc)")
-    })
+    all_consuming(parser)
+        .parse(trimmed)
+        .map(|(_, v)| v)
+        .map_err(|_| {
+            format!("invalid rewrite vars line: `{trimmed}` (expected `x: Ty, p: Path(x,y)` etc)")
+        })
 }
 
 pub fn parse_path_expr_v3(text: &str) -> Result<PathExprV3, String> {
     fn comma(input: &str) -> IResult<&str, ()> {
         let (input, _) = multispace0(input)?;
-        let (input, _) = pchar(',')(input)?;
+        let (input, _) = pchar(',').parse(input)?;
         let (input, _) = multispace0(input)?;
         Ok((input, ()))
     }
 
     fn parens<'a, O>(
-        mut inner: impl FnMut(&'a str) -> IResult<&'a str, O>,
+        mut inner: impl Parser<&'a str, Output = O, Error = nom::error::Error<&'a str>>,
     ) -> impl FnMut(&'a str) -> IResult<&'a str, O> {
         move |input: &'a str| {
             let (input, _) = multispace0(input)?;
-            let (input, _) = pchar('(')(input)?;
-            let (input, out) = inner(input)?;
+            let (input, _) = pchar('(').parse(input)?;
+            let (input, out) = inner.parse(input)?;
             let (input, _) = multispace0(input)?;
-            let (input, _) = pchar(')')(input)?;
+            let (input, _) = pchar(')').parse(input)?;
             Ok((input, out))
         }
     }
@@ -2127,7 +2133,8 @@ pub fn parse_path_expr_v3(text: &str) -> Result<PathExprV3, String> {
         preceded(
             multispace0,
             alt((refl_expr, step_expr, trans_expr, inv_expr, var_expr)),
-        )(input)
+        )
+        .parse(input)
     }
 
     fn var_expr(input: &str) -> IResult<&str, PathExprV3> {
@@ -2141,8 +2148,8 @@ pub fn parse_path_expr_v3(text: &str) -> Result<PathExprV3, String> {
     }
 
     fn refl_expr(input: &str) -> IResult<&str, PathExprV3> {
-        let (input, _) = alt((tag("refl"), tag("id")))(input)?;
-        let (input, entity) = parens(preceded(multispace0, parse_ident))(input)?;
+        let (input, _) = alt((tag("refl"), tag("id"))).parse(input)?;
+        let (input, entity) = parens(preceded(multispace0, parse_ident)).parse(input)?;
         Ok((
             input,
             PathExprV3::Reflexive {
@@ -2152,12 +2159,13 @@ pub fn parse_path_expr_v3(text: &str) -> Result<PathExprV3, String> {
     }
 
     fn step_expr(input: &str) -> IResult<&str, PathExprV3> {
-        let (input, _) = tag("step")(input)?;
-        let (input, (from, rel, to)) = parens(tuple((
+        let (input, _) = tag("step").parse(input)?;
+        let (input, (from, rel, to)) = parens((
             preceded(multispace0, parse_ident),
             preceded(comma, parse_ident),
             preceded(comma, parse_ident),
-        )))(input)?;
+        ))
+        .parse(input)?;
         Ok((
             input,
             PathExprV3::Step {
@@ -2169,8 +2177,8 @@ pub fn parse_path_expr_v3(text: &str) -> Result<PathExprV3, String> {
     }
 
     fn trans_expr(input: &str) -> IResult<&str, PathExprV3> {
-        let (input, _) = tag("trans")(input)?;
-        let (input, (left, right)) = parens(tuple((expr, preceded(comma, expr))))(input)?;
+        let (input, _) = tag("trans").parse(input)?;
+        let (input, (left, right)) = parens((expr, preceded(comma, expr))).parse(input)?;
         Ok((
             input,
             PathExprV3::Trans {
@@ -2181,8 +2189,8 @@ pub fn parse_path_expr_v3(text: &str) -> Result<PathExprV3, String> {
     }
 
     fn inv_expr(input: &str) -> IResult<&str, PathExprV3> {
-        let (input, _) = tag("inv")(input)?;
-        let (input, path) = parens(expr)(input)?;
+        let (input, _) = tag("inv").parse(input)?;
+        let (input, path) = parens(expr).parse(input)?;
         Ok((
             input,
             PathExprV3::Inv {
@@ -2191,7 +2199,8 @@ pub fn parse_path_expr_v3(text: &str) -> Result<PathExprV3, String> {
         ))
     }
 
-    all_consuming(expr)(text.trim())
+    all_consuming(expr)
+        .parse(text.trim())
         .map(|(_, v)| v)
         .map_err(|_| format!("invalid path expression: `{}`", text.trim()))
 }

@@ -23,8 +23,8 @@
 use crate::axql::{parse_axql_path_expr, AxqlAtom, AxqlPathExpr, AxqlQuery, AxqlTerm};
 use anyhow::{anyhow, Result};
 use sqlparser::ast::{
-    BinaryOperator, Expr, Function, FunctionArg, FunctionArgExpr, Ident, Query, SelectItem,
-    SetExpr, Statement, TableAlias, TableFactor,
+    BinaryOperator, Expr, Function, FunctionArg, FunctionArgExpr, FunctionArguments, Ident,
+    LimitClause, Query, SelectItem, SetExpr, Statement, TableAlias, TableFactor, Value,
 };
 use sqlparser::dialect::GenericDialect;
 use sqlparser::parser::Parser;
@@ -50,9 +50,20 @@ pub fn parse_sqlish_query(input: &str) -> Result<AxqlQuery> {
 }
 
 fn lower_query(query: &Query) -> Result<AxqlQuery> {
-    let limit = query
-        .limit
-        .as_ref()
+    let limit_expr = match &query.limit_clause {
+        None => None,
+        Some(LimitClause::LimitOffset {
+            limit,
+            offset,
+            limit_by,
+        }) if offset.is_none() && limit_by.is_empty() => limit.as_ref(),
+        Some(_) => {
+            return Err(anyhow!(
+                "only LIMIT <number> without OFFSET or BY is supported"
+            ))
+        }
+    };
+    let limit = limit_expr
         .map(expr_as_u64)
         .transpose()?
         .map(|n| n as usize)
@@ -215,8 +226,16 @@ fn function_name(f: &Function) -> String {
 }
 
 fn function_args(f: &Function) -> Result<Vec<Expr>> {
+    let FunctionArguments::List(arguments) = &f.args else {
+        return Err(anyhow!("function arguments must be a parenthesized list"));
+    };
+    if arguments.duplicate_treatment.is_some() || !arguments.clauses.is_empty() {
+        return Err(anyhow!(
+            "function DISTINCT/ALL modifiers and argument clauses are unsupported"
+        ));
+    }
     let mut out = Vec::new();
-    for arg in &f.args {
+    for arg in &arguments.args {
         let FunctionArg::Unnamed(FunctionArgExpr::Expr(e)) = arg else {
             return Err(anyhow!("unsupported function arg: {arg:?}"));
         };
@@ -228,12 +247,12 @@ fn function_args(f: &Function) -> Result<Vec<Expr>> {
 fn term_from_expr(e: &Expr) -> Result<AxqlTerm> {
     match e {
         Expr::Identifier(id) => Ok(AxqlTerm::Var(axql_var(id)?)),
-        Expr::Value(v) => match v {
-            sqlparser::ast::Value::Number(s, _) => Ok(AxqlTerm::Const(
+        Expr::Value(v) => match &v.value {
+            Value::Number(s, _) => Ok(AxqlTerm::Const(
                 s.parse::<u32>()
                     .map_err(|e| anyhow!("invalid number `{s}`: {e}"))?,
             )),
-            sqlparser::ast::Value::SingleQuotedString(s) => Ok(AxqlTerm::Lookup {
+            Value::SingleQuotedString(s) => Ok(AxqlTerm::Lookup {
                 key: "name".to_string(),
                 value: s.clone(),
             }),
@@ -246,8 +265,10 @@ fn term_from_expr(e: &Expr) -> Result<AxqlTerm> {
 fn string_from_expr(e: &Expr) -> Result<String> {
     match e {
         Expr::Identifier(id) => Ok(id.value.clone()),
-        Expr::Value(sqlparser::ast::Value::SingleQuotedString(s)) => Ok(s.clone()),
-        Expr::Value(sqlparser::ast::Value::DoubleQuotedString(s)) => Ok(s.clone()),
+        Expr::Value(value) => match &value.value {
+            Value::SingleQuotedString(s) | Value::DoubleQuotedString(s) => Ok(s.clone()),
+            other => Err(anyhow!("expected string, got {other:?}")),
+        },
         other => Err(anyhow!("expected string, got {other:?}")),
     }
 }
@@ -255,17 +276,22 @@ fn string_from_expr(e: &Expr) -> Result<String> {
 fn path_from_expr(e: &Expr) -> Result<AxqlPathExpr> {
     match e {
         Expr::Identifier(id) => Ok(AxqlPathExpr::rel(id.value.clone())),
-        Expr::Value(sqlparser::ast::Value::SingleQuotedString(s)) => parse_axql_path_expr(s),
-        Expr::Value(sqlparser::ast::Value::DoubleQuotedString(s)) => parse_axql_path_expr(s),
+        Expr::Value(value) => match &value.value {
+            Value::SingleQuotedString(s) | Value::DoubleQuotedString(s) => parse_axql_path_expr(s),
+            other => Err(anyhow!("expected path string, got {other:?}")),
+        },
         other => Err(anyhow!("expected path string, got {other:?}")),
     }
 }
 
 fn expr_as_u64(e: &Expr) -> Result<u64> {
     match e {
-        Expr::Value(sqlparser::ast::Value::Number(s, _)) => s
-            .parse::<u64>()
-            .map_err(|e| anyhow!("invalid LIMIT number `{s}`: {e}")),
+        Expr::Value(value) => match &value.value {
+            Value::Number(s, _) => s
+                .parse::<u64>()
+                .map_err(|e| anyhow!("invalid LIMIT number `{s}`: {e}")),
+            other => Err(anyhow!("unsupported LIMIT expression: {other:?}")),
+        },
         other => Err(anyhow!("unsupported LIMIT expression: {other:?}")),
     }
 }

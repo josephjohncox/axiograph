@@ -2065,7 +2065,7 @@ fn object_path(root: &Path, object_id: &str) -> StoreResult<PathBuf> {
 fn raw_sha256(bytes: &[u8]) -> String {
     let mut hash = Sha256::new();
     hash.update(bytes);
-    format!("{:x}", hash.finalize())
+    hex::encode(hash.finalize())
 }
 
 fn u64_to_i64(value: u64) -> StoreResult<i64> {

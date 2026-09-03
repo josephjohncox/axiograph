@@ -8,12 +8,14 @@ describes the product, architecture, and primary user workflows.
 
 Axiograph pins the tools that decide whether a commit may be published:
 
-- Rust 1.88.0 for the release gate. Newer Rust versions may be used during local
-  development only when the exact 1.88.0 gate remains green.
+- Rust 1.98.0 for development and the release gate. Workspace packages declare
+  Rust 1.93 as their tested minimum; this also matches the compiler bundled by
+  the current pinned Kani release.
 - The Lean toolchain and mathlib revisions in `lean/lean-toolchain` and
   `lean/lake-manifest.json`.
-- Node.js 24.19.0 from `.node-version` for the visualization frontend.
-- `nightly-2026-07-23`, Miri, `rust-src`, cargo-fuzz 0.13.2,
+- Node.js 26.8.1 and its bundled npm 11.19.0 from `.node-version` and
+  `.npm-version` for the visualization frontend.
+- `nightly-2026-09-01`, Miri, `rust-src`, cargo-fuzz 0.13.2,
   cargo-audit 0.22.2, and cargo-kani 0.67.0 for the complete release gate.
 - Docker for container checks and optional backend projection/readback tests.
 - mdBook 0.5.4 for the published documentation. `make book` downloads the
@@ -21,6 +23,30 @@ Axiograph pins the tools that decide whether a commit may be published:
 
 See [Testing](howto/TESTING.md) for the exact gate requirements and skip/failure
 policy.
+
+## Direnv
+
+The checked-in `.envrc` makes the repository pins active in local shells. It:
+
+- resolves Cargo, Clippy, and rustfmt from `rust-toolchain.toml` through rustup;
+- selects the Lean toolchain from `lean/lean-toolchain` through elan;
+- rejects Node.js or npm versions that differ from `.node-version` and
+  `.npm-version`;
+- adds project binaries, the downloaded mdBook binary, and frontend tools to
+  `PATH`; and
+- loads optional `.env`, `.env.local`, and `.envrc.local` files without
+  installing tools or modifying Git hooks.
+
+Install the pinned Rust toolchain and activate the environment once:
+
+```bash
+rustup toolchain install 1.98.0 --profile minimal \
+  --component cargo,clippy,rustfmt
+direnv allow
+```
+
+After changing a local override, run `direnv reload`. Keep secrets in an ignored
+local file, not in `.envrc`.
 
 ## Build From Source
 
@@ -135,7 +161,7 @@ Workflows derive the CLI, archive, and container version from it. Helm
 Run the complete publication decision from a clean checkout:
 
 ```bash
-PATH="$(dirname "$(rustup which --toolchain 1.88.0 rustc)"):$PATH" \
+PATH="$(dirname "$(rustup which --toolchain 1.98.0 rustc)"):$PATH" \
   make release-gate
 ```
 

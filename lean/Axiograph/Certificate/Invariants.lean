@@ -344,12 +344,14 @@ theorem verifyPathEquivProofV2_sound
           rcases verifyRewriteDerivationProofV2_sound
               (Axiograph.PathEquivalence.leftRewriteProof proof)
               leftResult hLeftReplay
-              (by simpa [Axiograph.PathEquivalence.leftRewriteProof] using hTypedLeft) with
+              (by
+                simpa [Axiograph.PathEquivalence.PathEquivProofV2.leftRewriteProof] using hTypedLeft) with
             ⟨typedNormalizedLeft, hTypedNormalizedLeft, hDenoteLeft⟩
           rcases verifyRewriteDerivationProofV2_sound
               (Axiograph.PathEquivalence.rightRewriteProof proof)
               rightResult hRightReplay
-              (by simpa [Axiograph.PathEquivalence.rightRewriteProof] using hTypedRight) with
+              (by
+                simpa [Axiograph.PathEquivalence.PathEquivProofV2.rightRewriteProof] using hTypedRight) with
             ⟨typedNormalizedRight, hTypedNormalizedRight, hDenoteRight⟩
           have hNormalizedType : typedNormalizedLeft = typedNormalizedRight := by
             have hOk :

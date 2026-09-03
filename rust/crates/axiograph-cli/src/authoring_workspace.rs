@@ -33,8 +33,8 @@ use lsp_types::{
     TextDocumentSyncCapability, TextDocumentSyncKind, Uri, WorkDoneProgressOptions,
 };
 use rmcp::model::{
-    CallToolRequestParams, CallToolResult, ErrorData, Implementation, JsonObject, ListToolsResult,
-    PaginatedRequestParams, ServerCapabilities, ServerInfo, Tool, ToolAnnotations,
+    CallToolRequestParams, CallToolResponse, CallToolResult, ErrorData, Implementation, JsonObject,
+    ListToolsResult, PaginatedRequestParams, ServerCapabilities, ServerInfo, Tool, ToolAnnotations,
 };
 use rmcp::service::RequestContext;
 use rmcp::{RoleServer, ServiceExt};
@@ -1664,11 +1664,12 @@ impl rmcp::handler::server::ServerHandler for AuthoringWorkspaceRmcpServer {
         &self,
         request: CallToolRequestParams,
         _context: RequestContext<RoleServer>,
-    ) -> std::result::Result<CallToolResult, ErrorData> {
+    ) -> std::result::Result<CallToolResponse, ErrorData> {
         if request.name.as_ref() != AUTHORING_WORKSPACE_TOOL_NAME {
             return Ok(CallToolResult::structured_error(json!({
                 "error": format!("unknown authoring tool `{}`", request.name)
-            })));
+            }))
+            .into());
         }
         let request = Value::Object(request.arguments.unwrap_or_default());
         let request: AuthoringWorkspaceRequestV1 = match serde_json::from_value(request) {
@@ -1676,7 +1677,8 @@ impl rmcp::handler::server::ServerHandler for AuthoringWorkspaceRmcpServer {
             Err(error) => {
                 return Ok(CallToolResult::structured_error(json!({
                     "error": format!("invalid authoring request: {error}")
-                })))
+                }))
+                .into())
             }
         };
         match self.service.execute(request) {
@@ -1684,10 +1686,12 @@ impl rmcp::handler::server::ServerHandler for AuthoringWorkspaceRmcpServer {
                 serde_json::to_value(report).unwrap_or_else(
                     |error| json!({"error": format!("serialize authoring report: {error}")}),
                 ),
-            )),
+            )
+            .into()),
             Err(error) => Ok(CallToolResult::structured_error(json!({
                 "error": error.to_string()
-            }))),
+            }))
+            .into()),
         }
     }
 }
@@ -2950,7 +2954,7 @@ instance I of S:
         let Message::Response(action_response) = action_response else {
             panic!("expected code-action response")
         };
-        let actions = action_response.result.expect("code-action result");
+        let actions = action_response.response_result.expect("code-action result");
         let request_value = actions[0]["command"]["arguments"][0].clone();
         assert_eq!(
             request_value["version"],
@@ -2971,7 +2975,7 @@ instance I of S:
         let Message::Response(execute_response) = execute_response else {
             panic!("expected execute-command response")
         };
-        let report = execute_response.result.expect("authoring report");
+        let report = execute_response.response_result.expect("authoring report");
         assert_eq!(
             report["version"],
             json!(AUTHORING_WORKSPACE_REPORT_VERSION_V1)

@@ -89,7 +89,7 @@ def validWireFor (domain : Domain) (value : String) : Bool :=
   let wirePrefix := s!"axi:{domain.asString}:v2:sha256:"
   if !value.startsWith wirePrefix then false
   else
-    let suffix := (value.drop wirePrefix.length).toUTF8
+    let suffix := (value.drop wirePrefix.length).toString.toUTF8
     suffix.size == 64 && suffix.foldl (init := true) (fun ok byte => ok && isLowerHexByte byte)
 
 private def parityExpected : Array String := #[

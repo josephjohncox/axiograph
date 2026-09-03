@@ -1,10 +1,10 @@
-# syntax=docker/dockerfile:1@sha256:87999aa3d42bdc6bea60565083ee17e86d1f3339802f543c0d03998580f9cb89
+# syntax=docker/dockerfile:1@sha256:ecfaec9ed6d810b56388c508f4121597bfbba70d41a6dfeee4d8cad5f295fc32
 
 # Rust remains the runtime; Lean builds the trusted certificate checker shipped
 # in the same image. Override the Rust image only with an explicitly tested
 # toolchain.
-ARG RUST_IMAGE=rust:1.88.0-slim-bookworm@sha256:38bc5a86d998772d4aec2348656ed21438d20fcdce2795b56ca434cf21430d89
-ARG ELAN_COMMIT=464c9d28395000a2a0128e07081e4956d50eced2
+ARG RUST_IMAGE=rust:1.98.0-slim-bookworm@sha256:1469a27c125cb5a3aebfa4f4e4665d935b02fb72cc093b2c974b3d740e43f157
+ARG ELAN_COMMIT=227caca133724d5516bee25c2aeb3e609478f2d8
 ARG ELAN_INIT_SHA256=a620ff1641616222c8d37c54845492004bb84d6877cdbc944dd65c1aa685bf53
 
 FROM ${RUST_IMAGE} AS builder
@@ -69,7 +69,7 @@ RUN cargo test -p axiograph-store --test materialization \
         > /tmp/axiograph-accepted-plane-smoke.json \
     && cargo build -p axiograph-cli --release --locked
 
-FROM debian:bookworm-slim@sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818
+FROM debian:bookworm-slim@sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171
 
 # hadolint ignore=DL3008
 RUN apt-get update \

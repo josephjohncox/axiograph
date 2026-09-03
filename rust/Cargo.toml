@@ -36,7 +36,7 @@ members = [
 [workspace.package]
 version = "20260829.0.3"
 edition = "2021"
-rust-version = "1.88"
+rust-version = "1.93"
 authors = ["Axiograph Team"]
 license = "BSD-3-Clause"
 repository = "https://github.com/josephjohncox/axiograph"
@@ -58,48 +58,48 @@ loom = "0.7.2"
 
 # Parsing
 regex = "1.10"
-nom = "7.1"
+nom = "8.0"
 
 # CLI
 clap = { version = "4.6", features = ["derive"] }
-colored = "2.1"
+colored = "3.1"
 
 # Ingestion
 sophia = "0.10" # RDF parsing toolkit (Turtle/N-Triples/N-Quads/TriG)
-# oxrdfxml 0.2.3 still requires vulnerable quick-xml 0.37. Pin the maintained
-# upstream quick-xml 0.41 migration until the next oxrdfxml release.
-oxrdf = { git = "https://github.com/oxigraph/oxigraph.git", rev = "e115a6a8dd9213fdf89a20cb72494ab333878218", features = [
+# oxrdfxml 0.2.4 still requires vulnerable quick-xml 0.37. Pin the maintained
+# upstream quick-xml 0.42 migration until the next patched oxrdfxml release.
+oxrdf = { git = "https://github.com/oxigraph/oxigraph.git", rev = "786d00170224cb5589b03dc5283b1c25df8c0357", features = [
   "rdf-12",
 ] }
-oxrdfxml = { git = "https://github.com/oxigraph/oxigraph.git", rev = "e115a6a8dd9213fdf89a20cb72494ab333878218", features = [
+oxrdfxml = { git = "https://github.com/oxigraph/oxigraph.git", rev = "786d00170224cb5589b03dc5283b1c25df8c0357", features = [
   "rdf-12",
 ] }
-quick-xml = "0.41" # RDF/XML structural preflight and parser dependency
-sqlparser = "0.43" # SQL parsing
+quick-xml = "0.42" # RDF/XML structural preflight and parser dependency
+sqlparser = "0.62" # SQL parsing
 pdf-extract = "0.12" # PDF text extraction
 walkdir = "2.4"
 
 # Async (for gRPC/network)
 tokio = { version = "1.52", features = ["full"] }
 async-trait = "0.1"
-rmcp = { version = "1.5.0", default-features = false, features = [
+rmcp = { version = "3.2.0", default-features = false, features = [
   "server",
   "macros",
   "schemars",
   "transport-io",
 ] }
-lsp-server = "0.7.9"
+lsp-server = "0.10.0"
 lsp-types = "0.97"
 
 # UUID and time
 uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
-sha2 = "0.10"
+sha2 = "0.11"
+hex = "0.4"
 tempfile = "3"
-process-wrap = { version = "9.1.0", default-features = false }
+process-wrap = { version = "10.0.0", default-features = false }
 rustix = { version = "1.1.4", default-features = false }
-# 0.40.x uses `cfg_select!` in libsqlite3-sys and does not compile on the pinned Rust 1.88 gate.
-rusqlite = { version = "0.39.0", features = [
+rusqlite = { version = "0.40.2", features = [
   "backup",
   "bundled",
   "limits",
@@ -113,16 +113,16 @@ pprof = { version = "0.15", default-features = false, features = [
 ] }
 inferno = { version = "0.12.8", default-features = false }
 prost-reflect = "0.16.3"
-signal-hook = "0.3"
+signal-hook = "0.4"
 
 # PathDB: Efficient binary storage
-roaring = { version = "0.10", features = ["serde"] } # Roaring bitmaps
+roaring = { version = "0.11", features = ["serde"] } # Roaring bitmaps
 ahash = { version = "0.8", features = ["serde"] }    # Fast hashing
 dashmap = "6"                                        # Concurrent hash map
 parking_lot = "0.12"                                 # Better mutexes
 
 # HTTP client for LLM APIs
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { version = "0.13", features = ["json"] }
 
 # Web ingestion / scraping (tooling, untrusted boundary)
 url = "2.5"

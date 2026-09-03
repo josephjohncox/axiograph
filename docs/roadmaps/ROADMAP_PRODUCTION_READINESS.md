@@ -85,7 +85,7 @@ Last updated: 2026-04-28.
 
 ### 0.4 Release/build audit (repository gate implemented, release open)
 
-- Implemented: `make release-gate` pins rustc 1.88.0 and Node.js 24.19.0 and
+- Implemented: `make release-gate` pins rustc 1.98.0 and Node.js 26.8.1 and
   combines catalog, formatting, no-unsafe, no-panic, full locked workspace,
   CLI feature-matrix, locked frontend advisory/build checks, zero-ignore
   RustSec audits, deep verification, identity/certificate/lineage/merge/storage,
@@ -278,7 +278,7 @@ Last updated: 2026-04-28.
     asserts that the configured maximum is never exceeded and all acquired
     permits are released.
 - [x] Gate: release-visible frontend dependencies are audited and reproducible.
-  - `make verify-viz` requires Node.js 24.19.0, installs only the npm lock with
+  - `make verify-viz` requires Node.js 26.8.1, installs only the npm lock with
     lifecycle scripts disabled, rejects moderate-or-higher advisories, and
     builds Vite 8.2.1. The vulnerable Rollup dependency is no longer present.
 
