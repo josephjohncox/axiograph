@@ -231,32 +231,30 @@ fn examples_readme_keeps_storage_debug_roundtrips_out_of_teaching_path() {
 }
 
 #[test]
-fn viz_explorer_uses_query_certificate_policy_not_boolean_aliases() {
+fn viz_explorer_does_not_offer_unsupported_http_certificate_or_llm_requests() {
     let repo_root = repo_root();
-    let source_path = repo_root.join("frontend/viz/src/tabs/llm.ts");
-    let text = fs::read_to_string(&source_path).expect("read viz explorer LLM source");
-
-    assert!(
-        text.contains("body.query_certificate_policy"),
-        "viz explorer should emit the shared query certificate policy"
-    );
-    for policy in ["emit", "verify", "require_verified"] {
-        assert!(
-            text.contains(&format!("query_certificate_policy = \"{policy}\"")),
-            "viz explorer should map its controls to canonical policy `{policy}`"
-        );
-    }
-    for removed_alias in [
+    let text = fs::read_to_string(repo_root.join("frontend/viz/src/tabs/llm.ts"))
+        .expect("read viz explorer LLM source");
+    assert!(text.contains("UNSUPPORTED") && text.contains("control.disabled = true"));
+    for unsupported in [
+        "fetch(",
+        "query_certificate_policy",
         "body.certify_queries",
         "body.verify_queries",
         "body.require_query_certs",
         "body.require_verified_queries",
     ] {
         assert!(
-            !text.contains(removed_alias),
-            "viz explorer should not emit query-certificate boolean alias `{removed_alias}`"
+            !text.contains(unsupported),
+            "read-only browser must not issue unsupported `{unsupported}`"
         );
     }
+    let query = fs::read_to_string(repo_root.join("frontend/viz/src/tabs/query.ts"))
+        .expect("read finite query tab");
+    assert!(query.contains("ReadOnlyClient") && query.contains("button.disabled = true"));
+    assert!(!query.contains("fetch(") && !query.contains("highlightFromQueryResponse"));
+    // Dynamic production-module and genuine HTTP/client checks live in the
+    // frontend suite and the explicitly invoked read_only_client_workflow gate.
 }
 
 #[test]
@@ -1352,10 +1350,11 @@ fn analyze_network_and_quality_regression() {
             .expect("parse network report json");
     assert_eq!(net_json["version"], "network_analysis_v1");
 
-    let status = Command::new(&bin)
-        .current_dir(&run_dir)
-        .arg("--cpu-profile")
-        .arg("off")
+    let mut quality_command = Command::new(&bin);
+    quality_command.current_dir(&run_dir);
+    #[cfg(feature = "profiling")]
+    quality_command.arg("--cpu-profile").arg("off");
+    let status = quality_command
         .arg("check")
         .arg("quality")
         .arg(&input)

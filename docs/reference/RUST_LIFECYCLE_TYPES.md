@@ -50,6 +50,18 @@ Current implemented slice (2026-04):
   `PreparedQueryExplorationV1`,
   `AxqlTypedHoleV1`,
   `AxqlRefinementCandidateV1`.
+- `axiograph_query::query_ir` publicly owns `QueryIrV1`, `CompiledFiniteQuery`,
+  `QueryAnswer<Validated>`, `QueryAnswer<CertificateEmitted>`, and
+  `QueryAnswer<LeanVerified>`. CQ generation/evaluation and shared refinement
+  identities have the same library owner; CLI/MCP/HTTP/LSP consume it.
+  `into_lean_verified` requires the opaque, Serialize-only
+  `axiograph_query::verifier_bridge::VerifierReceiptV2`; deserialized receipt
+  metadata cannot construct this handle. The bridge checks the configured
+  checker invocation; the transition separately rejects checked rejections and
+  source/certificate/query/answer mismatches. Serialized receipt fields are
+  unchanged. `CertVerifyConfig` is trusted host policy, not request data; an
+  arbitrary approved binary is not thereby established to be Lean. See
+  [Security Boundaries](SECURITY_BOUNDARIES.md).
 - The broader `ProposalSet` / `Snapshot` / `WorldState` / `Query` / `Answer` /
   `FactId` / `TypedFact` surface remains target design.
 

@@ -1119,8 +1119,11 @@ instance I of S:
         };
         server.cert_verify.verifier_bin = Some(verifier.clone());
         server.cert_verify.timeout = Some(Duration::from_secs(10));
-        server.cert_verify.approved_checker_sha256 =
-            Some(crate::verifier_bridge::sha256_file(&verifier)?);
+        server.cert_verify.approved_checker_sha256 = Some(axiograph_security::sha256_file_bounded(
+            &verifier,
+            256 * 1024 * 1024,
+            "test checker",
+        )?);
         server.cert_verify.approved_checker_build_id = Some("axiograph-verify-main-v3".to_string());
 
         let response = server.call_axql_run(json!({

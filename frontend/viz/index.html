@@ -230,9 +230,10 @@ a.link:hover { text-decoration: underline; }
 </div>
 
 <div id="tab_query" class="filters tabpanel">
-  <div class="row"><strong style="font-size:13px;">Query</strong> <span class="muted">(AxQL)</span></div>
+  <p class="muted">Structured finite-query input; Rust compiles and typechecks it. Local graph/context selection is not sent. No cross-image highlighting or HTTP certificates.</p>
+  <div class="row"><strong style="font-size:13px;">Query</strong> <span class="muted">(QueryIrV1 JSON)</span></div>
   <div class="row" style="margin-top:8px;">
-    <textarea id="axql_query" rows="4" style="width:100%; padding:8px 10px; font-size:12px; border:1px solid #ddd; border-radius:8px; resize:vertical; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;" placeholder="select ?x where ..."></textarea>
+    <textarea id="axql_query" rows="4" style="width:100%; padding:8px 10px; font-size:12px; border:1px solid #ddd; border-radius:8px; resize:vertical; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;" placeholder="QueryIrV1 JSON"></textarea>
   </div>
   <div class="row" style="margin-top:8px;">
     <button id="axql_run" class="btn">run</button>
@@ -240,8 +241,8 @@ a.link:hover { text-decoration: underline; }
     <button id="axql_verify" class="btn">certify+verify</button>
     <span id="axql_status" class="muted"></span>
   </div>
-  <details style="margin-top:8px;"><summary class="muted">query output</summary><pre id="axql_output" style="white-space:pre-wrap; max-height:240px; overflow:auto; margin:8px 0 0 0;"></pre></details>
-  <details style="margin-top:8px;"><summary class="muted">certificate</summary><pre id="cert_output" style="white-space:pre-wrap; max-height:240px; overflow:auto; margin:8px 0 0 0;"></pre></details>
+  <details style="margin-top:8px;"><summary class="muted">result and full runtime trust (IDs local to server image)</summary><pre id="axql_output" style="white-space:pre-wrap; max-height:240px; overflow:auto; margin:8px 0 0 0;"></pre></details>
+  <details style="margin-top:8px;"><summary class="muted">execution trust / certificate non-claims</summary><pre id="cert_output" style="white-space:pre-wrap; max-height:240px; overflow:auto; margin:8px 0 0 0;"></pre></details>
 </div>
 
 <div id="tab_llm" class="filters tabpanel">

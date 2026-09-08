@@ -23,7 +23,7 @@
   "notes": [
     "Replace `.` with the workspace root and `--axi` with the default canonical root for `.cq` diagnostics.",
     "The canonical generated contract is `axiograph authoring integration-manifest --workspace <root>`.",
-    "LSP diagnostics and executeCommand results are projections of authoring_workspace_report_v1.",
+    "LSP diagnostics derive from the full canonical report. executeCommand defaults to compact authoring_workspace_response_v1; presentation.detail=full returns authoring_workspace_report_v1. The same typed sections and anchor-bound pagination apply.",
     "The adapter is read-only and cannot mutate accepted ontology state."
   ]
 }

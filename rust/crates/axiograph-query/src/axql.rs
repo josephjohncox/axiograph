@@ -64,7 +64,7 @@ pub(crate) const MAX_QUERY_ATOMS: usize = 256;
 pub(crate) const MAX_QUERY_VARIABLES: usize = 64;
 pub(crate) const MAX_QUERY_SELECT_VARS: usize = 64;
 pub(crate) const MAX_QUERY_CONTEXTS: usize = 32;
-pub(crate) const MAX_QUERY_RESULT_ROWS: usize = 200;
+pub const MAX_QUERY_RESULT_ROWS: usize = 200;
 pub(crate) const MAX_QUERY_HOPS: u32 = 64;
 pub(crate) const MAX_QUERY_REGEX_NODES: usize = 256;
 pub(crate) const MAX_QUERY_NESTING_DEPTH: usize = 32;
@@ -985,12 +985,12 @@ pub fn axql_query_ir_digest_v1(query: &AxqlQuery) -> String {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub(crate) struct AxqlQueryCacheKey {
+pub struct AxqlQueryCacheKey {
     snapshot: String,
     query_ir: String,
 }
 
-pub(crate) struct AxqlPreparedQueryCache {
+pub struct AxqlPreparedQueryCache {
     entries: HashMap<AxqlQueryCacheKey, CompiledFiniteQueryPlan>,
     lru: std::collections::VecDeque<AxqlQueryCacheKey>,
     max_entries: usize,
@@ -999,7 +999,7 @@ pub(crate) struct AxqlPreparedQueryCache {
 impl AxqlPreparedQueryCache {
     const DEFAULT_MAX_ENTRIES: usize = 32;
 
-    pub(crate) fn new(max_entries: usize) -> Self {
+    pub fn new(max_entries: usize) -> Self {
         Self {
             entries: HashMap::new(),
             lru: std::collections::VecDeque::new(),
@@ -1007,7 +1007,7 @@ impl AxqlPreparedQueryCache {
         }
     }
 
-    pub(crate) fn clear(&mut self) {
+    pub fn clear(&mut self) {
         self.entries.clear();
         self.lru.clear();
     }
@@ -1053,7 +1053,7 @@ impl Default for AxqlPreparedQueryCache {
     }
 }
 
-pub(crate) fn axql_query_cache_key(snapshot_key: &str, query: &AxqlQuery) -> AxqlQueryCacheKey {
+pub fn axql_query_cache_key(snapshot_key: &str, query: &AxqlQuery) -> AxqlQueryCacheKey {
     AxqlQueryCacheKey {
         snapshot: snapshot_key.to_string(),
         query_ir: axql_query_ir_digest_v1(query),

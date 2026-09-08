@@ -52,6 +52,9 @@ use axiograph_pathdb::{
     RuntimeTheoryClosureTierV1,
 };
 
+mod projection;
+pub(crate) use projection::{AuthoringDetailV1, AuthoringPresentationV1, AuthoringSectionV1};
+
 pub(crate) const AUTHORING_WORKSPACE_REQUEST_VERSION_V1: &str = "authoring_workspace_request_v1";
 pub(crate) const AUTHORING_WORKSPACE_REPORT_VERSION_V1: &str = "authoring_workspace_report_v1";
 pub(crate) const AUTHORING_WORKSPACE_TOOL_NAME: &str = "axiograph_authoring_workspace";
@@ -79,6 +82,8 @@ pub(crate) enum AuthoringWorkspaceOperationV1 {
 #[serde(deny_unknown_fields)]
 pub(crate) struct AuthoringWorkspaceRequestV1 {
     pub version: String,
+    #[serde(default)]
+    pub presentation: AuthoringPresentationV1,
     #[serde(default)]
     pub operation: AuthoringWorkspaceOperationV1,
     /// Workspace-relative canonical `.axi` root module.
@@ -111,6 +116,7 @@ pub(crate) struct AuthoringWorkspaceRequestV1 {
 
 impl AuthoringWorkspaceRequestV1 {
     fn validate(&self) -> Result<()> {
+        self.presentation.validate()?;
         if self.version != AUTHORING_WORKSPACE_REQUEST_VERSION_V1 {
             return Err(anyhow!(
                 "unsupported authoring request version `{}` (expected `{}`)",
@@ -170,6 +176,9 @@ pub(crate) struct AuthoringDiagnosticV1 {
     pub line: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repair_hint: Option<String>,
+    /// Absent means explicitly unlocated; legacy path/line alone is not token precision.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub location: Option<crate::axi_input::diagnostics::SourceLocationV1>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -395,6 +404,19 @@ struct CompiledWorkspaceSource {
     meta: Option<MetaPlaneIndex>,
 }
 
+#[derive(Debug)]
+struct WorkspaceQueryProjectionError {
+    source: AuthoringSourceAnchorV1,
+    cause: anyhow::Error,
+}
+
+impl std::fmt::Display for WorkspaceQueryProjectionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self.cause, f)
+    }
+}
+impl std::error::Error for WorkspaceQueryProjectionError {}
+
 #[derive(Debug, Clone)]
 pub(crate) struct AuthoringWorkspaceService {
     root: PathBuf,
@@ -425,23 +447,52 @@ impl AuthoringWorkspaceService {
         &self,
         request: AuthoringWorkspaceRequestV1,
     ) -> Result<AuthoringWorkspaceReportV1> {
+        self.execute_bound(request, &mut Vec::new())
+    }
+
+    fn execute_bound(
+        &self,
+        request: AuthoringWorkspaceRequestV1,
+        input_anchors: &mut Vec<String>,
+    ) -> Result<AuthoringWorkspaceReportV1> {
         request.validate()?;
         let candidate_path = self.resolve_existing_file(&request.axi_path, "axi_path")?;
         let candidate_text = self.read_or_override(&candidate_path, request.axi_text.as_deref())?;
+        input_anchors.push(projection::digest(candidate_text.as_bytes()));
 
         let mut report = empty_report(self, request.operation);
         let candidate = match self.compile_source(candidate_path, candidate_text) {
             Ok(candidate) => candidate,
             Err(error) => {
+                let projection = error.downcast_ref::<WorkspaceQueryProjectionError>();
+                if let Some(projection) = projection {
+                    report.source = Some(projection.source.clone());
+                    input_anchors.push(serde_json::to_string(&report.source)?);
+                    report.validation.canonical_axi_valid = true;
+                    report.validation.compiled_kernel_ir_valid = true;
+                }
+                let location = error
+                    .downcast_ref::<crate::axi_input::diagnostics::CanonicalSourceDiagnostic>()
+                    .and_then(|diagnostic| diagnostic.location.clone());
                 report.diagnostics.push(AuthoringDiagnosticV1 {
                     severity: AuthoringDiagnosticSeverityV1::Error,
-                    code: "authoring_canonical_compile_failed".to_string(),
+                    code: projection.map_or("authoring_canonical_compile_failed", |p| {
+                        if p.cause.is::<axiograph_pathdb::axi_module_import::UnsupportedQueryProjection>() {
+                            "authoring_query_projection_unsupported"
+                        } else {
+                            "authoring_query_projection_failed"
+                        }
+                    }).to_string(),
                     message: error.to_string(),
-                    path: Some(request.axi_path),
-                    line: line_from_error(&error.to_string()),
+                    path: location.as_ref().map(|location| location.path.clone()),
+                    line: location.as_ref().map(|location| location.start.line),
+                    location,
                     repair_hint: Some(
-                        "repair the canonical `.axi` module/import closure before requesting typed authoring operations"
-                            .to_string(),
+                        if projection.is_some() {
+                            "use a representable query projection (unique schema/theory/instance labels and supported execution types); canonical validity does not imply query projection support".to_string()
+                        } else {
+                            "repair the canonical `.axi` module/import closure before requesting typed authoring operations".to_string()
+                        },
                     ),
                 });
                 report.promotion = promotion_review(&report, false, None);
@@ -451,6 +502,7 @@ impl AuthoringWorkspaceService {
         };
 
         report.source = Some(source_anchor(self, &candidate)?);
+        input_anchors.push(serde_json::to_string(&report.source)?);
         report.validation.canonical_axi_valid = true;
         report.validation.compiled_kernel_ir_valid = true;
         match candidate
@@ -463,6 +515,7 @@ impl AuthoringWorkspaceService {
                 if !receipt.passed {
                     report.diagnostics.push(AuthoringDiagnosticV1 {
                         severity: AuthoringDiagnosticSeverityV1::Error,
+                        location: None,
                         code: "authoring_finite_theory_residual".to_string(),
                         message: format!(
                             "canonical finite-theory gate has {} residual obligation(s)",
@@ -480,6 +533,7 @@ impl AuthoringWorkspaceService {
             }
             Err(error) => report.diagnostics.push(AuthoringDiagnosticV1 {
                 severity: AuthoringDiagnosticSeverityV1::Error,
+                location: None,
                 code: "authoring_finite_theory_replay_failed".to_string(),
                 message: error.to_string(),
                 path: Some(request.axi_path.clone()),
@@ -522,6 +576,7 @@ impl AuthoringWorkspaceService {
                             } else {
                                 AuthoringDiagnosticSeverityV1::Warning
                             },
+                            location: None,
                             code: "authoring_runtime_theory_blocked".to_string(),
                             message: format!(
                                 "runtime finite-fragment theory review has {} blocker(s), {} review-only obligation(s), {} residual obligation(s), and unresolved ids [{}]",
@@ -612,6 +667,7 @@ impl AuthoringWorkspaceService {
                                     AuthoringDiagnosticSeverityV1::Information
                                 }
                             },
+                            location: None,
                             code: match judgment.status {
                                 axiograph_pathdb::RuntimeTheoryCheckStatusV1::Checked => {
                                     "authoring_runtime_theory_checked"
@@ -654,6 +710,7 @@ impl AuthoringWorkspaceService {
                     report.validation.runtime_theory_gate = AuthoringGateDecisionV1::Blocked;
                     report.diagnostics.push(AuthoringDiagnosticV1 {
                         severity: AuthoringDiagnosticSeverityV1::Error,
+                        location: None,
                         code: "authoring_runtime_theory_check_failed".to_string(),
                         message: error.to_string(),
                         path: Some(request.axi_path.clone()),
@@ -672,23 +729,41 @@ impl AuthoringWorkspaceService {
             let text = self.read_or_override(&path, request.baseline_axi_text.as_deref())?;
             match self.compile_source(path, text) {
                 Ok(baseline) => {
+                    input_anchors.push(serde_json::to_string(&source_anchor(self, &baseline)?)?);
                     report
                         .evolution_previews
                         .push(AuthoringEvolutionPreviewV1::FiniteKernel(
                             finite_kernel_evolution_preview(&baseline, &candidate)?,
                         ))
                 }
-                Err(error) => report.diagnostics.push(AuthoringDiagnosticV1 {
-                    severity: AuthoringDiagnosticSeverityV1::Error,
-                    code: "authoring_baseline_compile_failed".to_string(),
-                    message: error.to_string(),
-                    path: Some(baseline_path.to_string()),
-                    line: line_from_error(&error.to_string()),
-                    repair_hint: Some(
-                        "repair the baseline module before requesting an evolution preview"
-                            .to_string(),
-                    ),
-                }),
+                Err(error) => {
+                    let projection = error.downcast_ref::<WorkspaceQueryProjectionError>();
+                    if let Some(projection) = projection {
+                        input_anchors.push(serde_json::to_string(&projection.source)?);
+                    }
+                    let location = error
+                        .downcast_ref::<crate::axi_input::diagnostics::CanonicalSourceDiagnostic>()
+                        .and_then(|diagnostic| diagnostic.location.clone());
+                    report.diagnostics.push(AuthoringDiagnosticV1 {
+                        severity: AuthoringDiagnosticSeverityV1::Error,
+                        code: projection.map_or("authoring_baseline_compile_failed", |p| {
+                            if p.cause.is::<axiograph_pathdb::axi_module_import::UnsupportedQueryProjection>() {
+                                "authoring_baseline_query_projection_unsupported"
+                            } else {
+                                "authoring_baseline_query_projection_failed"
+                            }
+                        }).to_string(),
+                        message: error.to_string(),
+                        path: location.as_ref().map(|location| location.path.clone()),
+                        line: location.as_ref().map(|location| location.start.line),
+                        location,
+                        repair_hint: Some(if projection.is_some() {
+                            "use a baseline representable by the named query projection before requesting an evolution preview".to_string()
+                        } else {
+                            "repair the baseline module before requesting an evolution preview".to_string()
+                        }),
+                    });
+                }
             }
         } else if request.baseline_axi_text.is_some() {
             return Err(anyhow!(
@@ -705,7 +780,7 @@ impl AuthoringWorkspaceService {
         }
 
         if request.cq_path.is_some() || request.cq_text.is_some() {
-            self.check_competency_questions(&candidate, &request, &mut report)?;
+            self.check_competency_questions(&candidate, &request, &mut report, input_anchors)?;
         }
 
         report.ok = !report
@@ -777,20 +852,19 @@ impl AuthoringWorkspaceService {
             std::slice::from_ref(&self.root),
         )?;
         let sources = package.ordered_sources();
-        let kernel = axiograph_pathdb::derive_runtime_package_index(package.snapshot(), &sources)
-            .map_err(|error| anyhow!("derive runtime package index: {error}"))?;
-        if kernel.canonical_snapshot().is_none() {
-            return Err(anyhow!(
-                "runtime package index lost its canonical compiled-snapshot handle"
-            ));
-        }
-        let mut db = PathDB::new();
-        for source in &sources {
-            let module = crate::axi_input::require_canonical_axi_text(source.exact_text())?;
-            module.import_into_pathdb(&mut db)?;
-        }
-        db.build_indexes();
-        let meta = MetaPlaneIndex::from_db(&db).ok();
+        let source = package_source_anchor(self, &path, &text, &package)?;
+        let derived = axiograph_pathdb::axi_module_import::derive_package_query_index(
+            package.snapshot(),
+            &sources,
+        )
+        .map_err(|cause| {
+            let mut source = source;
+            source.runtime_ir_ref_count = 0;
+            WorkspaceQueryProjectionError { source, cause }
+        })?;
+        let kernel = derived.kernel;
+        let db = derived.db;
+        let meta = Some(derived.meta);
         Ok(CompiledWorkspaceSource {
             path,
             text,
@@ -813,6 +887,7 @@ impl AuthoringWorkspaceService {
             Err(error) => {
                 report.diagnostics.push(AuthoringDiagnosticV1 {
                     severity: AuthoringDiagnosticSeverityV1::Error,
+                    location: None,
                     code: "authoring_schema_selection_failed".to_string(),
                     message: error.to_string(),
                     path: Some(request.axi_path.clone()),
@@ -846,6 +921,7 @@ impl AuthoringWorkspaceService {
                     Err(error) => {
                         report.diagnostics.push(AuthoringDiagnosticV1 {
                             severity: AuthoringDiagnosticSeverityV1::Error,
+                            location: None,
                             code: "authoring_olog_repair_failed".to_string(),
                             message: error.to_string(),
                             path: Some(request.axi_path.clone()),
@@ -871,6 +947,7 @@ impl AuthoringWorkspaceService {
                         AuthoringDiagnosticSeverityV1::Warning
                     }
                 },
+                location: None,
                 code: diagnostic.code.clone(),
                 message: diagnostic.message.clone(),
                 path: Some(request.axi_path.clone()),
@@ -907,6 +984,7 @@ impl AuthoringWorkspaceService {
             Err(error) => {
                 report.diagnostics.push(AuthoringDiagnosticV1 {
                     severity: AuthoringDiagnosticSeverityV1::Error,
+                    location: None,
                     code: "authoring_query_prepare_failed".to_string(),
                     message: error.to_string(),
                     path: Some(request.axi_path.clone()),
@@ -942,6 +1020,7 @@ impl AuthoringWorkspaceService {
                 }
                 Err(error) => report.diagnostics.push(AuthoringDiagnosticV1 {
                     severity: AuthoringDiagnosticSeverityV1::Error,
+                    location: None,
                     code: "authoring_query_finite_theory_blocked".to_string(),
                     message: error.to_string(),
                     path: Some(request.axi_path.clone()),
@@ -954,6 +1033,7 @@ impl AuthoringWorkspaceService {
             },
             Err(error) => report.diagnostics.push(AuthoringDiagnosticV1 {
                 severity: AuthoringDiagnosticSeverityV1::Error,
+                location: None,
                 code: "authoring_query_metadata_failed".to_string(),
                 message: error.to_string(),
                 path: Some(request.axi_path.clone()),
@@ -980,6 +1060,7 @@ impl AuthoringWorkspaceService {
             }
             Err(error) => report.diagnostics.push(AuthoringDiagnosticV1 {
                 severity: AuthoringDiagnosticSeverityV1::Error,
+                location: None,
                 code: "authoring_query_explanation_failed".to_string(),
                 message: error.to_string(),
                 path: Some(request.axi_path.clone()),
@@ -996,6 +1077,7 @@ impl AuthoringWorkspaceService {
                 Ok(applied) => report.applied_query_repair = Some(applied),
                 Err(error) => report.diagnostics.push(AuthoringDiagnosticV1 {
                     severity: AuthoringDiagnosticSeverityV1::Error,
+                    location: None,
                     code: "authoring_query_repair_failed".to_string(),
                     message: error.to_string(),
                     path: Some(request.axi_path.clone()),
@@ -1014,6 +1096,7 @@ impl AuthoringWorkspaceService {
         candidate: &CompiledWorkspaceSource,
         request: &AuthoringWorkspaceRequestV1,
         report: &mut AuthoringWorkspaceReportV1,
+        input_anchors: &mut Vec<String>,
     ) -> Result<()> {
         let (cq_text, cq_path) = match (request.cq_text.as_deref(), request.cq_path.as_deref()) {
             (Some(text), path) => (text.to_string(), path.map(str::to_string)),
@@ -1026,12 +1109,19 @@ impl AuthoringWorkspaceService {
             }
             (None, None) => return Ok(()),
         };
+        if cq_text.len() as u64 > MAX_AUTHORING_SOURCE_BYTES {
+            return Err(anyhow!(
+                "inline competency source exceeds authoring source limit"
+            ));
+        }
+        input_anchors.push(projection::digest(cq_text.as_bytes()));
         let questions = match crate::predictive_proposals::parse_competency_question_text(&cq_text)
         {
             Ok(questions) => questions,
             Err(error) => {
                 report.diagnostics.push(AuthoringDiagnosticV1 {
                     severity: AuthoringDiagnosticSeverityV1::Error,
+                    location: None,
                     code: "authoring_cq_parse_failed".to_string(),
                     message: error.to_string(),
                     path: cq_path,
@@ -1062,6 +1152,7 @@ impl AuthoringWorkspaceService {
         for name in &unresolved {
             report.diagnostics.push(AuthoringDiagnosticV1 {
                 severity: AuthoringDiagnosticSeverityV1::Error,
+                location: None,
                 code: "authoring_cq_unresolved".to_string(),
                 message: format!(
                     "competency question `{name}` remains an unresolved authoring obligation"
@@ -1090,6 +1181,7 @@ impl AuthoringWorkspaceService {
             Err(error) => {
                 report.diagnostics.push(AuthoringDiagnosticV1 {
                     severity: AuthoringDiagnosticSeverityV1::Error,
+                    location: None,
                     code: "authoring_cq_evaluation_failed".to_string(),
                     message: error.to_string(),
                     path: cq_path.clone(),
@@ -1226,12 +1318,25 @@ fn source_anchor(
     service: &AuthoringWorkspaceService,
     candidate: &CompiledWorkspaceSource,
 ) -> Result<AuthoringSourceAnchorV1> {
-    let ir = candidate.package.snapshot().ir();
-    let root_module = candidate.package.root_source().parsed().module_name.clone();
-    let path = candidate
-        .path
+    package_source_anchor(
+        service,
+        &candidate.path,
+        &candidate.text,
+        &candidate.package,
+    )
+}
+
+fn package_source_anchor(
+    service: &AuthoringWorkspaceService,
+    path: &Path,
+    text: &str,
+    package: &crate::axi_input::CanonicalAxiPackage,
+) -> Result<AuthoringSourceAnchorV1> {
+    let ir = package.snapshot().ir();
+    let root_module = package.root_source().parsed().module_name.clone();
+    let path = path
         .strip_prefix(service.root())
-        .unwrap_or(&candidate.path)
+        .unwrap_or(path)
         .to_string_lossy()
         .to_string();
     Ok(AuthoringSourceAnchorV1 {
@@ -1240,7 +1345,7 @@ fn source_anchor(
         repository_id: ir.repository_id().to_string(),
         compiled_snapshot_id: ir.accepted_snapshot_id().to_string(),
         kernel_ir_digest: ir.ir_digest().to_string(),
-        exact_root_axi_digest: AxiDigest::from_axi_text(&candidate.text).to_string(),
+        exact_root_axi_digest: AxiDigest::from_axi_text(text).to_string(),
         ordered_module_closure: ir
             .ordered_module_closure()
             .iter()
@@ -1250,7 +1355,7 @@ fn source_anchor(
                 revision_digest: module.revision.to_string(),
             })
             .collect(),
-        runtime_ir_ref_count: candidate.kernel.runtime_semantic_index().total_refs,
+        runtime_ir_ref_count: ir.refs().len(),
     })
 }
 
@@ -1558,6 +1663,7 @@ pub(crate) fn authoring_workspace_request_schema_v1() -> Value {
         "required": ["version", "axi_path"],
         "properties": {
             "version": { "const": AUTHORING_WORKSPACE_REQUEST_VERSION_V1 },
+            "presentation": projection::presentation_schema(),
             "operation": { "enum": ["inspect", "apply_repair", "validate", "promotion_review"], "default": "inspect" },
             "axi_path": { "type": "string", "description": "Workspace-relative canonical .axi root" },
             "axi_text": { "type": "string", "description": "Optional unsaved root-buffer replacement" },
@@ -1578,7 +1684,8 @@ pub(crate) fn authoring_workspace_capabilities_v1() -> Value {
     json!({
         "version": "authoring_workspace_capabilities_v1",
         "request": AUTHORING_WORKSPACE_REQUEST_VERSION_V1,
-        "report": AUTHORING_WORKSPACE_REPORT_VERSION_V1,
+        "report": "authoring_workspace_response_v1 (summary/standard); authoring_workspace_report_v1 (explicit full)",
+        "presentation": projection::presentation_schema(),
         "operations": ["inspect", "apply_repair", "validate", "promotion_review"],
         "services": [
             "diagnostics", "typed_holes", "typed_repairs", "competency_questions",
@@ -1615,7 +1722,8 @@ pub(crate) fn authoring_workspace_integration_manifest_v1(workspace: &Path) -> V
             "args": ["authoring", "serve", "--workspace", workspace]
         },
         "request_contract": AUTHORING_WORKSPACE_REQUEST_VERSION_V1,
-        "report_contract": AUTHORING_WORKSPACE_REPORT_VERSION_V1,
+        "report_contract": "authoring_workspace_response_v1",
+        "full_report_contract": AUTHORING_WORKSPACE_REPORT_VERSION_V1,
         "mutations": "none; accepted-state writes require an explicit AxiStore client"
     })
 }
@@ -1648,7 +1756,7 @@ impl rmcp::handler::server::ServerHandler for AuthoringWorkspaceRmcpServer {
                 env!("CARGO_PKG_VERSION"),
             ))
             .with_instructions(
-                "Read-only workspace-aware typed authoring service. All semantic operations return authoring_workspace_report_v1.",
+                "Read-only workspace authoring. Defaults to compact authoring_workspace_response_v1; presentation.detail=full returns the canonical authoring_workspace_report_v1. Cursors are consistency checks, never authority.",
             )
     }
 
@@ -1665,34 +1773,26 @@ impl rmcp::handler::server::ServerHandler for AuthoringWorkspaceRmcpServer {
         request: CallToolRequestParams,
         _context: RequestContext<RoleServer>,
     ) -> std::result::Result<CallToolResponse, ErrorData> {
+        Ok(execute_mcp_payload(&self.service, request).into())
+    }
+}
+
+fn execute_mcp_payload(
+    service: &AuthoringWorkspaceService,
+    request: CallToolRequestParams,
+) -> CallToolResult {
+    let result = (|| -> Result<Value> {
         if request.name.as_ref() != AUTHORING_WORKSPACE_TOOL_NAME {
-            return Ok(CallToolResult::structured_error(json!({
-                "error": format!("unknown authoring tool `{}`", request.name)
-            }))
-            .into());
+            return Err(anyhow!("unknown authoring tool `{}`", request.name));
         }
         let request = Value::Object(request.arguments.unwrap_or_default());
-        let request: AuthoringWorkspaceRequestV1 = match serde_json::from_value(request) {
-            Ok(request) => request,
-            Err(error) => {
-                return Ok(CallToolResult::structured_error(json!({
-                    "error": format!("invalid authoring request: {error}")
-                }))
-                .into())
-            }
-        };
-        match self.service.execute(request) {
-            Ok(report) => Ok(CallToolResult::structured(
-                serde_json::to_value(report).unwrap_or_else(
-                    |error| json!({"error": format!("serialize authoring report: {error}")}),
-                ),
-            )
-            .into()),
-            Err(error) => Ok(CallToolResult::structured_error(json!({
-                "error": error.to_string()
-            }))
-            .into()),
-        }
+        let request: AuthoringWorkspaceRequestV1 =
+            serde_json::from_value(request).context("invalid authoring request")?;
+        Ok(serde_json::to_value(service.execute_response(request)?)?)
+    })();
+    match result {
+        Ok(value) => CallToolResult::structured(value),
+        Err(error) => CallToolResult::structured_error(json!({"error": format!("{error:#}")})),
     }
 }
 
@@ -1706,15 +1806,8 @@ fn authoring_rmcp_tool() -> Tool {
         "Run diagnostics, typed holes/repairs, CQs, query preparation/explanations, finite evolution preview, validation, and fail-closed promotion review through one workspace service.",
         Arc::new(schema),
     )
-    .with_raw_output_schema(Arc::new(default_object_schema()))
+    .with_raw_output_schema(Arc::new(projection::response_schema_object()))
     .with_annotations(ToolAnnotations::new().read_only(true).destructive(false))
-}
-
-fn default_object_schema() -> JsonObject {
-    match json!({"type": "object", "additionalProperties": true}) {
-        Value::Object(map) => map,
-        _ => JsonObject::default(),
-    }
 }
 
 pub(crate) struct BoundedJsonLineReader<R> {
@@ -2064,10 +2157,22 @@ fn write_bounded_lsp_message(writer: &mut impl Write, message: &Message) -> io::
     writer.flush()
 }
 
+struct LspDocumentImage {
+    // The key retains the client URI; ownership uses the workspace-validated path.
+    identity: Option<PathBuf>,
+    text: String,
+    revision: axiograph_kernel::RevisionDigestV2,
+}
+
 struct AuthoringWorkspaceLspState {
     service: AuthoringWorkspaceService,
     default_axi_path: Option<String>,
-    documents: BTreeMap<String, String>,
+    documents: BTreeMap<String, LspDocumentImage>,
+    // Sticky, bounded fallback: a rejected image cannot be tracked by an unbounded
+    // URI tombstone map. Restart the session to restore precise publications.
+    document_images_incomplete: bool,
+    // Publications by requesting document, then owning source URI.
+    publications: BTreeMap<String, BTreeMap<String, Vec<Diagnostic>>>,
 }
 
 pub(crate) fn run_lsp_stdio(
@@ -2084,6 +2189,8 @@ pub(crate) fn run_lsp_stdio(
         service,
         default_axi_path,
         documents: BTreeMap::new(),
+        document_images_incomplete: false,
+        publications: BTreeMap::new(),
     };
     for message in &connection.receiver {
         match message {
@@ -2140,7 +2247,7 @@ fn handle_lsp_request(state: &mut AuthoringWorkspaceLspState, request: LspReques
             let authoring_request = state
                 .documents
                 .get(uri)
-                .and_then(|text| lsp_request_for_document(state, uri, text, false));
+                .and_then(|image| lsp_request_for_document(state, uri, &image.text, false));
             Ok(authoring_request.map_or_else(
                 || json!([]),
                 |authoring_request| {
@@ -2170,7 +2277,9 @@ fn handle_lsp_request(state: &mut AuthoringWorkspaceLspState, request: LspReques
                     .ok_or_else(|| anyhow!("authoring LSP command requires one request argument"));
                 value.and_then(|value| {
                     let request: AuthoringWorkspaceRequestV1 = serde_json::from_value(value)?;
-                    Ok(serde_json::to_value(state.service.execute(request)?)?)
+                    Ok(serde_json::to_value(
+                        state.service.execute_response(request)?,
+                    )?)
                 })
             }
         }
@@ -2206,10 +2315,10 @@ fn handle_lsp_notification(
                 .to_string();
             if store_lsp_document(state, &uri, &text) {
                 publish_lsp_diagnostics(state, &uri, &text)
-                    .into_iter()
-                    .collect()
             } else {
-                lsp_resource_limit_diagnostic(&uri)
+                let mut messages = replace_lsp_publications(state, &uri, BTreeMap::new());
+                messages.extend(lsp_resource_limit_diagnostic(&uri));
+                messages
             }
         }
         "textDocument/didChange" => {
@@ -2230,10 +2339,10 @@ fn handle_lsp_notification(
                 .to_string();
             if store_lsp_document(state, &uri, &text) {
                 publish_lsp_diagnostics(state, &uri, &text)
-                    .into_iter()
-                    .collect()
             } else {
-                lsp_resource_limit_diagnostic(&uri)
+                let mut messages = replace_lsp_publications(state, &uri, BTreeMap::new());
+                messages.extend(lsp_resource_limit_diagnostic(&uri));
+                messages
             }
         }
         "textDocument/didClose" => {
@@ -2243,6 +2352,7 @@ fn handle_lsp_notification(
                 .and_then(Value::as_str)
             {
                 state.documents.remove(uri);
+                return replace_lsp_publications(state, uri, BTreeMap::new());
             }
             Vec::new()
         }
@@ -2251,24 +2361,55 @@ fn handle_lsp_notification(
 }
 
 fn store_lsp_document(state: &mut AuthoringWorkspaceLspState, uri: &str, text: &str) -> bool {
-    if uri.is_empty() || text.len() > MAX_AUTHORING_SOURCE_BYTES as usize {
-        return false;
-    }
-    if !state.documents.contains_key(uri) && state.documents.len() >= MAX_AUTHORING_LSP_DOCUMENTS {
-        return false;
-    }
-    let previous = state.documents.get(uri).map_or(0, String::len);
+    let previous = state.documents.get(uri).map_or(0, |image| image.text.len());
     let total = state
         .documents
         .values()
-        .try_fold(0_usize, |total, value| total.checked_add(value.len()))
+        .try_fold(0_usize, |total, image| total.checked_add(image.text.len()))
         .and_then(|total| total.checked_sub(previous))
         .and_then(|total| total.checked_add(text.len()));
-    if total.is_none_or(|total| total > MAX_AUTHORING_LSP_TOTAL_BYTES) {
+    if uri.is_empty()
+        || text.len() > MAX_AUTHORING_SOURCE_BYTES as usize
+        || (!state.documents.contains_key(uri)
+            && state.documents.len() >= MAX_AUTHORING_LSP_DOCUMENTS)
+        || total.is_none_or(|total| total > MAX_AUTHORING_LSP_TOTAL_BYTES)
+    {
+        state.document_images_incomplete = true;
+        state.documents.remove(uri);
         return false;
     }
-    state.documents.insert(uri.to_string(), text.to_string());
+    state.documents.insert(
+        uri.to_string(),
+        LspDocumentImage {
+            identity: uri_to_workspace_path(state.service.root(), uri).ok(),
+            text: text.to_string(),
+            revision: axiograph_kernel::RevisionDigestV2::from_accepted_text(text),
+        },
+    );
     true
+}
+
+// At most MAX_AUTHORING_LSP_DOCUMENTS images are inspected. Multiple client aliases
+// are ambiguous even when their text matches; never choose one arbitrarily.
+fn verified_lsp_owner<'a>(
+    documents: &'a BTreeMap<String, LspDocumentImage>,
+    images_incomplete: bool,
+    path: &Path,
+    revision: &str,
+) -> std::result::Result<Option<&'a str>, ()> {
+    if images_incomplete {
+        return Err(());
+    }
+    let mut matches = documents
+        .iter()
+        .filter(|(_, image)| image.identity.as_deref() == Some(path));
+    let Some((uri, image)) = matches.next() else {
+        return Ok(None);
+    };
+    if matches.next().is_some() || image.revision.as_str() != revision {
+        return Err(());
+    }
+    Ok(Some(uri))
 }
 
 fn lsp_resource_limit_diagnostic(uri: &str) -> Vec<Message> {
@@ -2276,13 +2417,14 @@ fn lsp_resource_limit_diagnostic(uri: &str) -> Vec<Message> {
         return Vec::new();
     };
     let diagnostic = Diagnostic {
-        range: Range::new(Position::new(0, 0), Position::new(0, 1)),
+        range: Range::new(Position::new(0, 0), Position::new(0, 0)),
+        data: Some(json!({"sourceLocated":false,"location":null})),
         severity: Some(DiagnosticSeverity::ERROR),
         code: Some(lsp_types::NumberOrString::String(
             "authoring.resource_limit".to_string(),
         )),
         source: Some("axiograph-authoring-workspace".to_string()),
-        message: "document rejected by authoring LSP byte/count limits".to_string(),
+        message: "document rejected by authoring LSP byte/count limits; precise diagnostic publications are disabled until the LSP session restarts".to_string(),
         ..Diagnostic::default()
     };
     vec![Message::Notification(Notification::new(
@@ -2302,6 +2444,7 @@ fn lsp_request_for_document(
     if path.ends_with(".axi") {
         Some(AuthoringWorkspaceRequestV1 {
             version: AUTHORING_WORKSPACE_REQUEST_VERSION_V1.to_string(),
+            presentation: AuthoringPresentationV1::default(),
             operation: if diagnostics_only {
                 AuthoringWorkspaceOperationV1::Validate
             } else {
@@ -2322,6 +2465,7 @@ fn lsp_request_for_document(
     } else if path.ends_with(".cq") {
         Some(AuthoringWorkspaceRequestV1 {
             version: AUTHORING_WORKSPACE_REQUEST_VERSION_V1.to_string(),
+            presentation: AuthoringPresentationV1::default(),
             operation: AuthoringWorkspaceOperationV1::Inspect,
             axi_path: state.default_axi_path.clone()?,
             axi_text: None,
@@ -2341,44 +2485,200 @@ fn lsp_request_for_document(
 }
 
 fn publish_lsp_diagnostics(
-    state: &AuthoringWorkspaceLspState,
+    state: &mut AuthoringWorkspaceLspState,
     uri: &str,
     text: &str,
-) -> Option<Message> {
-    let request = lsp_request_for_document(state, uri, text, true)?;
-    let report = state.service.execute(request).ok()?;
-    let diagnostics = report
-        .diagnostics
+) -> Vec<Message> {
+    let Some(request) = lsp_request_for_document(state, uri, text, true) else {
+        let diagnostic = authoring_diagnostic_to_lsp(AuthoringDiagnosticV1 {
+            severity: AuthoringDiagnosticSeverityV1::Error,
+            code: "authoring_lsp_document_unsupported".to_string(),
+            message: "diagnostics require an existing workspace .axi file (or a .cq file with a configured default); new files and unsaved import overlays are unsupported".to_string(),
+            path: None, line: None, repair_hint: None, location: None,
+        });
+        return replace_lsp_publications(
+            state,
+            uri,
+            BTreeMap::from([(uri.to_string(), vec![diagnostic])]),
+        );
+    };
+    let report = match state.service.execute(request) {
+        Ok(report) => report,
+        Err(error) => {
+            let diagnostic = authoring_diagnostic_to_lsp(AuthoringDiagnosticV1 {
+                severity: AuthoringDiagnosticSeverityV1::Error,
+                code: "authoring_workspace_request_failed".to_string(),
+                message: error.to_string(),
+                path: None,
+                line: None,
+                repair_hint: None,
+                location: None,
+            });
+            return replace_lsp_publications(
+                state,
+                uri,
+                BTreeMap::from([(uri.to_string(), vec![diagnostic])]),
+            );
+        }
+    };
+    let mut owners = BTreeMap::<String, Vec<Diagnostic>>::from([(uri.to_string(), Vec::new())]);
+    for mut diagnostic in report.diagnostics {
+        let owner = diagnostic
+            .location
+            .as_ref()
+            .and_then(|location| {
+                url::Url::from_file_path(&location.path)
+                    .ok()
+                    .map(|url| url.to_string())
+            })
+            .unwrap_or_else(|| uri.to_string());
+        // Imports remain disk-backed. Only a unique, verified editor image can own
+        // a precise range; equivalent file URIs must not bypass this check.
+        let verified_owner = diagnostic.location.as_ref().map_or(Ok(None), |location| {
+            verified_lsp_owner(
+                &state.documents,
+                state.document_images_incomplete,
+                Path::new(&location.path),
+                &location.revision_digest,
+            )
+        });
+        let owner = match verified_owner {
+            Ok(Some(client_uri)) => client_uri.to_string(),
+            Ok(None) => owner,
+            Err(()) => {
+                diagnostic.message.push_str(" (source editor image differs, is ambiguous, or is unavailable; unsaved import overlays are unsupported)");
+                diagnostic.location = None;
+                uri.to_string()
+            }
+        };
+        owners
+            .entry(owner)
+            .or_default()
+            .push(authoring_diagnostic_to_lsp(diagnostic));
+    }
+    replace_lsp_publications(state, uri, owners)
+}
+
+fn replace_lsp_publications(
+    state: &mut AuthoringWorkspaceLspState,
+    requester: &str,
+    owners: BTreeMap<String, Vec<Diagnostic>>,
+) -> Vec<Message> {
+    let mut affected = owners.keys().cloned().collect::<BTreeSet<_>>();
+    affected.insert(requester.to_string());
+    if let Some(previous) = state.publications.remove(requester) {
+        affected.extend(previous.into_keys());
+    }
+    if !owners.is_empty() {
+        state.publications.insert(requester.to_string(), owners);
+    }
+    // An edit to an imported document also invalidates previous disk-backed publications.
+    // Do not recompile every importer or silently treat the editor map as an import overlay.
+    for (root_uri, owners) in &mut state.publications {
+        let stale = owners
+            .keys()
+            .filter(|owner| {
+                owners[*owner].iter().any(|diagnostic| {
+                    let Some(location) = diagnostic
+                        .data
+                        .as_ref()
+                        .and_then(|data| data.get("location"))
+                        .filter(|location| !location.is_null())
+                    else {
+                        return false;
+                    };
+                    let Some(path) = location.get("path").and_then(Value::as_str) else {
+                        return true;
+                    };
+                    let Some(revision) = location.get("revision_digest").and_then(Value::as_str)
+                    else {
+                        return true;
+                    };
+                    match verified_lsp_owner(
+                        &state.documents,
+                        state.document_images_incomplete,
+                        Path::new(path),
+                        revision,
+                    ) {
+                        Err(()) => true,
+                        // A newly opened alias also invalidates the former publication URI.
+                        Ok(Some(client_uri)) => client_uri != owner.as_str(),
+                        Ok(None) => false,
+                    }
+                })
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        for owner in stale {
+            if let Some(mut diagnostics) = owners.remove(&owner) {
+                for diagnostic in &mut diagnostics {
+                    diagnostic.range = Range::new(Position::new(0, 0), Position::new(0, 0));
+                    diagnostic.data = Some(json!({"sourceLocated":false,"location":null}));
+                    diagnostic.message.push_str(" (source editor image or owner changed, is ambiguous, or is unavailable; revalidate the importing document; unsaved import overlays are unsupported)");
+                }
+                owners
+                    .entry(root_uri.clone())
+                    .or_default()
+                    .extend(diagnostics);
+                affected.insert(owner);
+                affected.insert(root_uri.clone());
+            }
+        }
+    }
+    affected
         .into_iter()
-        .map(authoring_diagnostic_to_lsp)
-        .collect::<Vec<_>>();
-    let uri: Uri = uri.parse().ok()?;
-    Some(Message::Notification(Notification::new(
-        "textDocument/publishDiagnostics".to_string(),
-        serde_json::to_value(PublishDiagnosticsParams::new(uri, diagnostics, None)).ok()?,
-    )))
+        .filter_map(|owner| {
+            let diagnostics = state
+                .publications
+                .values()
+                .filter_map(|owners| owners.get(&owner))
+                .flatten()
+                .cloned()
+                .collect();
+            Some(Message::Notification(Notification::new(
+                "textDocument/publishDiagnostics".to_string(),
+                serde_json::to_value(PublishDiagnosticsParams::new(
+                    owner.parse().ok()?,
+                    diagnostics,
+                    None,
+                ))
+                .ok()?,
+            )))
+        })
+        .collect()
 }
 
 fn uri_to_workspace_relative(root: &Path, uri: &str) -> Result<String> {
+    let path = uri_to_workspace_path(root, uri)?;
+    Ok(path.strip_prefix(root)?.to_string_lossy().to_string())
+}
+
+fn uri_to_workspace_path(root: &Path, uri: &str) -> Result<PathBuf> {
     let url = url::Url::parse(uri)?;
     let path = url
         .to_file_path()
         .map_err(|_| anyhow!("LSP URI is not a local file: `{uri}`"))?;
     let path = std::fs::canonicalize(path)?;
-    let relative = path
-        .strip_prefix(root)
+    path.strip_prefix(root)
         .map_err(|_| anyhow!("LSP document is outside the authoring workspace"))?;
-    Ok(relative.to_string_lossy().to_string())
+    Ok(path)
 }
 
 fn authoring_diagnostic_to_lsp(diagnostic: AuthoringDiagnosticV1) -> Diagnostic {
-    let line = diagnostic
-        .line
-        .unwrap_or(1)
-        .saturating_sub(1)
-        .min(u32::MAX as usize) as u32;
+    let range = diagnostic.location.as_ref().map_or_else(
+        || Range::new(Position::new(0, 0), Position::new(0, 0)),
+        |location| {
+            Range::new(
+                Position::new(location.start.lsp_line, location.start.lsp_character),
+                Position::new(location.end.lsp_line, location.end.lsp_character),
+            )
+        },
+    );
+    let data =
+        json!({"sourceLocated": diagnostic.location.is_some(), "location": diagnostic.location});
     Diagnostic {
-        range: Range::new(Position::new(line, 0), Position::new(line, 1)),
+        range,
+        data: Some(data),
         severity: Some(match diagnostic.severity {
             AuthoringDiagnosticSeverityV1::Error => DiagnosticSeverity::ERROR,
             AuthoringDiagnosticSeverityV1::Warning => DiagnosticSeverity::WARNING,
@@ -2484,7 +2784,7 @@ fn execute_http_payload(service: &AuthoringWorkspaceService, body: &[u8]) -> Htt
             )
         }
     };
-    match service.execute(request) {
+    match service.execute_response(request) {
         Ok(report) => json_response(StatusCode::OK, &report),
         Err(error) => error_response(StatusCode::BAD_REQUEST, error.to_string()),
     }
@@ -2522,6 +2822,11 @@ fn response(status: StatusCode, content_type: &'static str, body: Vec<u8>) -> Ht
     }
     response
 }
+
+#[cfg(test)]
+mod diagnostics_tests;
+#[cfg(test)]
+mod package_tests;
 
 #[cfg(test)]
 mod tests {
@@ -2567,7 +2872,7 @@ mod tests {
         );
     }
 
-    fn write_workspace() -> Result<(TempDir, AuthoringWorkspaceService)> {
+    pub(super) fn write_workspace() -> Result<(TempDir, AuthoringWorkspaceService)> {
         let temp = tempfile::tempdir()?;
         crate::security::write_output_bounded(
             temp.path().join("domain.axi"),
@@ -2606,9 +2911,10 @@ mod tests {
         Ok((temp, service))
     }
 
-    fn request() -> AuthoringWorkspaceRequestV1 {
+    pub(super) fn request() -> AuthoringWorkspaceRequestV1 {
         AuthoringWorkspaceRequestV1 {
             version: AUTHORING_WORKSPACE_REQUEST_VERSION_V1.to_string(),
+            presentation: AuthoringPresentationV1::default(),
             operation: AuthoringWorkspaceOperationV1::Inspect,
             axi_path: "domain.axi".to_string(),
             axi_text: None,
@@ -2702,6 +3008,7 @@ instance I of S:
         let service = AuthoringWorkspaceService::new(temp.path())?;
         let report = service.execute(AuthoringWorkspaceRequestV1 {
             version: AUTHORING_WORKSPACE_REQUEST_VERSION_V1.to_string(),
+            presentation: AuthoringPresentationV1::default(),
             operation: AuthoringWorkspaceOperationV1::PromotionReview,
             axi_path: "review_only.axi".to_string(),
             axi_text: None,
@@ -2918,11 +3225,9 @@ instance I of S:
             .build()?;
         let bytes = runtime.block_on(response.into_body().collect())?.to_bytes();
         let value: Value = serde_json::from_slice(&bytes)?;
-        assert_eq!(
-            value["version"],
-            json!(AUTHORING_WORKSPACE_REPORT_VERSION_V1)
-        );
-        assert!(value["query_explanation"].is_object());
+        assert_eq!(value["version"], json!("authoring_workspace_response_v1"));
+        assert_eq!(value["detail"], "summary");
+        assert!(value.get("query_explanation").is_none());
         Ok(())
     }
 
@@ -2941,8 +3246,11 @@ instance I of S:
         let mut state = AuthoringWorkspaceLspState {
             service,
             default_axi_path: Some("domain.axi".to_string()),
-            documents: BTreeMap::from([(uri.clone(), text)]),
+            documents: BTreeMap::new(),
+            document_images_incomplete: false,
+            publications: BTreeMap::new(),
         };
+        assert!(store_lsp_document(&mut state, &uri, &text));
         let action_response = handle_lsp_request(
             &mut state,
             LspRequest::new(
@@ -2976,10 +3284,7 @@ instance I of S:
             panic!("expected execute-command response")
         };
         let report = execute_response.response_result.expect("authoring report");
-        assert_eq!(
-            report["version"],
-            json!(AUTHORING_WORKSPACE_REPORT_VERSION_V1)
-        );
+        assert_eq!(report["version"], json!("authoring_workspace_response_v1"));
         assert_eq!(report["validation"]["canonical_axi_valid"], json!(true));
         Ok(())
     }

@@ -15,6 +15,7 @@ path = "src/main.rs"
 workspace = true
 
 [dependencies]
+axiograph-query = { path = "../axiograph-query" }
 axiograph-dsl = { path = "../axiograph-dsl" }
 axiograph-ingest-docs = { path = "../axiograph-ingest-docs" }
 axiograph-ingest-structured = { path = "../axiograph-ingest-structured" }
@@ -36,7 +37,6 @@ sha2.workspace = true
 tempfile = "3"
 uuid.workspace = true
 walkdir.workspace = true
-nom.workspace = true
 roaring.workspace = true
 sqlparser.workspace = true
 tokio.workspace = true
@@ -76,5 +76,6 @@ profiling = ["dep:inferno", "dep:pprof", "dep:signal-hook"]
 proposal-adapter-http = []
 
 [dev-dependencies]
+jsonschema = { version = "0.33", default-features = false }
 proptest.workspace = true
 reqwest = { workspace = true, features = ["blocking", "json"] }

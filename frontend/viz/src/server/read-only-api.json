@@ -1,0 +1,15 @@
+{
+  "format": "axiograph_read_only_api_v1",
+  "endpoints": [
+    {"method":"GET","path":"/healthz","request":"none","response":"text_ok"},
+    {"method":"GET","path":"/status","request":"none","response":"axiograph_authenticated_pathdb_status_v2"},
+    {"method":"GET","path":"/capabilities","request":"none","response":"axiograph_read_only_api_v1"},
+    {"method":"POST","path":"/query","request":"object_with_only_query_ir_v1","response":"compiled_finite_query"},
+    {"method":"GET","path":"/viz","request":"none","response":"html_or_503"}
+  ],
+  "limits": {"request_bytes":1048576,"response_bytes":16777216},
+  "unsupported": ["mutation","certificates","llm","proposals","evidence_lookup","describe","snapshots","contexts","graph_highlighting"],
+  "identity": "server_image_local_no_graph_binding",
+  "schema_scope": "descriptive_query_profile_not_serde_or_semantic_equivalence",
+  "opaque": ["status.receipt","query_schema"]
+}

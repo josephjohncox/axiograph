@@ -15,7 +15,7 @@
   "notes": [
     "Run the host with the repository as its working directory, or replace `.` with an absolute workspace root.",
     "The canonical generated contract is `axiograph authoring integration-manifest --workspace <root>`.",
-    "The server publishes one read-only `axiograph_authoring_workspace` tool using authoring_workspace_request_v1 and authoring_workspace_report_v1.",
+    "The read-only `axiograph_authoring_workspace` tool accepts authoring_workspace_request_v1. Default summary/standard results use authoring_workspace_response_v1; presentation.detail=full explicitly returns authoring_workspace_report_v1. Cursors are non-authorizing consistency bindings.",
     "Accepted-state writes require a separate AxiStore PromotionPlan workflow."
   ]
 }

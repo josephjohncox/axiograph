@@ -142,7 +142,7 @@ dependencies = [
 
 [[package]]
 name = "axiograph-cli"
-version = "20260829.0.3"
+version = "20260908.0.0"
 dependencies = [
  "anyhow",
  "axiograph-dsl",
@@ -153,6 +153,7 @@ dependencies = [
  "axiograph-kernel",
  "axiograph-pathdb",
  "axiograph-projections",
+ "axiograph-query",
  "axiograph-security",
  "axiograph-software-authoring",
  "axiograph-store",
@@ -168,7 +169,6 @@ dependencies = [
  "hyper-util",
  "lsp-server",
  "lsp-types",
- "nom",
  "percent-encoding",
  "reqwest",
  "rmcp",
@@ -188,7 +188,7 @@ dependencies = [
 
 [[package]]
 name = "axiograph-dsl"
-version = "20260829.0.3"
+version = "20260908.0.0"
 dependencies = [
  "axiograph-security",
  "nom",
@@ -213,7 +213,7 @@ dependencies = [
 
 [[package]]
 name = "axiograph-ingest-docs"
-version = "20260829.0.3"
+version = "20260908.0.0"
 dependencies = [
  "anyhow",
  "axiograph-security",
@@ -227,7 +227,7 @@ dependencies = [
 
 [[package]]
 name = "axiograph-ingest-proto"
-version = "20260829.0.3"
+version = "20260908.0.0"
 dependencies = [
  "anyhow",
  "axiograph-ingest-docs",
@@ -239,7 +239,7 @@ dependencies = [
 
 [[package]]
 name = "axiograph-ingest-rdfowl"
-version = "20260829.0.3"
+version = "20260908.0.0"
 dependencies = [
  "anyhow",
  "axiograph-ingest-docs",
@@ -255,7 +255,7 @@ dependencies = [
 
 [[package]]
 name = "axiograph-ingest-structured"
-version = "20260829.0.3"
+version = "20260908.0.0"
 dependencies = [
  "anyhow",
  "serde_json",
@@ -264,7 +264,7 @@ dependencies = [
 
 [[package]]
 name = "axiograph-kernel"
-version = "20260829.0.3"
+version = "20260908.0.0"
 dependencies = [
  "anyhow",
  "axiograph-dsl",
@@ -278,7 +278,7 @@ dependencies = [
 
 [[package]]
 name = "axiograph-pathdb"
-version = "20260829.0.3"
+version = "20260908.0.0"
 dependencies = [
  "ahash",
  "anyhow",
@@ -296,7 +296,7 @@ dependencies = [
 
 [[package]]
 name = "axiograph-projections"
-version = "20260829.0.3"
+version = "20260908.0.0"
 dependencies = [
  "axiograph-kernel",
  "serde",
@@ -305,8 +305,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "axiograph-query"
+version = "20260908.0.0"
+dependencies = [
+ "anyhow",
+ "axiograph-dsl",
+ "axiograph-kernel",
+ "axiograph-pathdb",
+ "axiograph-security",
+ "axiograph-tooling-overlays",
+ "nom",
+ "roaring",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "uuid",
+]
+
+[[package]]
 name = "axiograph-security"
-version = "20260829.0.3"
+version = "20260908.0.0"
 dependencies = [
  "anyhow",
  "hex",
@@ -320,7 +338,7 @@ dependencies = [
 
 [[package]]
 name = "axiograph-software-authoring"
-version = "20260829.0.3"
+version = "20260908.0.0"
 dependencies = [
  "anyhow",
  "axiograph-security",
@@ -332,7 +350,7 @@ dependencies = [
 
 [[package]]
 name = "axiograph-store"
-version = "20260829.0.3"
+version = "20260908.0.0"
 dependencies = [
  "axiograph-kernel",
  "axiograph-security",
@@ -346,7 +364,7 @@ dependencies = [
 
 [[package]]
 name = "axiograph-tooling-overlays"
-version = "20260829.0.3"
+version = "20260908.0.0"
 dependencies = [
  "anyhow",
  "axiograph-dsl",

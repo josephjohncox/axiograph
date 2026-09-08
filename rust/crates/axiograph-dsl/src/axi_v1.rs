@@ -17,6 +17,13 @@ pub fn parse_axi_v1(text: &str) -> Result<SchemaV1Module, SchemaV1ParseError> {
     crate::schema_v1::parse_schema_v1(text)
 }
 
+/// Parse through the canonical parser with operational, non-AST source metadata.
+pub fn parse_axi_v1_with_source_map(
+    text: &str,
+) -> Result<(SchemaV1Module, crate::schema_v1::CanonicalSourceMap), SchemaV1ParseError> {
+    crate::schema_v1::parse_schema_v1_with_source_map(text)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -720,7 +720,7 @@ mod tests {
             .join("../../..")
             .canonicalize()
             .unwrap_or_else(|_| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../.."));
-        let db = crate::load_pathdb_for_cli(&repo_root.join("examples/Family.axi"))?;
+        let db = crate::load_test_fixture(&repo_root.join("examples/Family.axi"))?;
         let meta = axiograph_pathdb::axi_semantics::MetaPlaneIndex::from_db(&db)?;
         let query = crate::axql::parse_axql_query(
             "select ?f where ?f = Fam.Parent(child=Jamison, parent=Bob, ctx=FamilyTree, time=?t) limit 1",

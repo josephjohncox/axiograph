@@ -40,13 +40,10 @@ async function loadGraphFromUrl(url: string): Promise<GraphPayload | null> {
 async function boot() {
   const params = new URLSearchParams(window.location.search || "");
   const dataParam = params.get("data");
-  const isServer = window.location.protocol === "http:" || window.location.protocol === "https:";
 
   let graph: GraphPayload | null = loadGraphFromEmbedded();
   if (!graph && dataParam) {
     graph = await loadGraphFromUrl(dataParam);
-  } else if (!graph && isServer) {
-    graph = await loadGraphFromUrl("/viz.json" + window.location.search);
   }
 
   if (!graph) {

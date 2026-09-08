@@ -11,7 +11,7 @@ use crate::{
     RewriteRuleIdV2, RoleIdV2, SchemaIdV2, SemanticKeyV2, SnapshotIdV2, TheoryIdV2,
 };
 use axiograph_dsl::{
-    axi_v1::parse_axi_v1,
+    axi_v1::parse_axi_v1_with_source_map,
     schema_v1::{
         parse_path_expr_v3, CarrierFieldsV1, ConstraintV1, GeneratorKindV1, PathExprV3,
         RefinementPredicateV1, RewriteVarTypeV1, RoleKindV1, SchemaV1Instance, SchemaV1Module,
@@ -58,6 +58,17 @@ pub enum KernelCompileError {
         kind: &'static str,
         label: String,
         schema: String,
+    },
+    /// Syntactic occurrence context only; never an accepted semantic handle.
+    /// Wraps only unknown-target leaf errors. Inspect `cause` directly: repeating
+    /// its identical Display as a source-chain link would duplicate the message.
+    #[error("{cause}")]
+    RoleCarrier {
+        module: String,
+        schema_index: usize,
+        relation_index: usize,
+        role_index: usize,
+        cause: Box<KernelCompileError>,
     },
     #[error("schema `{schema}` {site} references unknown object `{target}`")]
     UnknownObjectTarget {
@@ -287,18 +298,20 @@ pub enum KernelCompileError {
 pub struct CanonicalModuleSource {
     exact_text: String,
     parsed: SchemaV1Module,
+    source_map: axiograph_dsl::schema_v1::CanonicalSourceMap,
     revision: RevisionDigestV2,
 }
 
 impl CanonicalModuleSource {
     pub fn parse(bytes: Vec<u8>) -> Result<Self, KernelCompileError> {
         let exact_text = String::from_utf8(bytes).map_err(|_| KernelCompileError::InvalidUtf8)?;
-        let parsed = parse_axi_v1(&exact_text)
+        let (parsed, source_map) = parse_axi_v1_with_source_map(&exact_text)
             .map_err(|error| KernelCompileError::Parse(error.to_string()))?;
         let revision = RevisionDigestV2::from_accepted_text(&exact_text);
         Ok(Self {
             exact_text,
             parsed,
+            source_map,
             revision,
         })
     }
@@ -313,6 +326,46 @@ impl CanonicalModuleSource {
 
     pub fn revision(&self) -> &RevisionDigestV2 {
         &self.revision
+    }
+
+    pub fn source_map(&self) -> &axiograph_dsl::schema_v1::CanonicalSourceMap {
+        &self.source_map
+    }
+}
+
+#[cfg(test)]
+mod source_map_tests {
+    use super::*;
+
+    #[test]
+    fn parser_source_map_is_not_semantic_identity_or_ir_wire() {
+        let source = CanonicalModuleSource::parse(b"module M\n# exact bytes\nschema S:\n  object Company\n  relation Employment(company: Company)\n".to_vec()).unwrap();
+        assert!(!source.source_map.role_carriers.is_empty());
+        let mut without_map = source.clone();
+        without_map.source_map = Default::default();
+        assert_eq!(source.revision, without_map.revision);
+        assert_eq!(
+            serde_json::to_vec(&source.parsed).unwrap(),
+            serde_json::to_vec(&without_map.parsed).unwrap()
+        );
+        let compile = |module: CanonicalModuleSource| {
+            CanonicalCompiler::compile(KernelCompilationRequest {
+                repository_id: RepositoryIdV2::from_descriptor_bytes(b"source-map-test"),
+                accepted_snapshot_id: SnapshotIdV2::from_canonical_fields(&[module
+                    .exact_text()
+                    .as_bytes()]),
+                root_module: "M".into(),
+                modules: vec![module],
+            })
+            .unwrap()
+        };
+        let mapped = compile(source);
+        let unmapped = compile(without_map);
+        assert_eq!(mapped, unmapped);
+        assert_eq!(
+            serde_json::to_vec(mapped.ir()).unwrap(),
+            serde_json::to_vec(unmapped.ir()).unwrap()
+        );
     }
 }
 
@@ -1159,7 +1212,7 @@ impl CanonicalCompiler {
             let source = &sources[module_name];
             let module_id = &module_ids[module_name];
             let mut seen_schema_labels = BTreeSet::new();
-            for schema in &source.parsed.schemas {
+            for (schema_index, schema) in source.parsed.schemas.iter().enumerate() {
                 if !seen_schema_labels.insert(schema.name.clone()) {
                     return Err(KernelCompileError::DuplicateLabel {
                         kind: "schema",
@@ -1171,6 +1224,7 @@ impl CanonicalCompiler {
                     module_name,
                     module_id,
                     &source.revision,
+                    schema_index,
                     schema,
                 )?);
             }
@@ -1366,6 +1420,7 @@ fn compile_schema(
     module_name: &str,
     module_id: &ModuleIdV2,
     revision: &RevisionDigestV2,
+    schema_index: usize,
     schema: &SchemaV1Schema,
 ) -> Result<SchemaPresentationIr, KernelCompileError> {
     let semantic_key = SemanticKeyV2::derive(module_id, "schema", &schema.name);
@@ -1431,7 +1486,7 @@ fn compile_schema(
         .collect::<BTreeMap<_, _>>();
 
     let mut relations = Vec::new();
-    for relation in &schema.relations {
+    for (relation_index, relation) in schema.relations.iter().enumerate() {
         let (relation_key, relation_id) = &relation_identities[&relation.name];
         let mut role_labels = BTreeSet::new();
         let mut earlier_roles = BTreeMap::new();
@@ -1458,7 +1513,20 @@ fn compile_schema(
                 &scope,
                 &relation.name,
                 &field.field,
-            )?;
+            )
+            .map_err(|error| match error {
+                KernelCompileError::UnknownObjectTarget { .. }
+                | KernelCompileError::UnknownRelationTarget { .. } => {
+                    KernelCompileError::RoleCarrier {
+                        module: module_name.to_string(),
+                        schema_index,
+                        relation_index,
+                        role_index: order,
+                        cause: Box::new(error),
+                    }
+                }
+                other => other,
+            })?;
             validate_refinement_formation(
                 &type_expr,
                 &earlier_roles,

@@ -151,6 +151,19 @@ class ReleaseManifestTests(unittest.TestCase):
             workflow,
         )
 
+    def test_container_copies_read_only_api_contract_before_rust_build(self) -> None:
+        dockerfile = (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8")
+        required_copy = (
+            "COPY frontend/viz/src/server/read-only-api.json "
+            "/app/frontend/viz/src/server/read-only-api.json"
+        )
+        rust_copy = "COPY rust/ /app/rust/"
+        cargo_build = "cargo build -p axiograph-cli --release --locked"
+
+        self.assertEqual(dockerfile.count(required_copy), 1)
+        self.assertLess(dockerfile.index(required_copy), dockerfile.index(rust_copy))
+        self.assertLess(dockerfile.index(required_copy), dockerfile.index(cargo_build))
+
     def test_checked_in_fixture_manifest_is_complete_and_hash_pinned(self) -> None:
         manifest_path = REPO_ROOT / "release" / "fixtures.json"
         manifest = load_manifest(manifest_path, REPO_ROOT)

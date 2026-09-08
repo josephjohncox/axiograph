@@ -20,7 +20,17 @@ Operational note:
 - `axiograph db serve` accepts structured `query_ir_v1` at `POST /query`,
   compiles it to `CompiledFiniteQuery`, and returns `family = compiled_finite_query`.
   The authenticated materialization route has no accepted `.axi` bytes, so it
-  does not emit certificates and says so explicitly.
+  does not emit certificates and says so explicitly. `GET /capabilities` exposes
+  the shared, mechanically checked read-only API profile and descriptive IR schema;
+  optional `GET /viz` serves a startup-cached, same-origin explorer. The only other
+  routes are `GET /healthz` and `GET /status`. There are no mutation, LLM, proposal,
+  evidence-lookup, describe, context-list or snapshot-selection endpoints.
+  See the [runnable temporary-store workflow](../howto/TESTING.md#read-only-database-client-workflow).
+  Browser query results display full runtime trust/non-claims and truncation;
+  their numeric IDs belong to the connected server image. Neither a receipt in
+  status nor matching offline graph IDs establishes a query/graph image binding,
+  so cross-image highlighting is unavailable. `certifiable` means eligibility,
+  not certificate emission or Lean verification.
 - Semantic MCP `axql_run` accepts `certificate_policy` with values `none`,
   `emit`, `verify`, and `require_verified`. Only `query_result_v4` is emitted;
   verified modes invoke the approved Lean checker and return its bound receipt.
@@ -39,7 +49,9 @@ Operational note:
   - lifecycle transitions `Validated -> CertificateEmitted -> LeanVerified`.
 - `CompiledFiniteQuery::metadata_with_meta` keeps the runtime report envelope
   (`PreparedQueryMetadataV1`) for query, refinement, CQ, and agent surfaces.
-  Certifiable HTTP and tool-loop paths return additive `PreparedQueryMetadataV2`,
+  Some authoring/tool-loop paths return additive `PreparedQueryMetadataV2`
+  (the read-only database HTTP route returns only `family`, `result`, `trust`,
+  and `non_claims`, not this prepared metadata),
   which carries `certified_prepared_query_digest_v1` plus the runtime V1 report:
   - IR/prepared-query ids,
   - inferred variable types,

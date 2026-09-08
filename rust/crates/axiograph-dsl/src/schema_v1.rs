@@ -595,8 +595,30 @@ fn validate_axi_resource_limits(text: &str) -> Result<(), SchemaV1ParseError> {
     Ok(())
 }
 
+/// Operational parser metadata, deliberately separate from the serialized AST.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CanonicalSourceMap {
+    pub role_carriers: Vec<RoleCarrierSpan>,
+}
+
+/// Declaration occurrence indices and a half-open UTF-8 byte range in the exact input.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RoleCarrierSpan {
+    pub schema_index: usize,
+    pub relation_index: usize,
+    pub role_index: usize,
+    pub bytes: std::ops::Range<usize>,
+}
+
 pub fn parse_schema_v1(text: &str) -> Result<SchemaV1Module, SchemaV1ParseError> {
+    parse_schema_v1_with_source_map(text).map(|(module, _)| module)
+}
+
+pub fn parse_schema_v1_with_source_map(
+    text: &str,
+) -> Result<(SchemaV1Module, CanonicalSourceMap), SchemaV1ParseError> {
     validate_axi_resource_limits(text)?;
+    let mut source_map = CanonicalSourceMap::default();
     let mut module = SchemaV1Module {
         module_name: "Unnamed".to_string(),
         imports: vec![],
@@ -745,19 +767,43 @@ pub fn parse_schema_v1(text: &str) -> Result<SchemaV1Module, SchemaV1ParseError>
                 }
 
                 if line.starts_with("relation ") {
-                    let (combined, next_index) =
-                        collect_balanced_parens(lines.as_slice(), i, "relation").map_err(
+                    let (combined, next_index, segments) =
+                        collect_balanced_parens(text, lines.as_slice(), i, "relation").map_err(
                             |message| SchemaV1ParseError::Line {
                                 line: line_no,
                                 message,
                             },
                         )?;
-                    let relation = parse_relation_decl(&combined).map_err(|message| {
-                        SchemaV1ParseError::Line {
+                    let (relation, carriers) = parse_relation_decl_with_carriers(&combined)
+                        .map_err(|message| SchemaV1ParseError::Line {
                             line: line_no,
                             message,
+                        })?;
+                    // Carrier and segment offsets are ordered. The cursor advances at most
+                    // segments.len() times across ALL carriers: O(carriers + segments), not
+                    // a fresh scan per role. Synthetic join spaces have no source origin.
+                    let mut segment_index = 0;
+                    for (role_index, carrier) in carriers.into_iter().enumerate() {
+                        let start = carrier.as_ptr() as usize - combined.as_ptr() as usize;
+                        let end = start + carrier.len();
+                        while segments
+                            .get(segment_index)
+                            .is_some_and(|(range, _)| range.end <= start)
+                        {
+                            segment_index += 1;
                         }
-                    })?;
+                        if let Some((range, origin)) = segments
+                            .get(segment_index)
+                            .filter(|(range, _)| range.start <= start && end <= range.end)
+                        {
+                            source_map.role_carriers.push(RoleCarrierSpan {
+                                schema_index,
+                                relation_index: module.schemas[schema_index].relations.len(),
+                                role_index,
+                                bytes: (origin + start - range.start)..(origin + end - range.start),
+                            });
+                        }
+                    }
                     module.schemas[schema_index].relations.push(relation);
                     i = next_index;
                     continue;
@@ -935,7 +981,7 @@ pub fn parse_schema_v1(text: &str) -> Result<SchemaV1Module, SchemaV1ParseError>
         });
     }
 
-    Ok(module)
+    Ok((module, source_map))
 }
 
 fn strip_comment(line: &str) -> &str {
@@ -1030,13 +1076,17 @@ fn parse_subtype_decl(rest: &str) -> Result<SubtypeDeclV1, String> {
         })
 }
 
+type SourceSegments = Vec<(std::ops::Range<usize>, usize)>;
+
 fn collect_balanced_parens(
+    source: &str,
     lines: &[&str],
     start_index: usize,
     keyword: &str,
-) -> Result<(String, usize), String> {
+) -> Result<(String, usize, SourceSegments), String> {
     let mut depth: i32 = 0;
     let mut combined = String::new();
+    let mut segments = Vec::new();
 
     let mut i = start_index;
     while i < lines.len() {
@@ -1052,6 +1102,10 @@ fn collect_balanced_parens(
         if !combined.is_empty() {
             combined.push(' ');
         }
+        segments.push((
+            combined.len()..combined.len() + line.len(),
+            line.as_ptr() as usize - source.as_ptr() as usize,
+        ));
         combined.push_str(line);
 
         for ch in line.chars() {
@@ -1071,10 +1125,14 @@ fn collect_balanced_parens(
     if depth != 0 {
         return Err("unclosed parenthesis block".to_string());
     }
-    Ok((combined, i))
+    Ok((combined, i, segments))
 }
 
 fn parse_relation_decl(line: &str) -> Result<RelationDeclV1, String> {
+    parse_relation_decl_with_carriers(line).map(|(relation, _)| relation)
+}
+
+fn parse_relation_decl_with_carriers(line: &str) -> Result<(RelationDeclV1, Vec<&str>), String> {
     let rest = line
         .trim()
         .strip_prefix("relation ")
@@ -1097,17 +1155,22 @@ fn parse_relation_decl(line: &str) -> Result<RelationDeclV1, String> {
     if inner.is_empty() {
         return Err("relation must declare at least one role".to_string());
     }
-    let fields = split_top_level_commas_nested(inner)
+    let (fields, carriers) = split_top_level_commas_nested(inner)
         .into_iter()
         .map(parse_field_decl_v1)
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok(RelationDeclV1 {
-        name: name.to_string(),
-        fields,
-    })
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .unzip();
+    Ok((
+        RelationDeclV1 {
+            name: name.to_string(),
+            fields,
+        },
+        carriers,
+    ))
 }
 
-fn parse_field_decl_v1(text: &str) -> Result<FieldDeclV1, String> {
+fn parse_field_decl_v1(text: &str) -> Result<(FieldDeclV1, &str), String> {
     let Some((field, raw_type)) = text.split_once(':') else {
         return Err(format!(
             "relation role expects `name: Type @kind`, got `{text}`"
@@ -1116,11 +1179,15 @@ fn parse_field_decl_v1(text: &str) -> Result<FieldDeclV1, String> {
     let field = field.trim();
     parse_identifier_text(field, "role name")?;
     let (type_text, kind) = split_role_kind_annotation(raw_type.trim())?;
-    Ok(FieldDeclV1 {
-        field: field.to_string(),
-        ty: parse_type_expr_v1(type_text)?,
-        kind,
-    })
+    let (ty, carrier) = parse_type_expr_with_carrier(type_text)?;
+    Ok((
+        FieldDeclV1 {
+            field: field.to_string(),
+            ty,
+            kind,
+        },
+        carrier,
+    ))
 }
 
 fn split_role_kind_annotation(text: &str) -> Result<(&str, RoleKindV1), String> {
@@ -1148,47 +1215,63 @@ fn split_role_kind_annotation(text: &str) -> Result<(&str, RoleKindV1), String> 
 }
 
 pub fn parse_type_expr_v1(text: &str) -> Result<TypeExprV1, String> {
+    parse_type_expr_with_carrier(text).map(|(ty, _)| ty)
+}
+
+fn parse_type_expr_with_carrier(text: &str) -> Result<(TypeExprV1, &str), String> {
     let text = text.trim();
     if let Some(inner) = wrapped_call(text, "relation") {
         parse_identifier_text(inner, "relation-object type")?;
-        return Ok(TypeExprV1::RelationObject {
-            relation: inner.to_string(),
-        });
+        return Ok((
+            TypeExprV1::RelationObject {
+                relation: inner.to_string(),
+            },
+            inner,
+        ));
     }
     if let Some(inner) = wrapped_call(text, "indexed") {
         let parts = split_top_level_semicolons(inner);
         if parts.len() != 2 {
             return Err("indexed type expects `indexed(Base; earlier_role|...)`".to_string());
         }
-        let base = parse_type_expr_v1(parts[0])?;
+        let (base, carrier) = parse_type_expr_with_carrier(parts[0])?;
         let over_roles = split_pipe_names(parts[1], "indexed role")?;
         if over_roles.is_empty() {
             return Err("indexed type must name at least one earlier role".to_string());
         }
-        return Ok(TypeExprV1::Indexed {
-            base: Box::new(base),
-            over_roles,
-        });
+        return Ok((
+            TypeExprV1::Indexed {
+                base: Box::new(base),
+                over_roles,
+            },
+            carrier,
+        ));
     }
     if let Some(inner) = wrapped_call(text, "refined") {
         let parts = split_top_level_semicolons(inner);
         if parts.len() < 2 {
             return Err("refined type expects `refined(Base; predicate; ...)`".to_string());
         }
-        let base = parse_type_expr_v1(parts[0])?;
+        let (base, carrier) = parse_type_expr_with_carrier(parts[0])?;
         let predicates = parts[1..]
             .iter()
             .map(|part| parse_refinement_predicate_v1(part))
             .collect::<Result<Vec<_>, _>>()?;
-        return Ok(TypeExprV1::Refined {
-            base: Box::new(base),
-            predicates,
-        });
+        return Ok((
+            TypeExprV1::Refined {
+                base: Box::new(base),
+                predicates,
+            },
+            carrier,
+        ));
     }
     parse_identifier_text(text, "object type")?;
-    Ok(TypeExprV1::Object {
-        name: text.to_string(),
-    })
+    Ok((
+        TypeExprV1::Object {
+            name: text.to_string(),
+        },
+        text,
+    ))
 }
 
 fn parse_refinement_predicate_v1(text: &str) -> Result<RefinementPredicateV1, String> {

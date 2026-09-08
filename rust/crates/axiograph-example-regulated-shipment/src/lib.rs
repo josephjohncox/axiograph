@@ -1542,6 +1542,60 @@ mod tests {
     use std::io::Write;
     use tempfile::tempdir;
 
+    #[test]
+    fn workflow_cli_authoring_artifacts_satisfy_canonical_consumer_contract() {
+        let repository_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../..")
+            .canonicalize()
+            .unwrap();
+        let output_dir = tempdir().unwrap();
+        for (phase, request, axi) in [
+            (
+                "baseline",
+                "authoring_baseline_request.json",
+                "RegulatedShipmentBaseline.axi",
+            ),
+            (
+                "candidate",
+                "authoring_request.json",
+                "RegulatedShipment.axi",
+            ),
+        ] {
+            let fixtures = repository_root.join("examples/regulated_shipment");
+            let artifact = output_dir.path().join(format!("{phase}_authoring.json"));
+            // Use the script's actual requests without a --detail override. Cargo
+            // builds the current CLI rather than relying on a stale local binary.
+            let output = Command::new(env!("CARGO"))
+                .args(["run", "--quiet", "--locked", "--offline", "--manifest-path"])
+                .arg(repository_root.join("rust/Cargo.toml"))
+                .args(["-p", "axiograph-cli", "--bin", "axiograph", "--"])
+                .args(["authoring", "workspace", "--workspace"])
+                .arg(&repository_root)
+                .arg("--request")
+                .arg(fixtures.join(request))
+                .arg("--out")
+                .arg(&artifact)
+                .output()
+                .expect("run actual authoring CLI");
+            assert!(
+                output.status.success(),
+                "{phase} authoring CLI failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let bytes = read(&artifact, "workflow authoring artifact").unwrap();
+            let report: StoredAuthoringWorkspaceReportV1 = axiograph_security::parse_json_bounded(
+                &bytes,
+                16 * 1024 * 1024,
+                "regulated-shipment authoring report",
+            )
+            .unwrap_or_else(|error| panic!("parse {phase} authoring report: {error}"));
+            let exact_axi = fs::read_to_string(fixtures.join(axi)).unwrap();
+            let revision = RevisionDigestV2::from_accepted_text(&exact_axi);
+            validate_authoring_report(&report, &revision, phase)
+                .unwrap_or_else(|error| panic!("validate {phase} authoring report: {error}"));
+        }
+    }
+
     #[cfg(unix)]
     fn fixture_query_verifier(root: &Path) -> ApprovedQueryVerifierConfig {
         use std::os::unix::fs::PermissionsExt;

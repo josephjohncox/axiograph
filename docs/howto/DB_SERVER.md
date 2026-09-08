@@ -103,15 +103,50 @@ materialization receipt:
 }
 ```
 
+### Capabilities and optional explorer
+
+```bash
+curl -fsS http://127.0.0.1:7878/capabilities | jq
+```
+
+The versioned `axiograph_read_only_api_v1` profile describes fixed routes and a
+shared descriptive `QueryIrV1` schema. It is an explicit client profile, not total
+Serde or semantic equivalence. The optional fixed `GET /viz` page is cached once
+at startup from the already receipt-validated immutable DB. Build assets from the
+same checkout before starting the server:
+
+```bash
+(cd frontend/viz && npm ci --ignore-scripts && npm run build)
+# After starting db serve, open http://127.0.0.1:7878/viz
+```
+
+Missing/unbuilt/over-budget assets yield bounded HTTP 503 and
+`ui_available=false`; headless health/status/query remain available. Tampered
+materializations still fail before listener publication. UI-only borrowed-string,
+attribute, graph and inlining budgets are documented in
+[Testing](TESTING.md#read-only-database-client-workflow); payload size is not peak
+RAM. There is no static directory route, request-selected file root or CORS.
+
+The editor sends only `{query: QueryIrV1}`; Rust owns parsing, resolution, typing
+and execution. Local graph/draft selection is inspection-only. Remote mutation,
+LLM, proposals, evidence lookup, describe and certification are unavailable,
+including automatic/programmatic callbacks. Result IDs are server-image-local;
+query highlighting is unavailable without an atomic graph/image binding.
+Receipt authentication is not HTTP authentication, a verified query proof or
+ontology closure. Keep this read-only service on an appropriately protected
+network; it does not implement HTTP access authentication.
+
 ### Query
 
 ```bash
 curl -fsS -X POST http://127.0.0.1:7878/query \
   -H 'content-type: application/json' \
-  -d '{"query":"select ?x where ?x : Person limit 20"}' | jq
+  -d '{"query":{"version":1,"select_vars":["entity"],"where_atoms":[{"kind":"attr_eq","term":"?entity","key":"axiograph.value","value":"Alice"}],"limit":20}}' | jq
 ```
 
-The body is bounded to 1 MiB and denies unknown fields. Parse or execution
+`Alice` is an example value, not guaranteed in an arbitrary image. Legacy AxQL
+strings are not this HTTP protocol. The body is bounded to 1 MiB and permits only
+the `query` field; the response is bounded to 16 MiB. Parse or execution
 failures return structured JSON with HTTP 400. This endpoint is execution-only:
 it does not accept `certificate_policy` and does not claim certified answers.
 Use the typed certificate/MCP surfaces when a query certificate policy is

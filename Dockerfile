@@ -48,6 +48,7 @@ RUN lake exe cache get \
     && printf '%s  axiograph_verify\n' "${checker_sha256%% *}" \
         > /tmp/axiograph_verify.sha256
 
+COPY frontend/viz/src/server/read-only-api.json /app/frontend/viz/src/server/read-only-api.json
 COPY rust/ /app/rust/
 WORKDIR /app/rust
 ENV CARGO_PROFILE_RELEASE_LTO=thin \

@@ -114,13 +114,57 @@ The remaining architectural debt is concentrated in a few places:
 | `axiograph-kernel` | Exact-byte canonical compiler, immutable accepted snapshot handle, canonical schema and finite-instance IR. | This is the only meaning compiler. Keep constructors and validation centralized here. |
 | `axiograph-store` | SQLite accepted-state, immutable-object, audit, ref/tag, reconciliation, and semantic-lineage authority. | Keep one generation-CAS transaction and objects-first publication path; do not add file-pointer or direct-copy authorities. |
 | `axiograph-pathdb` | Derived runtime graph/index engine, query, runtime theory, certificates. | Consume compiled snapshots; never reconstruct canonical meaning or mint accepted handles. |
-| `axiograph-cli` | CLI/server/MCP/LSP orchestration. | Keep orchestration thin; move reusable logic into libraries. |
+| `axiograph-query` | Embedded AxQL/typed-IR preparation, execution, CQ generation/evaluation, refinement identities, trust, and bounded checker bridge. | No CLI/LLM/HTTP/editor dependency. Workspace source resolution and authoring evolution remain adapter-side debt. |
+| `axiograph-cli` | CLI/server/MCP/LSP orchestration. | Consume `axiograph-query`; keep orchestration thin and continue extracting workspace authoring. |
 | `axiograph-tooling-overlays` | DDD/fDDD overlays, weak queries, coverage inputs. | Keep `.axi` pure by putting tooling metadata here. |
 | `axiograph-software-authoring` | Shared authoring/codegen/coverage engine. | Prefer this over CLI-only implementations. |
 | `axiograph-storage` | Process-local runtime evidence staging. | Keep it non-durable and non-authoritative; publication belongs to AxiStore. |
 | `axiograph-llm-sync` | LLM extraction, typed evidence grounding, accepted-derived retrieval, and reconciliation inputs. | Keep model outputs evidence-plane until review/promotion; accepted-derived retrieval must require receipt-checked `MaterializedPathDb` and must not certify downstream model output. |
 | ingest crates | Boundary importers. | Lower into canonical proposals or overlays; avoid direct accepted-state mutation. Do not keep non-compiling importer crates in the active workspace. |
 | example crates | Pedagogical application packages. | Consume public library surfaces only; do not become private kernels. |
+
+## Embedded query/CQ service (implemented slice)
+
+`axiograph-query` owns the former CLI `axql`, `query_ir`, `trust_contract`, and
+`verifier_bridge` implementations, deterministic competency generation/evaluation
+and CQ DTOs, and shared refinement identities. The CLI imports those modules;
+its CQ adapter retains bounded file/authoring parsing and LLM prompt translation,
+and its olog adapter retains application to CLI-owned olog fragments. This is
+one implementation, not private-source inclusion or a CLI subprocess facade.
+`axiograph-cli/src/lib.rs` intentionally remains boundary parsers only.
+
+Embedding path: `QueryIrV1::compile_with_meta` -> `CompiledFiniteQuery` ->
+`execute_answer` -> typed runtime result and scoped trust. CQ options/reports are
+in `competency_questions`; metadata is not a certificate. Checked verifier
+receipts are opaque Serialize-only handles, under trusted host checker policy.
+
+Runnable process-free consumer:
+
+```bash
+cargo run --manifest-path rust/Cargo.toml -p axiograph-query --example embedded_query
+cargo test --manifest-path rust/Cargo.toml -p axiograph-query --test public_query_service
+cargo test --manifest-path rust/Cargo.toml -p axiograph-cli --test public_query_service_parity
+```
+
+The last test separately checks CLI CQ generation and workspace query/CQ/trust
+parity. The embedding test itself never executes the CLI.
+
+**Remaining boundaries:** full workspace authoring still depends on `axi_input`,
+`runtime_theory_check`, `typed_authoring`, `evolution_preview`, and CQ authoring
+parsing in `predictive_proposals`; the olog/evolution graph additionally reaches
+`quality`, `proposals_validate`, `proposals_import`, `semantic_claim`, and
+`semantic_model`. Extracting all these by blanket public exposure is not this
+slice. AxQL/IR syntax/planning/execution/certification decomposition also remains
+open; moving ownership alone does not close EQ-17.
+
+`AuthoringWorkspaceService::compile_source` still compiles a canonical import
+closure but materializes each module independently. Schema-only `Base` plus
+dependent `Extension` remains a regression-tested failure. The existing
+`materialization::hydrate_image` is receipt-bound and uses stable IR identifiers
+without the authoring AxQL named meta-plane; substituting it would change both
+authority and query semantics. No schemas are skipped, no source concatenation
+fakes a closure, and no alternate materializer was introduced. Package-aware
+authoring materialization and positive dependent-instance coverage remain EQ-04.
 
 ## Simplification Rules
 

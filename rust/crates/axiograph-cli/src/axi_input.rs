@@ -15,6 +15,8 @@ use axiograph_kernel::{
 use axiograph_pathdb::axi_module_import::AxiSchemaV1ImportSummary;
 use axiograph_pathdb::{AxiDigest, Module, Validated};
 
+pub(crate) mod diagnostics;
+
 const MAX_AXI_IMPORT_MODULES: usize = 1024;
 const MAX_AXI_PACKAGE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_AXI_SEARCH_ROOTS: usize = 32;
@@ -116,6 +118,7 @@ pub(crate) fn compile_canonical_axi_path_with_root_bytes(
     reject_obsolete_pathdb_snapshot_module(root_source.parsed())?;
     let root_module = root_source.parsed().module_name.clone();
     let mut package_bytes = root_source.exact_text().len();
+    let mut paths = BTreeMap::from([(root_module.clone(), input.clone())]);
     let mut sources = BTreeMap::from([(root_module.clone(), root_source)]);
     let mut pending = sources[&root_module].parsed().imports.clone();
     while let Some(import) = pending.pop() {
@@ -127,7 +130,8 @@ pub(crate) fn compile_canonical_axi_path_with_root_bytes(
                 "canonical .axi import closure exceeds {MAX_AXI_IMPORT_MODULES} modules"
             ));
         }
-        let source = resolve_import_source(&input, &import, search_roots)?;
+        let (path, source) = resolve_import_source(&input, &import, search_roots)?;
+        paths.insert(import.clone(), path);
         package_bytes = package_bytes
             .checked_add(source.exact_text().len())
             .ok_or_else(|| anyhow!("canonical .axi package byte count overflow"))?;
@@ -158,7 +162,8 @@ pub(crate) fn compile_canonical_axi_path_with_root_bytes(
         accepted_snapshot_id: SnapshotIdV2::from_canonical_fields(&[b"closure-order-probe"]),
         root_module: root_module.clone(),
         modules: sources.values().cloned().collect(),
-    })?;
+    })
+    .map_err(|error| diagnostics::compile_diagnostic(error, &sources, &paths))?;
     let accepted_fields = preliminary
         .ir()
         .ordered_module_closure()
@@ -170,7 +175,8 @@ pub(crate) fn compile_canonical_axi_path_with_root_bytes(
         accepted_snapshot_id: SnapshotIdV2::from_canonical_fields(&accepted_fields),
         root_module: root_module.clone(),
         modules: sources.values().cloned().collect(),
-    })?;
+    })
+    .map_err(|error| diagnostics::compile_diagnostic(error, &sources, &paths))?;
     Ok(CanonicalAxiPackage {
         root_module,
         sources,
@@ -220,7 +226,7 @@ fn resolve_import_source(
     root_input: &Path,
     import: &str,
     search_roots: &[PathBuf],
-) -> Result<CanonicalModuleSource> {
+) -> Result<(PathBuf, CanonicalModuleSource)> {
     if import.is_empty()
         || import.len() > 256
         || import.contains('/')
@@ -306,10 +312,10 @@ fn resolve_import_source(
             root_input.display()
         )),
         1 => {
-            let Some((_, source)) = matches.pop() else {
+            let Some(resolved) = matches.pop() else {
                 return Err(anyhow!("resolved import disappeared before use"));
             };
-            Ok(source)
+            Ok(resolved)
         }
         _ => Err(anyhow!(
             "imported module `{import}` is ambiguous: {}",

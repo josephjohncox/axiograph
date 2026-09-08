@@ -13,6 +13,17 @@ Related roadmaps:
 - `docs/roadmaps/ROADMAP_SEMANTIC_MERGE_LATTICE.md`
 - `docs/roadmaps/ROADMAP_TOOLING_OVERLAY_SEPARATION.md`
 
+## Engineering Audit Remediation
+
+The [baseline audit at 70c568b](../reference/ENGINEERING_AUDIT_70C568B.md)
+records usability, correctness, formal coverage, search/RAG, API, frontend, and
+maintainability findings. Execute the
+[engineering-quality roadmap](ROADMAP_ENGINEERING_QUALITY.md) in priority order.
+It owns the EQ-01 through EQ-19 checklists, acceptance criteria, and validation
+record. Start with frontend typecheck/tests and compact authoring reports, then
+public services, source diagnostics, measured retrieval, and formal extensions.
+Do not mark partial work complete or weaken existing trust/resource gates.
+
 ## Highest-Priority Work
 
 - [x] Route meaning compilation through one exact-byte canonical compiler and

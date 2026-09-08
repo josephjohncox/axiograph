@@ -1,200 +1,13 @@
-use std::fs;
-use std::process::{Child, Command, Stdio};
-use std::thread;
-use std::time::{Duration, Instant};
-
 use axiograph_kernel::ObjectBlobIdV2;
 use axiograph_store::*;
+use std::fs;
+use std::process::{Command, Stdio};
+use std::thread;
+use std::time::Duration;
 use tempfile::tempdir;
-
-fn axiograph_bin() -> std::path::PathBuf {
-    std::env::var_os("CARGO_BIN_EXE_axiograph")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| {
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/debug/axiograph")
-        })
-}
-
-fn descriptor() -> RepositoryDescriptor {
-    RepositoryDescriptor::new("cli-materialization-tests", "fixed-test-genesis").unwrap()
-}
-
-fn exact_module(label: &str) -> Vec<u8> {
-    format!("module {label}\n").into_bytes()
-}
-
-fn supporting_objects(label: &str) -> Vec<ImmutableBlob> {
-    [
-        (ImmutableObjectKind::KernelIr, "kernel"),
-        (ImmutableObjectKind::CanonicalFactLog, "facts"),
-        (ImmutableObjectKind::ValidationReport, "validation"),
-        (ImmutableObjectKind::CompetencyQuestionReport, "competency"),
-        (ImmutableObjectKind::TheoryReport, "theory"),
-        (ImmutableObjectKind::VerificationReceipt, "checker"),
-    ]
-    .into_iter()
-    .map(|(kind, suffix)| {
-        ImmutableBlob::new(kind, format!("{label}:{suffix}").into_bytes()).unwrap()
-    })
-    .collect()
-}
-
-fn object_digest(objects: &[ImmutableBlob], kind: ImmutableObjectKind) -> ObjectBlobIdV2 {
-    objects
-        .iter()
-        .find(|object| object.kind == kind)
-        .unwrap()
-        .digest
-        .clone()
-}
-
-fn materialization_spec(label: &str) -> AxpdBuildSpec {
-    let repository = descriptor().repository_id().unwrap();
-    let module = AcceptedModule::from_bytes(&repository, label, &exact_module(label)).unwrap();
-    let tree = AcceptedTree::new(repository.clone(), vec![module.clone()]).unwrap();
-    let snapshot = AcceptedSnapshot::new(repository.clone(), tree.tree_id.clone(), vec![]).unwrap();
-    let support = supporting_objects(label);
-    AxpdBuildSpec {
-        anchors: AxpdAnchors {
-            repository_id: repository,
-            accepted_snapshot_id: snapshot.snapshot_id,
-            accepted_tree_id: tree.tree_id,
-            ordered_module_closure: vec![module.revision_digest],
-            kernel_ir_digest: object_digest(&support, ImmutableObjectKind::KernelIr),
-            canonical_fact_log_digest: object_digest(
-                &support,
-                ImmutableObjectKind::CanonicalFactLog,
-            ),
-        },
-        image: AxpdLogicalImage::default(),
-        configuration: AxpdConfiguration::default(),
-        materializer_version: AXPD_MATERIALIZER_VERSION.to_string(),
-    }
-}
-
-fn init_store(path: &std::path::Path, label: &str) -> AxiStore {
-    let store = AxiStore::init(path, &descriptor()).unwrap();
-    let spec = materialization_spec(label);
-    let repository = descriptor().repository_id().unwrap();
-    let publication = ModulePublication::new(&repository, label, exact_module(label)).unwrap();
-    let tree = AcceptedTree::new(repository.clone(), vec![publication.module.clone()]).unwrap();
-    let snapshot = AcceptedSnapshot::new(repository.clone(), tree.tree_id.clone(), vec![]).unwrap();
-    let objects = supporting_objects(label);
-    let validation = object_digest(&objects, ImmutableObjectKind::ValidationReport);
-    let competency = object_digest(&objects, ImmutableObjectKind::CompetencyQuestionReport);
-    let theory = object_digest(&objects, ImmutableObjectKind::TheoryReport);
-    let checker = object_digest(&objects, ImmutableObjectKind::VerificationReceipt);
-    let manifest = AcceptedBuildManifest {
-        format: BUILD_MANIFEST_FORMAT.to_string(),
-        version: FORMAT_VERSION,
-        repository_id: repository.clone(),
-        accepted_tree_id: tree.tree_id.clone(),
-        accepted_snapshot_id: snapshot.snapshot_id.clone(),
-        ordered_module_closure: vec![publication.module.revision_digest.clone()],
-        compiler_version: "canonical-cli-test".to_string(),
-        ir_version: "kernel-ir-v2-cli-test".to_string(),
-        kernel_ir_digest: object_digest(&objects, ImmutableObjectKind::KernelIr),
-        canonical_fact_log_digest: object_digest(&objects, ImmutableObjectKind::CanonicalFactLog),
-        validation_report_digest: validation.clone(),
-        competency_question_report_digest: competency.clone(),
-        runtime_theory_report_digest: theory.clone(),
-        trusted_checker_receipt_digest: checker.clone(),
-        non_claims: required_non_claims(),
-    };
-    assert_eq!(tree.tree_id, spec.anchors.accepted_tree_id);
-    assert_eq!(snapshot.snapshot_id, spec.anchors.accepted_snapshot_id);
-    let commit = SemCommitV2::new(
-        repository,
-        CommitKind::Normal,
-        vec![],
-        tree.tree_id.clone(),
-        snapshot.snapshot_id.clone(),
-        manifest.digest().unwrap(),
-        None,
-        "operator@example.test",
-        1_700_000_000,
-        Some(format!("accept {label}")),
-        "promote",
-        "protected-main",
-        CommitProvenance {
-            source: "db-server-e2e".to_string(),
-            command: None,
-            origin_trust: OriginTrust::Native,
-        },
-        SemanticDelta {
-            changes: vec![SemanticChange {
-                operation: ReindexOperation::Add,
-                sources: vec![],
-                targets: vec![SemanticId::Revision(
-                    publication.module.revision_digest.clone(),
-                )],
-            }],
-        },
-        vec![
-            PromotionGate {
-                kind: GateKind::CanonicalValidation,
-                decision: GateDecision::Passed,
-                report_digest: validation,
-            },
-            PromotionGate {
-                kind: GateKind::CompetencyQuestions,
-                decision: GateDecision::Passed,
-                report_digest: competency,
-            },
-            PromotionGate {
-                kind: GateKind::RuntimeTheory,
-                decision: GateDecision::Passed,
-                report_digest: theory,
-            },
-            PromotionGate {
-                kind: GateKind::Trust,
-                decision: GateDecision::Passed,
-                report_digest: checker,
-            },
-        ],
-        vec![CommitAttachment {
-            kind: ImmutableObjectKind::KernelIr,
-            digest: manifest.kernel_ir_digest.clone(),
-        }],
-        vec![LifecycleEvent {
-            artifact: SemanticId::Revision(publication.module.revision_digest.clone()),
-            from: Some(LifecycleStage::Reviewed),
-            to: LifecycleStage::Accepted,
-            reason: "reviewed promotion".to_string(),
-        }],
-    )
-    .unwrap();
-    store
-        .promote(
-            0,
-            &PromotionPlan {
-                modules: vec![publication],
-                objects,
-                tree,
-                snapshot,
-                manifest,
-                reconciliation: None,
-                commit,
-                ref_updates: vec![],
-            },
-        )
-        .unwrap();
-    store
-}
-
-fn wait_for_ready(path: &std::path::Path, child: &mut Child) -> serde_json::Value {
-    let deadline = Instant::now() + Duration::from_secs(10);
-    loop {
-        if path.exists() {
-            return serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
-        }
-        if let Some(status) = child.try_wait().unwrap() {
-            panic!("server exited before readiness: {status}");
-        }
-        assert!(Instant::now() < deadline, "server readiness timed out");
-        thread::sleep(Duration::from_millis(25));
-    }
-}
+#[path = "support/db_server_fixture.rs"]
+mod fixture;
+use fixture::*;
 
 #[test]
 fn bare_axpd_flag_is_not_a_cli_surface() {
@@ -217,7 +30,6 @@ fn cli_publishes_and_inspects_only_for_an_accepted_axi_store_manifest() {
         serde_json::to_vec(&materialization_spec("cli-publish")).unwrap(),
     )
     .unwrap();
-
     let published = Command::new(axiograph_bin())
         .args([
             "db",
@@ -234,8 +46,7 @@ fn cli_publishes_and_inspects_only_for_an_accepted_axi_store_manifest() {
         "{}",
         String::from_utf8_lossy(&published.stderr)
     );
-    let receipt: axiograph_store::AxpdReceipt = serde_json::from_slice(&published.stdout).unwrap();
-
+    let receipt: AxpdReceipt = serde_json::from_slice(&published.stdout).unwrap();
     let inspected = Command::new(axiograph_bin())
         .args([
             "db",
@@ -252,8 +63,7 @@ fn cli_publishes_and_inspects_only_for_an_accepted_axi_store_manifest() {
         "{}",
         String::from_utf8_lossy(&inspected.stderr)
     );
-    let inspected_receipt: axiograph_store::AxpdReceipt =
-        serde_json::from_slice(&inspected.stdout).unwrap();
+    let inspected_receipt: AxpdReceipt = serde_json::from_slice(&inspected.stdout).unwrap();
     assert_eq!(inspected_receipt, receipt);
 }
 
@@ -278,7 +88,6 @@ fn invalid_or_tampered_materialization_rejects_before_listener_publication() {
         .unwrap();
     assert!(!invalid.status.success());
     assert!(!ready.exists());
-
     let axi_store = init_store(store.path(), "tampered-server");
     let receipt = axi_store
         .publish_axpd(
@@ -293,7 +102,6 @@ fn invalid_or_tampered_materialization_rejects_before_listener_publication() {
         ObjectBlobIdV2::from_canonical_fields(&[b"tampered"]).to_string(),
     );
     fs::write(&receipt_path, serde_json::to_vec(&json).unwrap()).unwrap();
-
     let tampered = Command::new(axiograph_bin())
         .args([
             "db",
@@ -367,7 +175,6 @@ fn mcp_requires_and_opens_an_exact_materialization_id() {
     let receipt = axi_store
         .publish_axpd(materialization_spec("mcp-open"), &AxpdLimits::default())
         .unwrap();
-
     let invalid = Command::new(axiograph_bin())
         .args([
             "mcp",
@@ -379,7 +186,6 @@ fn mcp_requires_and_opens_an_exact_materialization_id() {
         .output()
         .unwrap();
     assert!(!invalid.status.success());
-
     let mut child = Command::new(axiograph_bin())
         .args([
             "mcp",
@@ -399,4 +205,167 @@ fn mcp_requires_and_opens_an_exact_materialization_id() {
     drop(stdin);
     child.kill().unwrap();
     child.wait().unwrap();
+}
+
+#[test]
+fn read_only_http_contract_with_controlled_assets_needs_no_frontend_tools() {
+    for (oversized_ui, missing_assets) in [(false, false), (true, false), (false, true)] {
+        let store = tempdir().unwrap();
+        let axi_store = init_store(store.path(), "finite-client");
+        let receipt = axi_store
+            .publish_axpd(
+                finite_client_spec("finite-client", oversized_ui),
+                &AxpdLimits::default(),
+            )
+            .unwrap();
+        let ready = store.path().join("ready.json");
+        let asset_root = tempdir().unwrap();
+        let dist = asset_root.path().join("frontend/viz/dist");
+        fs::create_dir_all(&dist).unwrap();
+        fs::write(
+            dist.join("index.html"),
+            "<head><script type=\"module\" src=\"./fixture.js\"></script></head><body></body>",
+        )
+        .unwrap();
+        if !missing_assets {
+            fs::write(
+                dist.join("fixture.js"),
+                "console.log('test template, not production frontend');",
+            )
+            .unwrap();
+        }
+        let mut child = ServerChild(
+            Command::new(axiograph_bin())
+                .current_dir(asset_root.path())
+                // This default Rust test must not need or invoke frontend tools.
+                .env("PATH", asset_root.path())
+                .args([
+                    "db",
+                    "serve",
+                    "--dir",
+                    store.path().to_str().unwrap(),
+                    "--materialization",
+                    receipt.materialization_id.as_str(),
+                    "--listen",
+                    "127.0.0.1:0",
+                    "--ready-file",
+                    ready.to_str().unwrap(),
+                ])
+                .stdout(Stdio::null())
+                .spawn()
+                .unwrap(),
+        );
+        let payload = wait_for_ready(&ready, &mut child.0);
+        let base = format!("http://{}", payload["listen"].as_str().unwrap());
+        let http = reqwest::blocking::Client::builder()
+            .timeout(Duration::from_secs(10))
+            .build()
+            .unwrap();
+        let caps: serde_json::Value = http
+            .get(format!("{base}/capabilities"))
+            .send()
+            .unwrap()
+            .json()
+            .unwrap();
+        assert_eq!(caps["api"]["format"], "axiograph_read_only_api_v1");
+        assert_eq!(caps["ui_available"], !oversized_ui && !missing_assets);
+        let status: serde_json::Value = http
+            .get(format!("{base}/status"))
+            .send()
+            .unwrap()
+            .json()
+            .unwrap();
+        assert_eq!(status["entities"], 2);
+        assert_eq!(
+            status["receipt"]["materialization_id"],
+            receipt.materialization_id.to_string()
+        );
+        let page = http.get(format!("{base}/viz")).send().unwrap();
+        assert_eq!(
+            page.status().as_u16(),
+            if oversized_ui || missing_assets {
+                503
+            } else {
+                200
+            }
+        );
+        if !oversized_ui && !missing_assets {
+            let html = page.text().unwrap();
+            assert!(html.contains("axiograph_graph"));
+            assert!(html.contains("test template"));
+        }
+        let valid = serde_json::json!({"version":1,"select_vars":["entity"],"where_atoms":[{"kind":"type","term":"?entity","type":"{\"kind\":\"object_type\",\"id\":\"fixture\"}"}],"limit":1});
+        let validator = jsonschema::validator_for(&caps["query_schema"]).unwrap();
+        assert!(validator.is_valid(&valid));
+        let reply = http
+            .post(format!("{base}/query"))
+            .json(&serde_json::json!({"query":valid}))
+            .send()
+            .unwrap();
+        assert!(reply.status().is_success());
+        let result: serde_json::Value = reply.json().unwrap();
+        assert_eq!(result["family"], "compiled_finite_query");
+        assert_eq!(result["result"]["rows"].as_array().unwrap().len(), 1);
+        assert_eq!(result["result"]["truncated"], true);
+        assert_eq!(result["trust"]["completeness_claim"], "not_claimed");
+        assert_eq!(
+            result["non_claims"],
+            serde_json::json!([
+                "no_certificate_without_exact_accepted_axi_bytes",
+                "no_ontology_closure_claim"
+            ])
+        );
+        let approx = serde_json::json!({"query":{"version":1,"where_atoms":[{"kind":"attr_contains","term":"?entity","key":"axiograph.value","needle":if oversized_ui {"xx"} else {"o"}}],"limit":10}});
+        let result: serde_json::Value = http
+            .post(format!("{base}/query"))
+            .json(&approx)
+            .send()
+            .unwrap()
+            .json()
+            .unwrap();
+        assert!(!result["result"]["rows"].as_array().unwrap().is_empty());
+        assert_eq!(result["trust"]["trust_class"], "execution_only");
+        for body in [
+            "{".to_string(),
+            serde_json::json!({"query":"select ?x where ..."}).to_string(),
+            serde_json::json!({"query":valid,"certify":true}).to_string(),
+            serde_json::json!({"query":{"version":999,"where_atoms":[]}}).to_string(),
+        ] {
+            assert_eq!(
+                http.post(format!("{base}/query"))
+                    .body(body)
+                    .send()
+                    .unwrap()
+                    .status()
+                    .as_u16(),
+                400
+            );
+        }
+        for path in [
+            "/snapshots",
+            "/contexts",
+            "/llm/agent",
+            "/entity/describe",
+            "/discover/draft-axi",
+            "/cert/reachability",
+            "/assets/fixture.js",
+        ] {
+            assert_eq!(
+                http.get(format!("{base}{path}"))
+                    .send()
+                    .unwrap()
+                    .status()
+                    .as_u16(),
+                404
+            );
+        }
+        assert_eq!(
+            http.get(format!("{base}/healthz"))
+                .send()
+                .unwrap()
+                .text()
+                .unwrap(),
+            "ok\n"
+        );
+    }
 }

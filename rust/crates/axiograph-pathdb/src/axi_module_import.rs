@@ -39,6 +39,11 @@ use crate::axi_module_typecheck::{validate_axi_v1_module, Module, WellTypedModul
 use crate::kernel_ir::{derive_runtime_schema_index, RuntimeSchemaIndex};
 use crate::PathDB;
 
+mod package;
+pub use package::{
+    derive_package_query_index, DerivedPackageQueryIndex, UnsupportedQueryProjection,
+};
+
 fn role_kind_wire(kind: RoleKindV1) -> &'static str {
     match kind {
         RoleKindV1::Data => "data",
@@ -224,6 +229,12 @@ impl<'a> MetaImportContext<'a> {
     }
 
     fn import_meta_plane(&mut self) -> Result<ModuleMetaHandles> {
+        let handles = self.import_schema_meta_plane()?;
+        self.import_declaration_meta_plane(&handles)?;
+        Ok(handles)
+    }
+
+    fn import_schema_meta_plane(&mut self) -> Result<ModuleMetaHandles> {
         let module_name = self.module.module_name.as_str();
         let module_entity = self.get_or_create_meta_entity(
             META_TYPE_MODULE,
@@ -381,6 +392,16 @@ impl<'a> MetaImportContext<'a> {
             );
         }
 
+        Ok(ModuleMetaHandles {
+            module_entity,
+            schemas: schema_handles,
+        })
+    }
+
+    fn import_declaration_meta_plane(&mut self, handles: &ModuleMetaHandles) -> Result<()> {
+        let module_name = self.module.module_name.as_str();
+        let module_entity = handles.module_entity;
+        let schema_handles = &handles.schemas;
         // Theories (linked to schemas).
         for theory in &self.module.theories {
             let schema_entity = schema_handles
@@ -497,10 +518,7 @@ impl<'a> MetaImportContext<'a> {
             self.add_meta_edge_if_missing(META_REL_HAS_INSTANCE, module_entity, instance_entity)?;
         }
 
-        Ok(ModuleMetaHandles {
-            module_entity,
-            schemas: schema_handles,
-        })
+        Ok(())
     }
 
     fn get_or_create_meta_entity(
@@ -880,6 +898,17 @@ struct InstanceSummary {
     entity_type_upgrades: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum FactNodeKey {
+    Canonical(axiograph_kernel::FactIdV2),
+    Local { relation: String, label: String },
+}
+
+struct CanonicalFactBinding {
+    fact_id: axiograph_kernel::FactIdV2,
+    roles: HashMap<String, axiograph_kernel::TypedValueIr>,
+}
+
 struct InstanceImportContext<'a> {
     db: &'a mut PathDB,
     module: &'a SchemaV1Module,
@@ -890,6 +919,8 @@ struct InstanceImportContext<'a> {
     relation_name_counts: &'a HashMap<String, usize>,
     entities_by_key: HashMap<(String, String), u32>, // (type, name) → entity_id
     summary: InstanceSummary,
+    canonical_facts: Option<&'a HashMap<String, CanonicalFactBinding>>,
+    fact_nodes: HashMap<FactNodeKey, u32>,
 }
 
 impl<'a> InstanceImportContext<'a> {
@@ -912,6 +943,8 @@ impl<'a> InstanceImportContext<'a> {
             relation_name_counts,
             entities_by_key: HashMap::new(),
             summary: InstanceSummary::default(),
+            canonical_facts: None,
+            fact_nodes: HashMap::new(),
         }
     }
 
@@ -952,7 +985,14 @@ impl<'a> InstanceImportContext<'a> {
             {
                 self.import_generator_assignment(&generator, &assignment.value.items)?;
             } else {
-                self.import_relation_assignment(&assignment.name, &assignment.value.items)?;
+                self.import_relation_assignment(&assignment.name, &assignment.value.items, true)?;
+            }
+        }
+        // All fact nodes now exist. Linking is iterative, including forward
+        // references; relation-valued roles never allocate placeholder objects.
+        for assignment in &self.inst.assignments {
+            if self.schema_index.relation_decl(&assignment.name).is_some() {
+                self.import_relation_assignment(&assignment.name, &assignment.value.items, false)?;
             }
         }
         Ok(())
@@ -1182,6 +1222,7 @@ impl<'a> InstanceImportContext<'a> {
         &mut self,
         relation_name: &str,
         items: &[SetItemV1],
+        allocate: bool,
     ) -> Result<()> {
         let Some(decl) = self.schema_index.relation_decl(relation_name).cloned() else {
             return Err(anyhow!(
@@ -1199,7 +1240,7 @@ impl<'a> InstanceImportContext<'a> {
             .ok_or_else(|| anyhow!("missing compiled semantics for relation `{relation_name}`"))?;
 
         for it in items {
-            let SetItemV1::Tuple { fields, .. } = it else {
+            let SetItemV1::Tuple { label, fields } = it else {
                 continue;
             };
 
@@ -1268,43 +1309,89 @@ impl<'a> InstanceImportContext<'a> {
                     .unwrap_or(&fact_id)
             );
 
-            if let Some(existing) = find_entity_by_type_and_attr(
+            let canonical = self
+                .canonical_facts
+                .map(|bindings| {
+                    bindings
+                        .get(&fact_id)
+                        .ok_or_else(|| anyhow!("runtime fact has no canonical binding: {fact_id}"))
+                })
+                .transpose()?;
+            let existing = find_entity_by_type_and_attr(
                 self.db,
                 &tuple_entity_type,
                 ATTR_AXI_FACT_ID,
                 &fact_id,
-            ) {
-                // Duplicate tuple: set semantics treat this as redundant.
-                // Keep the existing entity and skip re-adding edges.
-                self.entities_by_key
-                    .insert((tuple_entity_type.clone(), tuple_name), existing);
+            );
+            let tuple_entity_id = if let Some(existing) = existing {
+                existing
+            } else {
+                if !allocate {
+                    return Err(anyhow!("fact node was not allocated: {fact_id}"));
+                }
+                let mut tuple_attrs_owned = self.common_entity_attrs_owned(&tuple_name);
+                tuple_attrs_owned.push((ATTR_AXI_RELATION.to_string(), relation_name.to_string()));
+                tuple_attrs_owned.push((ATTR_AXI_FACT_ID.to_string(), fact_id.clone()));
+                let tuple_attrs: Vec<(&str, &str)> = tuple_attrs_owned
+                    .iter()
+                    .map(|(k, v)| (k.as_str(), v.as_str()))
+                    .collect();
+                let tuple_entity_id = self.db.add_entity(&tuple_entity_type, tuple_attrs);
+                self.summary.entities_added += 1;
+                self.summary.tuple_entities_added += 1;
+                self.ensure_entity_in_supertypes(tuple_entity_id, &tuple_entity_type);
+
+                if let Some(schema_meta) = self.schema_meta.as_ref() {
+                    if let Some(&rel_decl) = schema_meta.relations.get(relation_name) {
+                        self.add_edge_if_missing_with_attrs(
+                            META_REL_FACT_OF,
+                            tuple_entity_id,
+                            rel_decl,
+                            vec![(ATTR_AXI_FACT_ID, fact_id.as_str())],
+                        )?;
+                    }
+                }
+
+                tuple_entity_id
+            };
+            if allocate {
+                if let Some(label) = label {
+                    let key = FactNodeKey::Local {
+                        relation: relation_name.to_string(),
+                        label: label.clone(),
+                    };
+                    if self
+                        .fact_nodes
+                        .insert(key, tuple_entity_id)
+                        .is_some_and(|old| old != tuple_entity_id)
+                    {
+                        return Err(anyhow!("ambiguous fact label `{label}`"));
+                    }
+                }
+                if let Some(binding) = canonical {
+                    if self
+                        .fact_nodes
+                        .insert(
+                            FactNodeKey::Canonical(binding.fact_id.clone()),
+                            tuple_entity_id,
+                        )
+                        .is_some_and(|old| old != tuple_entity_id)
+                    {
+                        return Err(anyhow!("canonical fact maps to multiple runtime nodes"));
+                    }
+                }
+                // Preserve allocation order for existing object-valued tuples.
+                for f in &decl.fields {
+                    if f.ty.relation_object_name().is_none() {
+                        self.get_or_create_object_entity(
+                            f.ty.referenced_name(),
+                            &field_value_names[&f.field],
+                        )?;
+                    }
+                }
                 continue;
             }
-
-            let mut tuple_attrs_owned = self.common_entity_attrs_owned(&tuple_name);
-            tuple_attrs_owned.push((ATTR_AXI_RELATION.to_string(), relation_name.to_string()));
-            tuple_attrs_owned.push((ATTR_AXI_FACT_ID.to_string(), fact_id.clone()));
-            let tuple_attrs: Vec<(&str, &str)> = tuple_attrs_owned
-                .iter()
-                .map(|(k, v)| (k.as_str(), v.as_str()))
-                .collect();
-            let tuple_entity_id = self.db.add_entity(&tuple_entity_type, tuple_attrs);
-            self.summary.entities_added += 1;
-            self.summary.tuple_entities_added += 1;
-            self.ensure_entity_in_supertypes(tuple_entity_id, &tuple_entity_type);
-
-            if let Some(schema_meta) = self.schema_meta.as_ref() {
-                if let Some(&rel_decl) = schema_meta.relations.get(relation_name) {
-                    self.add_edge_if_missing_with_attrs(
-                        META_REL_FACT_OF,
-                        tuple_entity_id,
-                        rel_decl,
-                        vec![(ATTR_AXI_FACT_ID, fact_id.as_str())],
-                    )?;
-                }
-            }
-
-            // Pass 2: create object entities and field edges.
+            // Pass 2: link typed roles to objects or already allocated facts.
             let mut values_by_field: HashMap<String, u32> = HashMap::new();
             for f in &decl.fields {
                 let value_name = field_value_names
@@ -1318,8 +1405,32 @@ impl<'a> InstanceImportContext<'a> {
                         )
                     })?
                     .as_str();
-                let value_entity_id =
-                    self.get_or_create_object_entity(f.ty.referenced_name(), value_name)?;
+                let value_entity_id = if let Some(binding) = canonical {
+                    match binding.roles.get(&f.field).ok_or_else(|| anyhow!("canonical role binding missing"))? {
+                        axiograph_kernel::TypedValueIr::ObjectElement { value } => {
+                            if value != value_name || f.ty.relation_object_name().is_some() {
+                                return Err(anyhow!("canonical object role does not match source lowering"));
+                            }
+                            self.get_or_create_object_entity(f.ty.referenced_name(), value)?
+                        }
+                        axiograph_kernel::TypedValueIr::RelationFact { fact_id } => {
+                            *self.fact_nodes.get(&FactNodeKey::Canonical(fact_id.clone()))
+                                .ok_or_else(|| anyhow!("canonical fact reference is dangling or outside its instance: {fact_id}"))?
+                        }
+                    }
+                } else if f.ty.relation_object_name().is_none() {
+                    self.get_or_create_object_entity(f.ty.referenced_name(), value_name)?
+                } else {
+                    *self
+                        .fact_nodes
+                        .get(&FactNodeKey::Local {
+                            relation: f.ty.referenced_name().to_string(),
+                            label: value_name.to_string(),
+                        })
+                        .ok_or_else(|| {
+                            anyhow!("unresolved relation fact reference `{value_name}`")
+                        })?
+                };
                 values_by_field.insert(f.field.clone(), value_entity_id);
 
                 // Field edge: tuple -field-> value

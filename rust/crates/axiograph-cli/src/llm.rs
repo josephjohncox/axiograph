@@ -16,7 +16,13 @@
 
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::json;
+#[cfg(any(
+    feature = "llm-ollama",
+    feature = "llm-openai",
+    feature = "llm-anthropic"
+))]
+use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::PathBuf;
 use std::process::Command;
@@ -705,22 +711,22 @@ pub(crate) fn predictive_proposal_llm_plugin(
 ) -> Result<PredictiveProposalResponseV1> {
     crate::predictive_proposals::validate_predictive_proposal_request(req)?;
     let _max_tokens_guard = maybe_bump_llm_max_output_tokens(req);
-    let content: String = match &llm.backend {
+    match &llm.backend {
         LlmBackend::Disabled => {
-            return Err(anyhow!(
+            Err(anyhow!(
                 "predictive proposal adapter LLM backend is disabled (configure `--llm-openai/--llm-ollama/--llm-anthropic`)"
             ))
         }
         LlmBackend::Mock => {
             let proposals = normalize_predictive_proposal_proposals_value(&req.trace_id, json!({}));
-            return Ok(PredictiveProposalResponseV1 {
+            Ok(PredictiveProposalResponseV1 {
                 protocol: crate::predictive_proposals::PREDICTIVE_PROPOSAL_PROTOCOL_V1.to_string(),
                 trace_id: req.trace_id.clone(),
                 generated_at_unix_secs: now_unix_secs(),
                 proposals,
                 notes: vec!["mock backend (no proposals)".to_string()],
                 error: None,
-            });
+            })
         }
         #[cfg(feature = "llm-ollama")]
         LlmBackend::Ollama { host } => {
@@ -734,7 +740,8 @@ pub(crate) fn predictive_proposal_llm_plugin(
                 .unwrap_or_else(|_| "{\"summary\":\"unavailable\"}".to_string());
             let timeout = llm_timeout(None)?;
             // `format: "json"` keeps this compatible with more Ollama models.
-            ollama_chat_with_timeout(host, model, &user, Some(&system), Some(json!("json")), timeout)?
+            let content = ollama_chat_with_timeout(host, model, &user, Some(&system), Some(json!("json")), timeout)?;
+            predictive_proposal_response_from_content(req, &content)
         }
         #[cfg(feature = "llm-openai")]
         LlmBackend::OpenAI { base_url } => {
@@ -748,7 +755,8 @@ pub(crate) fn predictive_proposal_llm_plugin(
                 .unwrap_or_else(|_| "{\"summary\":\"unavailable\"}".to_string());
             let timeout = llm_timeout(None)?;
             let text_format = json!({ "type": "json_object" });
-            openai_chat_with_timeout(base_url, model, &user, Some(&system), Some(text_format), timeout)?
+            let content = openai_chat_with_timeout(base_url, model, &user, Some(&system), Some(text_format), timeout)?;
+            predictive_proposal_response_from_content(req, &content)
         }
         #[cfg(feature = "llm-anthropic")]
         LlmBackend::Anthropic { base_url } => {
@@ -761,16 +769,27 @@ pub(crate) fn predictive_proposal_llm_plugin(
             let user = serde_json::to_string_pretty(&summary)
                 .unwrap_or_else(|_| "{\"summary\":\"unavailable\"}".to_string());
             let timeout = llm_timeout(None)?;
-            anthropic_chat_with_timeout(base_url, model, &user, Some(&system), timeout)?
+            let content = anthropic_chat_with_timeout(base_url, model, &user, Some(&system), timeout)?;
+            predictive_proposal_response_from_content(req, &content)
         }
         LlmBackend::Command { .. } => {
-            return Err(anyhow!(
+            Err(anyhow!(
                 "predictive proposal adapter LLM backend does not support LLM command plugins (use openai/anthropic/ollama)"
-            ));
+            ))
         }
-    };
+    }
+}
 
-    let parsed: Value = parse_llm_json_object(&content)?;
+#[cfg(any(
+    feature = "llm-ollama",
+    feature = "llm-openai",
+    feature = "llm-anthropic"
+))]
+fn predictive_proposal_response_from_content(
+    req: &PredictiveProposalRequestV1,
+    content: &str,
+) -> Result<PredictiveProposalResponseV1> {
+    let parsed: Value = parse_llm_json_object(content)?;
     let proposals = normalize_predictive_proposal_proposals_value(&req.trace_id, parsed);
     Ok(PredictiveProposalResponseV1 {
         protocol: crate::predictive_proposals::PREDICTIVE_PROPOSAL_PROTOCOL_V1.to_string(),
@@ -4256,8 +4275,23 @@ pub(crate) fn run_tool_loop_with_meta(
             &schema,
             &tools,
             &transcript,
+            #[cfg(any(
+                feature = "llm-ollama",
+                feature = "llm-openai",
+                feature = "llm-anthropic"
+            ))]
             snapshot_key,
+            #[cfg(any(
+                feature = "llm-ollama",
+                feature = "llm-openai",
+                feature = "llm-anthropic"
+            ))]
             embeddings,
+            #[cfg(any(
+                feature = "llm-ollama",
+                feature = "llm-openai",
+                feature = "llm-anthropic"
+            ))]
             ollama_embed_host,
             options,
         )?;
@@ -7013,6 +7047,7 @@ fn tool_semantic_search(
                 s
             }
 
+            #[cfg(any(feature = "llm-ollama", feature = "llm-openai"))]
             let timeout = llm_timeout(None)?;
 
             // Entities.
@@ -8430,8 +8465,23 @@ impl LlmState {
         schema: &SchemaContextV1,
         tools: &[ToolSpecV1],
         transcript: &[ToolLoopTranscriptItemV1],
+        #[cfg(any(
+            feature = "llm-ollama",
+            feature = "llm-openai",
+            feature = "llm-anthropic"
+        ))]
         snapshot_key: &str,
+        #[cfg(any(
+            feature = "llm-ollama",
+            feature = "llm-openai",
+            feature = "llm-anthropic"
+        ))]
         embeddings: Option<&crate::embeddings::ResolvedEmbeddingsIndexV1>,
+        #[cfg(any(
+            feature = "llm-ollama",
+            feature = "llm-openai",
+            feature = "llm-anthropic"
+        ))]
         ollama_embed_host: Option<&str>,
         options: ToolLoopOptions,
     ) -> Result<ToolLoopModelResponseV1> {
