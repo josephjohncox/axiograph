@@ -35,7 +35,7 @@ members = [
 ]
 
 [workspace.package]
-version = "20260829.0.3"
+version = "20260908.0.0"
 edition = "2021"
 rust-version = "1.93"
 authors = ["Axiograph Team"]
