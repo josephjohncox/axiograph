@@ -476,6 +476,8 @@ fn authoring_workspace_response_schema_validates_real_modes_and_errors() -> Resu
     let (_temp, service) = write_workspace()?;
     let tool = authoring_rmcp_tool();
     let schema = serde_json::to_value(tool.output_schema.expect("output schema"))?;
+    assert_eq!(schema, response_schema());
+    assert!(schema.is_object());
     let validator = jsonschema::validator_for(&schema)?;
     for detail in [
         AuthoringDetailV1::Summary,

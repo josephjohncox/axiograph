@@ -1806,7 +1806,7 @@ fn authoring_rmcp_tool() -> Tool {
         "Run diagnostics, typed holes/repairs, CQs, query preparation/explanations, finite evolution preview, validation, and fail-closed promotion review through one workspace service.",
         Arc::new(schema),
     )
-    .with_raw_output_schema(Arc::new(projection::response_schema().as_object().expect("object schema").clone()))
+    .with_raw_output_schema(Arc::new(projection::response_schema_object()))
     .with_annotations(ToolAnnotations::new().read_only(true).destructive(false))
 }
 

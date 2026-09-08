@@ -461,15 +461,15 @@ pub(super) fn presentation_schema() -> Value {
 
 // The envelope and aggregate contract are closed. Selected canonical artifacts are
 // intentionally opaque object payloads: this schema is not a generated ontology SDK.
-pub(super) fn response_schema() -> Value {
-    fn object(properties: Value) -> Value {
-        let required: Vec<_> = properties
-            .as_object()
-            .expect("properties")
-            .keys()
-            .cloned()
-            .collect();
+pub(super) fn response_schema_object() -> JsonObject {
+    fn object(properties: JsonObject) -> Value {
+        let required: Vec<_> = properties.keys().cloned().collect();
         json!({"type":"object","additionalProperties":false,"required":required,"properties":properties})
+    }
+    macro_rules! object_properties {
+        ({$($key:literal : $value:tt),* $(,)?}) => {
+            JsonObject::from_iter([$(($key.to_owned(), json!($value))),*])
+        };
     }
     let count = json!({"type":"integer","minimum":0});
     let string = json!({"type":"string"});
@@ -477,35 +477,38 @@ pub(super) fn response_schema() -> Value {
     let strings = json!({"type":"array","items":string});
     let gate = json!({"enum":["passed","blocked","not_evaluated"]});
     let trust = object(
-        json!({"trust_class":string,"authority":string,"checked_fragment":string,
+        object_properties!({"trust_class":string,"authority":string,"checked_fragment":string,
         "trusted_checker_import_closure":string,"completeness_claim":string,"ontology_closure_claim":string,"non_claims":strings}),
     );
-    let promotion_gate = object(json!({"gate":string,"decision":gate,"detail":string}));
+    let promotion_gate =
+        object(object_properties!({"gate":string,"decision":gate,"detail":string}));
     let promotion = object(
-        json!({"candidate_reviewable":boolean,"protected_main_eligible":boolean,
+        object_properties!({"candidate_reviewable":boolean,"protected_main_eligible":boolean,
         "gates":{"type":"array","items":promotion_gate},"blockers":strings,"required_write_authority":string,"scope":string,"non_claims":strings}),
     );
-    let module = object(json!({"module_name":string,"module_id":string,"revision_digest":string}));
+    let module = object(
+        object_properties!({"module_name":string,"module_id":string,"revision_digest":string}),
+    );
     let source = object(
-        json!({"workspace_relative_path":string,"root_module":string,"repository_id":string,
+        object_properties!({"workspace_relative_path":string,"root_module":string,"repository_id":string,
         "compiled_snapshot_id":string,"kernel_ir_digest":string,"exact_root_axi_digest":string,
         "ordered_module_closure":{"type":"array","items":module},"runtime_ir_ref_count":count}),
     );
     let finite = object(
-        json!({"category_formations_replayed":count,"saturated_presentations":count,"identity_paths_replayed":count,
+        object_properties!({"category_formations_replayed":count,"saturated_presentations":count,"identity_paths_replayed":count,
         "path_explanations_replayed":count,"object_memberships_replayed":count,"dependent_role_witnesses_replayed":count,
         "finite_refinement_predicates_replayed":count,"finite_constraint_witnesses_replayed":count,"dependent_contexts_replayed":count,
         "identity_scope_transports_replayed":count,"non_identity_scope_transports_certified":count}),
     );
     let runtime = object(
-        json!({"theory_count":count,"checked_obligations":count,"review_only_obligations":count,
+        object_properties!({"theory_count":count,"checked_obligations":count,"review_only_obligations":count,
         "residual_obligations":count,"residual_obligation_ids":count,"blocked_obligations":count,"excluded_by_evidence":count,"blocking_errors":count}),
     );
     let cq = object(
-        json!({"questions":count,"unresolved":count,"evaluated":boolean,"satisfied":count,"total":count,"promotion_gate":gate}),
+        object_properties!({"questions":count,"unresolved":count,"evaluated":boolean,"satisfied":count,"total":count,"promotion_gate":gate}),
     );
     let validation = object(
-        json!({"canonical_axi_valid":boolean,"compiled_kernel_ir_valid":boolean,"finite_category_fragment_valid":boolean,
+        object_properties!({"canonical_axi_valid":boolean,"compiled_kernel_ir_valid":boolean,"finite_category_fragment_valid":boolean,
         "runtime_theory_gate":gate,"diagnostic_errors":count,"diagnostic_warnings":count,"finite_coverage":{"anyOf":[finite,{"type":"null"}]},
         "finite_residuals":count,"dependent_residuals":count,"runtime_theory":{"anyOf":[runtime,{"type":"null"}]},
         "competency":{"anyOf":[cq,{"type":"null"}]},"scope":string,"non_claims":strings}),
@@ -516,14 +519,14 @@ pub(super) fn response_schema() -> Value {
         "location":crate::axi_input::diagnostics::location_schema()},
         "description":"Absent location means unlocated; path/line alone does not claim token precision."});
     let mut page = object(
-        json!({"section":{"enum":SECTIONS},"selected":boolean,"total":count,"offset":count,"returned":count,"omitted":count,
+        object_properties!({"section":{"enum":SECTIONS},"selected":boolean,"total":count,"offset":count,"returned":count,"omitted":count,
         "truncated":boolean,"next_cursor":{"type":["string","null"],"maxLength":MAX_CURSOR_BYTES},
         "items":{"type":"array","maxItems":MAX_PAGE_LIMIT,"items":{"type":"object"}}}),
     );
     page["allOf"] = json!([{"if":{"properties":{"section":{"const":"diagnostics"}}},
         "then":{"properties":{"items":{"type":"array","items":diagnostic}}}}]);
     let compact = object(
-        json!({"version":{"const":RESPONSE_VERSION},"operation":{"enum":["inspect","validate","apply_repair","promotion_review"]},
+        object_properties!({"version":{"const":RESPONSE_VERSION},"operation":{"enum":["inspect","validate","apply_repair","promotion_review"]},
         "detail":{"enum":["summary","standard"]},"workspace_root":string,"requested_path":string,"input_identity":{"type":"string","pattern":"^[0-9a-f]{64}$"},
         "source":{"anyOf":[source,{"type":"null"}]},"ok":boolean,"summary":string,"validation":validation,"promotion":promotion,"trust":trust,
         "next_actions":strings,"follow_up_available":boolean,"sections":{"type":"array","minItems":SECTIONS.len(),"maxItems":SECTIONS.len(),"items":page},
@@ -539,5 +542,16 @@ pub(super) fn response_schema() -> Value {
         "prepared_query":artifact,"query_explanation":artifact,"applied_query_repair":artifact,"checked_olog":artifact,
         "applied_olog_repair":artifact,"evolution_previews":artifacts},
         "description":"Canonical full artifact; nested domain artifact schemas are not expanded by this presentation contract."});
-    json!({"type":"object","oneOf":[compact,full,object(json!({"error":string}))]})
+    JsonObject::from_iter([
+        ("type".to_owned(), json!("object")),
+        (
+            "oneOf".to_owned(),
+            json!([compact, full, object(object_properties!({"error":string}))]),
+        ),
+    ])
+}
+
+#[cfg(test)]
+pub(super) fn response_schema() -> Value {
+    Value::Object(response_schema_object())
 }
