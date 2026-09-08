@@ -107,6 +107,7 @@ struct ServerState {
     receipt: AxpdReceipt,
     loaded_at_unix_secs: u64,
     query_permits: Arc<Semaphore>,
+    viz_html: Option<Vec<u8>>,
 }
 
 pub(crate) fn cmd_db_serve(args: crate::DbServeArgs) -> Result<()> {
@@ -127,7 +128,16 @@ pub(crate) fn cmd_db_serve(args: crate::DbServeArgs) -> Result<()> {
     let receipt = materialized.receipt().clone();
     let db = Arc::new(materialized.into_db());
     let meta = MetaPlaneIndex::from_db(&db).ok();
+    // Authentication failures above are fatal; optional UI preparation is not.
+    let viz_html = match crate::viz::prepare_server_html(&db) {
+        Ok(html) => Some(html),
+        Err(error) => {
+            eprintln!("read-only /viz unavailable: {error}");
+            None
+        }
+    };
     let state = Arc::new(ServerState {
+        viz_html,
         db,
         meta,
         receipt,
@@ -233,6 +243,17 @@ async fn run_server(args: crate::DbServeArgs, state: Arc<ServerState>) -> Result
 async fn handle_request(request: Request<Incoming>, state: Arc<ServerState>) -> HttpResponse {
     match (request.method(), request.uri().path()) {
         (&Method::GET, "/healthz") => text_response(StatusCode::OK, "ok\n"),
+        (&Method::GET, "/capabilities") => {
+            match read_only_capabilities(state.viz_html.is_some()) {
+                Ok(capabilities) => json_response(StatusCode::OK, &capabilities),
+                Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+            }
+        }
+        (&Method::GET, "/viz") => match &state.viz_html {
+            Some(html) => response(StatusCode::OK, "text/html; charset=utf-8", html.clone()),
+            None => error_response(StatusCode::SERVICE_UNAVAILABLE,
+                "Visualization unavailable: build frontend assets and use an image within UI-only budgets; health/status/query remain available."),
+        },
         (&Method::GET, "/status") => {
             let status = StatusResponseV2 {
                 format: "axiograph_authenticated_pathdb_status_v2",
@@ -270,6 +291,18 @@ async fn handle_request(request: Request<Incoming>, state: Arc<ServerState>) -> 
         },
         _ => error_response(StatusCode::NOT_FOUND, "not found"),
     }
+}
+
+// Shared, mechanically checked transport profile; no receipt constructors or
+// semantic authority are described here. Query schema remains descriptive.
+fn read_only_capabilities(ui_available: bool) -> Result<serde_json::Value> {
+    Ok(serde_json::json!({
+        "api": serde_json::from_str::<serde_json::Value>(include_str!(
+            "../../../../frontend/viz/src/server/read-only-api.json"
+        ))?,
+        "query_schema": crate::query_ir::query_ir_v1_json_schema(),
+        "ui_available": ui_available,
+    }))
 }
 
 fn execute_finite_query(
@@ -363,6 +396,56 @@ instance I of S:
         db.build_indexes();
         let meta = MetaPlaneIndex::from_db(&db)?;
         Ok((db, meta))
+    }
+
+    #[test]
+    fn read_only_descriptor_and_descriptive_query_profile_are_checked() -> Result<()> {
+        let caps = read_only_capabilities(false)?;
+        assert_eq!(caps["api"]["limits"]["request_bytes"], MAX_QUERY_BODY_BYTES);
+        assert_eq!(
+            caps["api"]["limits"]["response_bytes"],
+            MAX_QUERY_RESPONSE_BYTES
+        );
+        assert_eq!(caps["ui_available"], false);
+        let schema = &caps["query_schema"];
+        let validator = jsonschema::validator_for(schema)?;
+        for term in [
+            serde_json::json!({"kind":"var","name":"person"}),
+            serde_json::json!({"kind":"name","value":"Alice"}),
+            serde_json::json!({"kind":"entity","key":"name","value":"Alice"}),
+            serde_json::json!({"kind":"wildcard"}),
+        ] {
+            let mut query = serde_json::json!({"version":1,"where_atoms":[{"kind":"type","term":term,"type":"Person"}]});
+            assert!(validator.is_valid(&query), "{query}");
+            assert!(serde_json::from_value::<crate::query_ir::QueryIrV1>(query.clone()).is_ok());
+            query["where_atoms"][0]["term"]["extra"] = true.into();
+            assert!(!validator.is_valid(&query));
+        }
+        for context in [
+            serde_json::json!({"kind":"name","name":"world"}),
+            serde_json::json!({"kind":"entity_id","id":0}),
+        ] {
+            let mut query = serde_json::json!({"version":1,"where_atoms":[],"contexts":[context]});
+            assert!(validator.is_valid(&query));
+            assert!(serde_json::from_value::<crate::query_ir::QueryIrV1>(query.clone()).is_ok());
+            query["contexts"][0]["extra"] = true.into();
+            assert!(!validator.is_valid(&query));
+        }
+        for query in [
+            serde_json::json!({"where_atoms":[]}),
+            serde_json::json!({"version":1,"where_atoms":[],"extra":true}),
+        ] {
+            // Intentionally NOT claiming schema/deserializer equivalence.
+            assert!(!validator.is_valid(&query));
+            assert!(serde_json::from_value::<crate::query_ir::QueryIrV1>(query).is_ok());
+        }
+        for request in [
+            serde_json::json!({"query":"select ?x where ..."}),
+            serde_json::json!({"query":{"version":1,"where_atoms":[]},"certify":true}),
+        ] {
+            assert!(serde_json::from_value::<FiniteQueryRequest>(request).is_err());
+        }
+        Ok(())
     }
 
     #[test]

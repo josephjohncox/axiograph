@@ -142,9 +142,8 @@ done
 )
 (
 	cd "$root/rust"
-	cargo test -p axiograph-cli \
-		regulated_shipment_exact_path_query_is_complete_and_missing_rows_reject \
-		-- --nocapture
+	python3 "$root/scripts/run_required_query_tests.py" --package axiograph-query \
+		--filter regulated_shipment_exact_path_query_is_complete_and_missing_rows_reject
 	cargo test -p axiograph-example-regulated-shipment -- --nocapture
 )
 

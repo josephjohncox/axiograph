@@ -1,0 +1,15 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "strict": true
+  },
+  "include": [
+    "src/core/context.ts",
+    "src/core/status.ts",
+    "src/core/draft-selection.ts",
+    "src/render/dom.ts",
+    "src/server/read-only-client.ts",
+    "src/server/controls.ts",
+    "src/tabs/query.ts"
+  ]
+}

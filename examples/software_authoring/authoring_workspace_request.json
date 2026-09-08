@@ -1,5 +1,6 @@
 {
   "version": "authoring_workspace_request_v1",
+  "presentation": { "detail": "full" },
   "operation": "promotion_review",
   "axi_path": "examples/software_authoring/OrderFulfillmentDomain.axi",
   "cq_path": "examples/software_authoring/order_fulfillment.cq",

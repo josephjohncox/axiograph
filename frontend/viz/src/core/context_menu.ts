@@ -100,8 +100,8 @@ export function initContextMenu(ctx) {
       if (ctx.clearPath) ctx.clearPath(ctx);
       if (ctx.rerender) ctx.rerender();
     }, { danger: true });
-    addItem("Certify path", () => ctx.certifySelectedPath && ctx.certifySelectedPath(false), { disabled: !ctx.certifySelectedPath });
-    addItem("Verify path", () => ctx.certifySelectedPath && ctx.certifySelectedPath(true), { disabled: !ctx.certifySelectedPath });
+    addItem("Certify path (unavailable; use CLI)", () => ctx.certifySelectedPath && ctx.certifySelectedPath(false), { disabled: true });
+    addItem("Verify path (unavailable; use CLI)", () => ctx.certifySelectedPath && ctx.certifySelectedPath(true), { disabled: true });
     addItem("", null, { separator: true });
     addItem("Focus search on name", () => {
       if (!searchEl) return;

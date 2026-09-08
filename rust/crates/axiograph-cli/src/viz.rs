@@ -1460,6 +1460,23 @@ pub fn write_html_bundle(
 }
 
 fn inline_viz_script(html: &str, dist_root: &std::path::Path) -> Result<String> {
+    inline_viz_script_bounded(
+        html,
+        dist_root,
+        crate::security::MAX_TEXT_INPUT_BYTES,
+        crate::security::MAX_OUTPUT_BYTES,
+    )
+}
+
+fn inline_viz_script_bounded(
+    html: &str,
+    dist_root: &std::path::Path,
+    asset_limit: usize,
+    total_limit: usize,
+) -> Result<String> {
+    if html.len() > total_limit {
+        return Err(anyhow!("viz HTML exceeds byte budget"));
+    }
     let mut out = html.to_string();
     let script_tag = "<script";
     let module_tag = "type=\"module\"";
@@ -1479,12 +1496,20 @@ fn inline_viz_script(html: &str, dist_root: &std::path::Path) -> Result<String> 
                         let js_path = dist_root.join(src_trim);
                         let js = crate::security::read_utf8_file_bounded(
                             &js_path,
-                            crate::security::MAX_TEXT_INPUT_BYTES,
+                            asset_limit,
                             "CLI input",
                         )
                         .with_context(|| {
                             format!("missing viz asset script at {}", js_path.display())
                         })?;
+                        if out
+                            .len()
+                            .checked_add(js.len())
+                            .and_then(|n| n.checked_add(32))
+                            .is_none_or(|n| n > total_limit)
+                        {
+                            return Err(anyhow!("inlined viz exceeds byte budget"));
+                        }
                         let inline = format!("<script>\n{js}\n</script>");
                         out.replace_range(start..end_tag, &inline);
                         return Ok(out);
@@ -1597,6 +1622,145 @@ pub fn render_html(db: &PathDB, g: &VizGraph) -> Result<String> {
     Ok(html)
 }
 
+// UI-only budgets. Query/startup authentication limits are independent. The
+// preflight uses borrowed strings, counts repeated references and bounds empty
+// attribute entries before any owned EntityView/label extraction. 4 MiB output
+// is not a claim of 4 MiB peak memory: labels/JSON/HTML have bounded copies.
+const SERVER_VIZ_TEXT_BYTES: usize = 1024 * 1024;
+const SERVER_VIZ_STRING_BYTES: usize = 8 * 1024;
+const SERVER_VIZ_ATTRIBUTE_ENTRIES: usize = 16_384;
+const SERVER_VIZ_HTML_BYTES: usize = 4 * 1024 * 1024;
+
+fn preflight_server_viz(db: &PathDB) -> Result<()> {
+    if db.entities.len() > 1000 || db.relations.len() > 4000 {
+        return Err(anyhow!("UI entity/relation count budget exceeded"));
+    }
+    let mut bytes = 0usize;
+    let mut attributes = 0usize;
+    let mut count = |id| -> Result<()> {
+        let len = db
+            .interner
+            .with_lookup(id, |s| s.len())
+            .ok_or_else(|| anyhow!("missing UI string"))?;
+        bytes = bytes
+            .checked_add(len)
+            .ok_or_else(|| anyhow!("UI byte overflow"))?;
+        if len > SERVER_VIZ_STRING_BYTES || bytes > SERVER_VIZ_TEXT_BYTES {
+            return Err(anyhow!("UI referenced text budget exceeded"));
+        }
+        Ok(())
+    };
+    for id in 0..db.entities.len() as u32 {
+        if let Some(ty) = db.entities.get_type(id) {
+            count(ty)?;
+        }
+        if let Some(attrs) = db.entities.attrs_for_entity(id) {
+            attributes = attributes
+                .checked_add(attrs.len())
+                .ok_or_else(|| anyhow!("UI attribute overflow"))?;
+            if attributes > SERVER_VIZ_ATTRIBUTE_ENTRIES {
+                return Err(anyhow!("UI attribute budget exceeded"));
+            }
+            for &(key, value) in attrs {
+                count(key)?;
+                count(value)?;
+            }
+        }
+    }
+    for id in 0..db.relations.len() as u32 {
+        if let Some(rel) = db.relations.get_relation(id) {
+            count(rel.rel_type)?;
+            attributes = attributes
+                .checked_add(rel.attrs.len())
+                .ok_or_else(|| anyhow!("UI attribute overflow"))?;
+            if attributes > SERVER_VIZ_ATTRIBUTE_ENTRIES {
+                return Err(anyhow!("UI attribute budget exceeded"));
+            }
+            for &(key, value) in &rel.attrs {
+                count(key)?;
+                count(value)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+struct VizJsonWriter(Vec<u8>);
+impl std::io::Write for VizJsonWriter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        if self
+            .0
+            .len()
+            .checked_add(bytes.len())
+            .is_none_or(|n| n > SERVER_VIZ_TEXT_BYTES)
+        {
+            return Err(std::io::Error::other("UI JSON byte budget exceeded"));
+        }
+        self.0.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+pub(crate) fn prepare_server_html(db: &PathDB) -> Result<Vec<u8>> {
+    prepare_server_html_from_dist(db, &viz_dist_dir())
+}
+
+fn prepare_server_html_from_dist(db: &PathDB, dist: &std::path::Path) -> Result<Vec<u8>> {
+    preflight_server_viz(db)?;
+    let options = VizOptions {
+        all_nodes: true,
+        max_nodes: 250,
+        max_edges: 1000,
+        hops: 0,
+        typed_overlay: false,
+        include_equivalences: false,
+        ..VizOptions::default()
+    };
+    // No meta/theory expansion; label amplification <= two 8 KiB target
+    // labels per selected node. Context fanout <= the 4000 relation ceiling.
+    let graph = extract_viz_graph_with_meta(db, &options, None)?;
+    let mut writer = VizJsonWriter(Vec::new());
+    serde_json::to_writer(&mut writer, &graph)?;
+    let json = String::from_utf8(writer.0)?.replace("</", "<\\/");
+    let template = crate::security::read_utf8_file_bounded(
+        &dist.join("index.html"),
+        SERVER_VIZ_TEXT_BYTES,
+        "UI template",
+    )?;
+    if !template.contains("type=\"module\"") || !template.contains("</body>") {
+        return Err(anyhow!("UI assets missing or unbuilt"));
+    }
+    // Existing export boot reads this non-executable JSON element. Do not
+    // serve caller-selected files or label this graph a query-image binding.
+    let snippet =
+        format!("<script id=\"axiograph_graph\" type=\"application/json\">{json}</script>");
+    if template
+        .len()
+        .checked_add(snippet.len())
+        .is_none_or(|n| n > SERVER_VIZ_HTML_BYTES)
+    {
+        return Err(anyhow!("UI embedded graph byte budget exceeded"));
+    }
+    let mut html = template;
+    let end = html
+        .rfind("</body>")
+        .ok_or_else(|| anyhow!("missing UI body"))?;
+    html.insert_str(end, &snippet);
+    let inlined = inline_viz_script_bounded(
+        &html,
+        dist,
+        2 * SERVER_VIZ_TEXT_BYTES,
+        SERVER_VIZ_HTML_BYTES,
+    )?;
+    if inlined == html {
+        return Err(anyhow!("UI module asset unavailable"));
+    }
+    Ok(inlined.into_bytes())
+}
+
 // =============================================================================
 // Tests
 // =============================================================================
@@ -1628,6 +1792,127 @@ instance DemoInst of Demo:
             .expect("import demo axi module");
         db.build_indexes();
         db
+    }
+
+    #[test]
+    fn server_viz_preflight_counts_repeated_text_and_empty_attributes() -> Result<()> {
+        let mut db = PathDB::new();
+        let long = "x".repeat(SERVER_VIZ_STRING_BYTES);
+        db.add_entity(&long, vec![]);
+        preflight_server_viz(&db)?; // exact per-string boundary
+        let mut oversized = PathDB::new();
+        oversized.add_entity(&(long.clone() + "x"), vec![]);
+        assert!(preflight_server_viz(&oversized).is_err());
+        for _ in 1..128 {
+            db.add_entity(&long, vec![]);
+        }
+        preflight_server_viz(&db)?; // exactly 1 MiB, repeated interned references
+        db.add_entity("x", vec![]);
+        assert!(preflight_server_viz(&db).is_err());
+        let mut attrs = PathDB::new();
+        let node = attrs.add_entity("", vec![]);
+        let pairs = vec![("", ""); SERVER_VIZ_ATTRIBUTE_ENTRIES];
+        attrs.add_relation("", node, node, 1.0, pairs);
+        preflight_server_viz(&attrs)?;
+        attrs.add_relation("", node, node, 1.0, vec![("", "")]);
+        assert!(preflight_server_viz(&attrs).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn server_viz_count_boundaries_and_repeated_attribute_values() -> Result<()> {
+        let mut db = PathDB::new();
+        for _ in 0..1000 {
+            db.add_entity("", vec![]);
+        }
+        for _ in 0..4000 {
+            db.add_relation("", 0, 1, 1.0, vec![]);
+        }
+        preflight_server_viz(&db)?;
+        db.add_relation("", 0, 1, 1.0, vec![]);
+        assert!(preflight_server_viz(&db).is_err());
+        let mut nodes = PathDB::new();
+        for _ in 0..1001 {
+            nodes.add_entity("", vec![]);
+        }
+        assert!(preflight_server_viz(&nodes).is_err());
+
+        let mut attributes = PathDB::new();
+        let value = "x".repeat(SERVER_VIZ_STRING_BYTES);
+        for _ in 0..128 {
+            attributes.add_entity("", vec![("", &value)]);
+        }
+        preflight_server_viz(&attributes)?;
+        attributes.add_entity("", vec![("", "x")]);
+        assert!(preflight_server_viz(&attributes).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn server_viz_long_label_and_context_fanout_hits_json_budget() -> Result<()> {
+        let mut db = PathDB::new();
+        let long = "x".repeat(SERVER_VIZ_STRING_BYTES);
+        let target = db.add_entity("Context", vec![("name", &long)]);
+        for _ in 0..249 {
+            let node = db.add_entity("Morphism", vec![]);
+            db.add_relation("from", node, target, 1.0, vec![]);
+            db.add_relation("to", node, target, 1.0, vec![]);
+            db.add_relation(REL_AXI_FACT_IN_CONTEXT, node, target, 1.0, vec![]);
+        }
+        // Small interned input, but the same target label expands twice for
+        // every morphism. Preflight is not a final JSON or peak-RAM bound.
+        preflight_server_viz(&db)?;
+        let graph = extract_viz_graph_with_meta(
+            &db,
+            &VizOptions {
+                all_nodes: true,
+                max_nodes: 250,
+                max_edges: 1000,
+                hops: 0,
+                typed_overlay: false,
+                include_equivalences: false,
+                ..VizOptions::default()
+            },
+            None,
+        )?;
+        assert_eq!(graph.nodes.len(), 250);
+        assert_eq!(graph.edges.len(), 747);
+        assert_eq!(graph.contexts.len(), 1);
+        assert_eq!(graph.tuple_contexts.len(), 249);
+        assert!(graph.nodes[1].display_name.as_ref().unwrap().len() > 2 * long.len());
+        let mut writer = VizJsonWriter(Vec::new());
+        assert!(serde_json::to_writer(&mut writer, &graph).is_err());
+        assert!(writer.0.len() <= SERVER_VIZ_TEXT_BYTES);
+        let dist = tempfile::tempdir()?;
+        let error = prepare_server_html_from_dist(&db, dist.path()).unwrap_err();
+        assert!(error.to_string().contains("UI JSON byte budget"));
+        Ok(())
+    }
+
+    #[test]
+    fn server_viz_missing_unbuilt_and_oversized_assets_fail_without_writes() -> Result<()> {
+        let dist = tempfile::tempdir()?;
+        let db = PathDB::new();
+        assert!(prepare_server_html_from_dist(&db, dist.path()).is_err());
+        std::fs::write(dist.path().join("index.html"), "<body>unbuilt</body>")?;
+        assert!(prepare_server_html_from_dist(&db, dist.path()).is_err());
+        std::fs::write(
+            dist.path().join("index.html"),
+            "<head><script type=\"module\" src=\"./asset.js\"></script></head><body></body>",
+        )?;
+        std::fs::write(dist.path().join("asset.js"), "console.log('fixture');")?;
+        let html = prepare_server_html_from_dist(&db, dist.path())?;
+        assert!(String::from_utf8(html)?.contains("axiograph_graph"));
+        std::fs::write(
+            dist.path().join("asset.js"),
+            vec![b'x'; 2 * SERVER_VIZ_TEXT_BYTES + 1],
+        )?;
+        assert!(prepare_server_html_from_dist(&db, dist.path()).is_err());
+        let mut writer = VizJsonWriter(Vec::new());
+        std::io::Write::write_all(&mut writer, &vec![b'x'; SERVER_VIZ_TEXT_BYTES])?;
+        assert!(std::io::Write::write_all(&mut writer, b"x").is_err());
+        assert!(inline_viz_script_bounded(&"x".repeat(5), dist.path(), 10, 4).is_err());
+        Ok(())
     }
 
     #[test]

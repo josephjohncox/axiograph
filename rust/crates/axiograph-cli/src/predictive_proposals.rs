@@ -8,7 +8,13 @@
 
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+#[cfg(any(
+    feature = "llm-ollama",
+    feature = "llm-openai",
+    feature = "llm-anthropic"
+))]
+use serde_json::json;
+use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -988,6 +994,11 @@ impl PredictiveProposalInputV1 {
         self.replace_semantic_layer(PredictiveProposalSemanticLayerV1::TrainingExport { export });
     }
 
+    #[cfg(any(
+        feature = "llm-ollama",
+        feature = "llm-openai",
+        feature = "llm-anthropic"
+    ))]
     pub fn training_export(&self) -> Option<&MaskedTupleTrainingExportV1> {
         self.semantic_input
             .layers
@@ -1119,64 +1130,9 @@ pub struct ProposalTaskCostV1 {
     pub notes: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct CompetencyQuestionAuthoringHintsV1 {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ask: Option<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub about: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub given: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub expect: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub notes: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct CompetencyQuestionV1 {
-    pub name: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub question: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub authoring: Option<CompetencyQuestionAuthoringHintsV1>,
-    pub query: String,
-    #[serde(default)]
-    pub min_rows: usize,
-    #[serde(default)]
-    pub weight: f64,
-    #[serde(default)]
-    pub contexts: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct CompetencyQuestionBundleV1 {
-    pub version: String,
-    #[serde(default)]
-    pub questions: Vec<CompetencyQuestionV1>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub notes: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct CompetencyQuestionResultV1 {
-    pub name: String,
-    pub rows: usize,
-    pub min_rows: usize,
-    pub satisfied: bool,
-    pub weight: f64,
-    pub cost: f64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct CompetencyCoverageSummaryV1 {
-    pub total: usize,
-    pub satisfied: usize,
-    pub coverage: f64,
-    pub cost: f64,
-    #[serde(default)]
-    pub questions: Vec<CompetencyQuestionResultV1>,
-}
+pub use axiograph_query::competency_questions::{
+    CompetencyCoverageSummaryV1, CompetencyQuestionBundleV1, CompetencyQuestionV1,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct PredictiveProposalOptionsV1 {
@@ -1675,6 +1631,11 @@ fn apply_provenance_meta(meta: &mut ProposalMetaV1, provenance: &ProposalAdapter
     );
 }
 
+#[cfg(any(
+    feature = "llm-ollama",
+    feature = "llm-openai",
+    feature = "llm-anthropic"
+))]
 pub(crate) fn predictive_proposal_llm_prompt(req: &PredictiveProposalRequestV1) -> (String, Value) {
     let trace_id = if req.trace_id.as_str().trim().is_empty() {
         default_trace_id()

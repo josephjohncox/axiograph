@@ -33,7 +33,7 @@
 	verify-lean-e2e-query-result-module-v4 \
 	verify-lean-e2e-resolution-v2 verify-lean-e2e-normalize-path-v2 verify-lean-e2e-path-equiv-v2 verify-lean-e2e-path-equiv-congr-v2 verify-lean-e2e-delta-f-v1 \
 	verify-lean-certificates verify-lean-certificate-rejections verify-lean-e2e-suite \
-	rust-test-semantics check-rust-toolchain check-node-toolchain check-clean-source-manifest check-example-catalog rust-fmt-check rust-test-locked rust-test-all-targets-features check-cli-feature-matrix verify-viz \
+	rust-test-semantics check-rust-toolchain check-node-toolchain check-clean-source-manifest check-example-catalog rust-fmt-check rust-test-locked rust-test-all-targets-features check-cli-feature-matrix lint-cli-feature-matrix verify-viz \
 	verify-release-fixtures verify-release-packaging rehearse-release-publication check-release-version \
 	release-gate check-no-unsafe check-no-panics verify-semantics verify-canonical-spine test-semantics test-backend-containers \
 	docs docs-rust book book-tool book-validate book-serve \
@@ -200,6 +200,24 @@ check-cli-feature-matrix:
 	done
 	@echo "✓ CLI feature matrix complete"
 
+# Opt-in maintenance gate; does not widen release-gate prerequisites.
+# All commands are offline and lint tests/examples as well as production code.
+lint-cli-feature-matrix:
+	@echo "━━━ Strict query/CLI feature matrix (9 configurations) ━━━"
+	cd $(RUST_DIR) && $(CARGO) clippy -p axiograph-query -p axiograph-cli --all-targets --locked --offline -- -D warnings
+	cd $(RUST_DIR) && $(CARGO) clippy -p axiograph-query -p axiograph-cli --all-targets --no-default-features --locked --offline -- -D warnings
+	@set -e; \
+	for _feature in \
+		repl-rustyline llm-ollama llm-openai llm-anthropic \
+		profiling proposal-adapter-http; do \
+		echo "Strict single feature: $$_feature"; \
+		(cd $(RUST_DIR) && $(CARGO) clippy -p axiograph-query -p axiograph-cli \
+			--all-targets --no-default-features --features "axiograph-cli/$$_feature" \
+			--locked --offline -- -D warnings); \
+	done
+	cd $(RUST_DIR) && $(CARGO) clippy -p axiograph-query -p axiograph-cli --all-targets --all-features --locked --offline -- -D warnings
+	@echo "✓ Strict query/CLI feature matrix complete"
+
 rust-test-semantics:
 	@echo "━━━ Running Rust semantics tests (axiograph-pathdb) ━━━"
 	cd $(RUST_DIR) && $(CARGO) test -p axiograph-pathdb
@@ -331,7 +349,7 @@ verify-lean-certificates: lean
 
 verify-lean-certificate-rejections: lean-exe
 	@echo "━━━ Running approved-checker adversarial rejection tests ━━━"
-	cd $(RUST_DIR) && $(CARGO) test -p axiograph-cli verifier_bridge::tests -- --nocapture
+	python3 scripts/run_required_query_tests.py --cargo "$(CARGO)" --package axiograph-query --filter verifier_bridge::tests
 	@echo "✓ Approved checker accepted exact V4 and rejected malformed, altered-digest, forged, extra, missing, duplicate, and truncated inputs"
 
 verify-lean-theory: dirs
@@ -419,7 +437,7 @@ verify-canonical-spine: dirs check-no-unsafe verify-lean-theory
 	@echo "━━━ Verifying canonical semantic spine V1 ━━━"
 	cd $(RUST_DIR) && $(CARGO) fmt --check
 	cd $(RUST_DIR) && $(CARGO) test -p axiograph-pathdb runtime_theory -- --nocapture
-	cd $(RUST_DIR) && $(CARGO) test -p axiograph-cli prepared_query -- --nocapture
+	python3 scripts/run_required_query_tests.py --cargo "$(CARGO)" --package axiograph-query --filter prepared_query
 	cd $(RUST_DIR) && $(CARGO) test -p axiograph-cli semantic_merge_lattice -- --nocapture
 	cd $(RUST_DIR) && $(CARGO) test -p axiograph-cli --test examples_e2e software_authoring -- --nocapture
 	cd $(RUST_DIR) && $(CARGO) test -p axiograph-cli embeddings -- --nocapture
@@ -503,10 +521,11 @@ verify-lean-e2e-query-result-module-v4: dirs
 	@echo "━━━ Rust → Lean prepared-query and answer binding (query_result_v4) ━━━"
 	@ if command -v $(LAKE) >/dev/null 2>&1; then \
 		( cd $(LEAN_DIR) && $(LEAN_ENV) $(LAKE) build axiograph_verify ) && \
-		( cd $(RUST_DIR) && $(CARGO) test -q -p axiograph-cli approved_lean_checker_matches_prepared_ast_goldens -- --nocapture ) && \
+		python3 scripts/run_required_query_tests.py --cargo "$(CARGO)" --package axiograph-query --filter approved_lean_checker_matches_prepared_ast_goldens && \
 		echo "✓ Rust and Lean agree on query_result_v4 prepared/answer bindings"; \
 	else \
-		echo "⚠️  lake (Lean) not found - cannot run checker"; \
+		echo "error: lake (Lean) not found; required query-result checks cannot run"; \
+		exit 127; \
 	fi
 
 verify-lean-e2e-axi-well-typed-v1: dirs
@@ -709,11 +728,14 @@ verify-verus:
 	fi
 
 verify-viz: check-node-toolchain
-	@echo "━━━ Auditing and building the locked visualization frontend ━━━"
+	@echo "━━━ Auditing, checking, testing, and building the locked visualization frontend ━━━"
 	cd frontend/viz && npm ci --ignore-scripts
 	cd frontend/viz && npm audit --audit-level=moderate
+	cd frontend/viz && npm run typecheck
+	cd frontend/viz && npm test
+	cd frontend/viz && npm run build:debug
 	cd frontend/viz && npm run build
-	@echo "✓ Visualization dependencies are advisory-clean and the frontend builds"
+	@echo "✓ Visualization dependencies, typechecks, tests, and both builds passed"
 
 verify-rustsec:
 	@echo "━━━ Auditing the exact Rust lockfile against RustSec ━━━"
@@ -884,7 +906,7 @@ help:
 	@echo "  verify-lean-theory  Check finite category/dependent/groupoid semantics and adversarial cases"
 	@echo "  verify-lean-semantic-vcs  Verify Rust merge/rebase plans against Lean theory"
 	@echo "  check-no-unsafe  Reject unsafe code in all first-party Rust targets"
-	@echo "  verify-viz  Install, audit, and build the locked visualization frontend"
+	@echo "  verify-viz  Install, audit, typecheck, test, and build both frontend modes"
 	@echo "  verify-fuzz  Run corpus-seeded parser/image fuzzing under hard bounds"
 	@echo "  verify-miri  Run pure identity-kernel tests under Miri, or report unavailable"
 	@echo "  verify-loom  Model the real child-process concurrency limiter"

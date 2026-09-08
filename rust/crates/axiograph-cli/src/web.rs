@@ -702,6 +702,7 @@ pub(crate) struct PinnedPublicClient {
     addresses: Vec<SocketAddr>,
 }
 
+#[cfg(feature = "llm-ollama")]
 #[derive(Debug, Clone)]
 pub(crate) struct PinnedLoopbackClient {
     client: Client,
@@ -758,6 +759,7 @@ impl HttpClientPolicy {
     }
 }
 
+#[cfg(feature = "llm-ollama")]
 impl PinnedLoopbackClient {
     pub(crate) fn new(url: &Url, timeout: Duration) -> Result<Self> {
         if timeout.is_zero() || timeout > Duration::from_secs(MAX_WEB_TIMEOUT_SECS) {
@@ -873,6 +875,11 @@ impl PinnedPublicClient {
         self.client.get(self.url.clone())
     }
 
+    #[cfg(any(
+        feature = "llm-openai",
+        feature = "llm-anthropic",
+        feature = "proposal-adapter-http"
+    ))]
     pub(crate) fn post(&self) -> reqwest::blocking::RequestBuilder {
         self.client.post(self.url.clone())
     }

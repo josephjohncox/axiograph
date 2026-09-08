@@ -1,6 +1,29 @@
 // @ts-nocheck
 
 import { kindDisplayLabel } from "../util/labels";
+import { element, muted } from "./dom";
+
+function appendNodeLabel(
+  parent: HTMLElement,
+  type: string,
+  id: number,
+  kind: string,
+  name: string,
+  highlighted: boolean,
+) {
+  parent.append(
+    element(
+      "div",
+      {},
+      element("strong", {}, type),
+      " ",
+      element("span", { className: "muted" }, `#${id} • ${kind}`),
+    ),
+    name
+      ? element("div", {}, `${highlighted ? "★ " : ""}${name}`)
+      : muted("(no name)"),
+  );
+}
 
 export function renderNodeList(ctx: any, filter: string) {
   const {
@@ -10,12 +33,11 @@ export function renderNodeList(ctx: any, filter: string) {
     isNodeVisible,
     nodeDisplayName,
     effectiveTypeLabel,
-    escapeHtml,
     selectNode,
     selectedIdRef,
   } = ctx;
 
-  nodesEl.innerHTML = "";
+  nodesEl.replaceChildren();
   nodesEl.classList.remove("node-list-virtual");
   const f = (filter || "").trim().toLowerCase();
 
@@ -26,26 +48,36 @@ export function renderNodeList(ctx: any, filter: string) {
     const kind = n.kind || "entity";
     const kindLabel = kindDisplayLabel(kind);
     const entityType = effectiveTypeLabel(n);
-    const hay = `${n.id} ${n.entity_type} ${kind} ${kindLabel} ${entityType} ${disp}`.toLowerCase();
+    const hay =
+      `${n.id} ${n.entity_type} ${kind} ${kindLabel} ${entityType} ${disp}`.toLowerCase();
     if (f && !hay.includes(f)) continue;
     items.push({ node: n, disp, kind, kindLabel, entityType });
   }
 
   if (!items.length) {
-    nodesEl.innerHTML = `<div class="muted" style="margin-top:8px;">(no matching nodes)</div>`;
+    const empty = muted("(no matching nodes)");
+    empty.style.marginTop = "8px";
+    nodesEl.appendChild(empty);
     return;
   }
 
   const VIRTUAL_THRESHOLD = 2000;
   const ITEM_HEIGHT = 64;
   const OVERSCAN = 6;
-  const kindOrder = new Map([["entity", 0], ["fact", 1], ["morphism", 2], ["homotopy", 3], ["meta", 4]]);
+  const kindOrder = new Map([
+    ["entity", 0],
+    ["fact", 1],
+    ["morphism", 2],
+    ["homotopy", 3],
+    ["meta", 4],
+  ]);
 
   function compareItems(a, b) {
     const ka = kindOrder.has(a.kind) ? kindOrder.get(a.kind) : 99;
     const kb = kindOrder.has(b.kind) ? kindOrder.get(b.kind) : 99;
     if (ka !== kb) return ka - kb;
-    if (a.entityType !== b.entityType) return a.entityType.localeCompare(b.entityType);
+    if (a.entityType !== b.entityType)
+      return a.entityType.localeCompare(b.entityType);
     const na = a.disp || "";
     const nb = b.disp || "";
     if (na !== nb) return na.localeCompare(nb);
@@ -77,9 +109,12 @@ export function renderNodeList(ctx: any, filter: string) {
       const scrollTop = scroller.scrollTop || 0;
       const viewH = scroller.clientHeight || 320;
       const start = Math.max(0, Math.floor(scrollTop / ITEM_HEIGHT) - OVERSCAN);
-      const end = Math.min(items.length, start + Math.ceil(viewH / ITEM_HEIGHT) + OVERSCAN * 2);
+      const end = Math.min(
+        items.length,
+        start + Math.ceil(viewH / ITEM_HEIGHT) + OVERSCAN * 2,
+      );
       viewport.style.transform = `translateY(${start * ITEM_HEIGHT}px)`;
-      viewport.innerHTML = "";
+      viewport.replaceChildren();
       const selectedId = selectedIdRef ? selectedIdRef() : null;
 
       for (let i = start; i < end; i++) {
@@ -90,9 +125,16 @@ export function renderNodeList(ctx: any, filter: string) {
         div.className = "node";
         div.dataset.id = String(n.id);
         if (isHighlighted) div.classList.add("highlighted");
-        if (selectedId != null && selectedId === n.id) div.classList.add("selected");
-        div.innerHTML = `<div><strong>${escapeHtml(item.entityType)}</strong> <span class="muted">#${n.id} • ${escapeHtml(item.kindLabel)}</span></div>`
-          + (item.disp ? `<div>${isHighlighted ? "★ " : ""}${escapeHtml(item.disp)}</div>` : `<div class="muted">(no name)</div>`);
+        if (selectedId != null && selectedId === n.id)
+          div.classList.add("selected");
+        appendNodeLabel(
+          div,
+          item.entityType,
+          n.id,
+          item.kindLabel,
+          item.disp,
+          isHighlighted,
+        );
         div.addEventListener("click", (ev) => selectNode(n.id, ev.shiftKey));
         viewport.appendChild(div);
       }
@@ -110,7 +152,12 @@ export function renderNodeList(ctx: any, filter: string) {
   const groups = new Map(); // key -> { kind, entityType, nodes: [] }
   for (const item of items) {
     const key = `${item.kind}::${item.entityType}`;
-    if (!groups.has(key)) groups.set(key, { kind: item.kind, entityType: item.entityType, nodes: [] });
+    if (!groups.has(key))
+      groups.set(key, {
+        kind: item.kind,
+        entityType: item.entityType,
+        nodes: [],
+      });
     groups.get(key).nodes.push(item.node);
   }
 
@@ -124,14 +171,36 @@ export function renderNodeList(ctx: any, filter: string) {
   const selectedId = selectedIdRef ? selectedIdRef() : null;
 
   for (const g of sortedGroups) {
-    g.nodes.sort((a, b) => compareItems({ node: a, disp: nodeDisplayName(a), kind: a.kind || "entity", entityType: effectiveTypeLabel(a) }, { node: b, disp: nodeDisplayName(b), kind: b.kind || "entity", entityType: effectiveTypeLabel(b) }));
+    g.nodes.sort((a, b) =>
+      compareItems(
+        {
+          node: a,
+          disp: nodeDisplayName(a),
+          kind: a.kind || "entity",
+          entityType: effectiveTypeLabel(a),
+        },
+        {
+          node: b,
+          disp: nodeDisplayName(b),
+          kind: b.kind || "entity",
+          entityType: effectiveTypeLabel(b),
+        },
+      ),
+    );
 
     const details = document.createElement("details");
     details.className = "nodegroup";
     details.open = !!f || g.nodes.length <= 20;
 
     const summary = document.createElement("summary");
-    summary.innerHTML = `<strong>${escapeHtml(g.entityType)}</strong><span class="muted">${escapeHtml(kindDisplayLabel(g.kind))} • ${g.nodes.length}</span>`;
+    summary.append(
+      element("strong", {}, g.entityType),
+      element(
+        "span",
+        { className: "muted" },
+        `${kindDisplayLabel(g.kind)} • ${g.nodes.length}`,
+      ),
+    );
     details.appendChild(summary);
 
     for (const n of g.nodes) {
@@ -141,9 +210,16 @@ export function renderNodeList(ctx: any, filter: string) {
       div.dataset.id = String(n.id);
       const isHighlighted = ui.highlightIds && ui.highlightIds.has(n.id);
       if (isHighlighted) div.classList.add("highlighted");
-      if (selectedId != null && selectedId === n.id) div.classList.add("selected");
-      div.innerHTML = `<div><strong>${escapeHtml(effectiveTypeLabel(n))}</strong> <span class="muted">#${n.id} • ${escapeHtml(kindDisplayLabel(n.kind || "entity"))}</span></div>`
-        + (disp ? `<div>${isHighlighted ? "★ " : ""}${escapeHtml(disp)}</div>` : `<div class="muted">(no name)</div>`);
+      if (selectedId != null && selectedId === n.id)
+        div.classList.add("selected");
+      appendNodeLabel(
+        div,
+        effectiveTypeLabel(n),
+        n.id,
+        kindDisplayLabel(n.kind || "entity"),
+        disp,
+        isHighlighted,
+      );
       div.addEventListener("click", (ev) => selectNode(n.id, ev.shiftKey));
       details.appendChild(div);
     }

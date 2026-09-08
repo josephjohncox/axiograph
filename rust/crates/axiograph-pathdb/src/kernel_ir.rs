@@ -2505,13 +2505,12 @@ pub fn derive_runtime_module_index(
     )
 }
 
-/// Validate a package-shaped adapter AST against an already compiled canonical
-/// snapshot. Exact sources must match every module revision in canonical closure
-/// order; the returned lifecycle witness remains a derived PathDB boundary.
-pub fn validate_runtime_package_adapter(
+/// Check exact package membership and revisions, returning sources in canonical
+/// closure order. The incoming slice may be permuted; it never defines identity.
+pub(crate) fn ordered_runtime_package_sources<'a>(
     canonical_snapshot: &CompiledKernelSnapshot,
-    sources: &[CanonicalModuleSource],
-) -> Result<Module<Validated>, String> {
+    sources: &'a [CanonicalModuleSource],
+) -> Result<Vec<&'a CanonicalModuleSource>, String> {
     let mut source_by_name = BTreeMap::new();
     for source in sources {
         let name = source.parsed().module_name.clone();
@@ -2527,17 +2526,7 @@ pub fn validate_runtime_package_adapter(
             closure.len()
         ));
     }
-    let root = closure
-        .iter()
-        .find(|module| &module.module_id == canonical_snapshot.ir().root_module_id())
-        .ok_or_else(|| "canonical snapshot root module is absent from its closure".to_string())?;
-    let mut adapter = SchemaV1Module {
-        module_name: root.module_name.clone(),
-        imports: Vec::new(),
-        schemas: Vec::new(),
-        theories: Vec::new(),
-        instances: Vec::new(),
-    };
+    let mut ordered = Vec::with_capacity(closure.len());
     for compiled_module in closure {
         let source = source_by_name
             .get(&compiled_module.module_name)
@@ -2553,6 +2542,32 @@ pub fn validate_runtime_package_adapter(
                 compiled_module.module_name
             ));
         }
+        ordered.push(*source);
+    }
+    Ok(ordered)
+}
+
+/// Validate a package-shaped adapter AST against an already compiled canonical
+/// snapshot. This is only a derived validation view, not declaration ownership.
+pub fn validate_runtime_package_adapter(
+    canonical_snapshot: &CompiledKernelSnapshot,
+    sources: &[CanonicalModuleSource],
+) -> Result<Module<Validated>, String> {
+    let sources = ordered_runtime_package_sources(canonical_snapshot, sources)?;
+    let root = canonical_snapshot
+        .ir()
+        .ordered_module_closure()
+        .iter()
+        .find(|module| &module.module_id == canonical_snapshot.ir().root_module_id())
+        .ok_or_else(|| "canonical snapshot root module is absent from its closure".to_string())?;
+    let mut adapter = SchemaV1Module {
+        module_name: root.module_name.clone(),
+        imports: Vec::new(),
+        schemas: Vec::new(),
+        theories: Vec::new(),
+        instances: Vec::new(),
+    };
+    for source in sources {
         adapter.schemas.extend(source.parsed().schemas.clone());
         adapter.theories.extend(source.parsed().theories.clone());
         adapter.instances.extend(source.parsed().instances.clone());
@@ -2683,12 +2698,27 @@ fn derive_runtime_index_from_validated(
                         instance.name, instance.schema, module.module_name
                     )
                 })?;
-            derive_runtime_instance_index(
-                &module.module_name,
-                compiled_schema,
-                schema_ast,
-                instance,
-            )
+            // The adapter's root name is not the owner of imported instances.
+            // Resolve ownership through the immutable canonical instance/schema IDs.
+            let owners = canonical_snapshot
+                .ir()
+                .instances()
+                .iter()
+                .filter(|candidate| {
+                    candidate.label == instance.name
+                        && canonical_snapshot.ir().schemas().iter().any(|schema| {
+                            schema.schema_id == candidate.schema_id
+                                && schema.label == instance.schema
+                        })
+                })
+                .collect::<Vec<_>>();
+            let [owner] = owners.as_slice() else {
+                return Err(format!(
+                    "runtime instance `{}` has ambiguous canonical ownership",
+                    instance.name
+                ));
+            };
+            derive_runtime_instance_index(&owner.module_name, compiled_schema, schema_ast, instance)
         })
         .collect::<Result<Vec<_>, _>>()?;
 

@@ -73,6 +73,19 @@ hashes the approved executable once, copies those exact bytes into a private
 staging directory, and executes that staged copy. The configured pathname is
 never the executable later passed to `Command`.
 
+The public bridge is `axiograph_query::verifier_bridge`. `CertVerifyConfig` is
+**trusted host/operator policy**: executable, SHA-256, and build approval must
+not come from an untrusted authoring request or receipt. A checked receipt means
+bridge validation under that configured checker, not that an arbitrary supplied
+executable is Lean. Hosts must approve the supported `VerifyMain` checker.
+`VerifierReceiptV2` is an opaque, Serialize-only handle with private wire DTO;
+there is no public unchecked constructor or deserialization path. Its serialized
+stdio-v2 fields are unchanged. Only the bounded bridge issues it after checking
+nonce, approved executable/build, exact source/certificate/query/answer identity,
+protocol and claim versions, and agreement between decision and exit status.
+A checked rejection is still a rejection: the query lifecycle transition also
+requires acceptance and matching source, certificate, query, and answer digests.
+
 ## Network Classes
 
 Axiograph distinguishes two outbound classes:

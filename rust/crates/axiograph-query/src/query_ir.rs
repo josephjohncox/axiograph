@@ -302,10 +302,10 @@ pub fn query_ir_v1_json_schema() -> serde_json::Value {
                     { "type": "integer", "minimum": 0 },
                     {
                         "type": "object",
-                        "additionalProperties": false,
                         "required": ["kind"],
                         "oneOf": [
                             {
+                                "additionalProperties": false,
                                 "properties": {
                                     "kind": { "const": "var" },
                                     "name": { "type": "string" }
@@ -313,6 +313,7 @@ pub fn query_ir_v1_json_schema() -> serde_json::Value {
                                 "required": ["kind", "name"]
                             },
                             {
+                                "additionalProperties": false,
                                 "properties": {
                                     "kind": { "const": "name" },
                                     "value": { "type": "string" }
@@ -320,6 +321,7 @@ pub fn query_ir_v1_json_schema() -> serde_json::Value {
                                 "required": ["kind", "value"]
                             },
                             {
+                                "additionalProperties": false,
                                 "properties": {
                                     "kind": { "const": "entity" },
                                     "key": { "type": "string" },
@@ -328,6 +330,7 @@ pub fn query_ir_v1_json_schema() -> serde_json::Value {
                                 "required": ["kind", "key", "value"]
                             },
                             {
+                                "additionalProperties": false,
                                 "properties": { "kind": { "const": "wildcard" } },
                                 "required": ["kind"]
                             }
@@ -342,10 +345,10 @@ pub fn query_ir_v1_json_schema() -> serde_json::Value {
                     { "type": "integer", "minimum": 0 },
                     {
                         "type": "object",
-                        "additionalProperties": false,
                         "required": ["kind"],
                         "oneOf": [
                             {
+                                "additionalProperties": false,
                                 "properties": {
                                     "kind": { "const": "name" },
                                     "name": { "type": "string" }
@@ -353,6 +356,7 @@ pub fn query_ir_v1_json_schema() -> serde_json::Value {
                                 "required": ["kind", "name"]
                             },
                             {
+                                "additionalProperties": false,
                                 "properties": {
                                     "kind": { "const": "entity_id" },
                                     "id": { "type": "integer", "minimum": 0 }
@@ -1210,7 +1214,7 @@ impl QueryAnswer<CertificateEmitted> {
         &self.evidence.certificate_digest_v2
     }
 
-    pub(crate) fn into_lean_verified(
+    pub fn into_lean_verified(
         self,
         receipt: crate::verifier_bridge::VerifierReceiptV2,
     ) -> Result<QueryAnswer<LeanVerified>> {
@@ -3929,7 +3933,7 @@ instance I of S:
             .unwrap_or_else(|_| {
                 std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..")
             });
-        let db = crate::load_pathdb_for_cli(&repo_root.join("examples/Family.axi"))?;
+        let db = crate::load_test_fixture(&repo_root.join("examples/Family.axi"))?;
         let meta = axiograph_pathdb::axi_semantics::MetaPlaneIndex::from_db(&db)?;
         let q: QueryIrV1 = serde_json::from_str(
             r#"{
@@ -4043,7 +4047,7 @@ instance I of S:
             .unwrap_or_else(|_| {
                 std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..")
             });
-        let db = crate::load_pathdb_for_cli(&repo_root.join("examples/Family.axi"))?;
+        let db = crate::load_test_fixture(&repo_root.join("examples/Family.axi"))?;
         let meta = axiograph_pathdb::axi_semantics::MetaPlaneIndex::from_db(&db)?;
         let q: QueryIrV1 = serde_json::from_str(
             r#"{
@@ -4160,7 +4164,7 @@ instance I of S:
             crate::security::MAX_TEXT_INPUT_BYTES,
             "CLI input",
         )?;
-        let db = crate::load_pathdb_for_cli(&axi_path)?;
+        let db = crate::load_test_fixture(&axi_path)?;
         let meta = axiograph_pathdb::axi_semantics::MetaPlaneIndex::from_db(&db)?;
 
         let q: QueryIrV1 = serde_json::from_str(
@@ -4247,7 +4251,7 @@ instance I of S:
             axiograph_pathdb::AcceptedSnapshotId::new("accepted:test-family"),
             digest.clone(),
         );
-        let db = crate::load_pathdb_for_cli(&axi_path)?;
+        let db = crate::load_test_fixture(&axi_path)?;
         let meta = axiograph_pathdb::axi_semantics::MetaPlaneIndex::from_db(&db)?;
 
         let q: QueryIrV1 = serde_json::from_str(
@@ -4521,7 +4525,8 @@ instance I of S:
 
     #[cfg(unix)]
     #[test]
-    fn lean_transition_rejects_receipt_for_other_certificate_bytes() -> Result<()> {
+    fn lean_transition_rejects_checked_rejection_and_source_query_answer_certificate_mismatches(
+    ) -> Result<()> {
         let repo = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..");
         let verifier = repo.join("lean/.lake/build/bin/axiograph_verify");
         if !verifier.exists() {
@@ -4564,10 +4569,71 @@ instance I of S:
             emitted.prepared_query_digest_v1().expect("prepared digest"),
             emitted.answer_digest_v1(),
         )?;
+        assert!(receipt.accepted());
+        // Each binding is independently required by the production transition.
+        for field in ["source", "query", "answer"] {
+            let answer = prepared.execute_answer(&db, Some(&meta))?;
+            let mut other = prepared.certify_answer_with_anchors(
+                answer,
+                &db,
+                Some(&meta),
+                RevisionDigestV2::from_accepted_text(axi),
+            )?;
+            match field {
+                "source" => {
+                    other.evidence.module_digest_v2 =
+                        RevisionDigestV2::from_accepted_text("different source")
+                }
+                "query" => {
+                    other.core.prepared_query_digest_v1 =
+                        Some(QueryIdV2::from_canonical_fields(&[b"different query"]))
+                }
+                "answer" => {
+                    other.evidence.answer_digest_v1 =
+                        AnswerIdV2::from_canonical_fields(&[b"different answer"])
+                }
+                _ => unreachable!(),
+            }
+            assert!(
+                other.into_lean_verified(receipt.clone()).is_err(),
+                "{field}"
+            );
+        }
         emitted.evidence.certificate_text.push('\n');
         emitted.evidence.certificate_digest_v2 =
             CertificateIdV2::from_canonical_fields(&[emitted.evidence.certificate_text.as_bytes()]);
         assert!(emitted.into_lean_verified(receipt).is_err());
+
+        let answer = prepared.execute_answer(&db, Some(&meta))?;
+        let mut rejected = prepared.certify_answer_with_anchors(
+            answer,
+            &db,
+            Some(&meta),
+            RevisionDigestV2::from_accepted_text(axi),
+        )?;
+        let mut missing = rejected.certificate().clone();
+        missing.proof.rows.clear();
+        missing.proof.answer_digest_v1 = missing
+            .proof
+            .recompute_answer_digest_v1()
+            .map_err(anyhow::Error::msg)?;
+        let text = serde_json::to_string_pretty(&missing)?;
+        let receipt = crate::verifier_bridge::verify_certificate_with_lean(
+            &config,
+            axi,
+            &text,
+            rejected
+                .prepared_query_digest_v1()
+                .expect("prepared digest"),
+            &missing.proof.answer_digest_v1,
+        )?;
+        assert!(!receipt.accepted());
+        // Align all identity fields to isolate the rejected-decision check.
+        rejected.evidence.answer_digest_v1 = missing.proof.answer_digest_v1.clone();
+        rejected.evidence.certificate_digest_v2 = receipt.certificate_digest_v2().clone();
+        rejected.evidence.certificate = missing;
+        rejected.evidence.certificate_text = text;
+        assert!(rejected.into_lean_verified(receipt).is_err());
         Ok(())
     }
 

@@ -3,6 +3,176 @@
 **Diataxis:** How-to  
 **Audience:** contributors
 
+## Read-only database client workflow
+
+From the repo root, build the runtime assets and run the nonempty temporary-store
+client/server workflow (requires Node/npm, the existing locked frontend install,
+and Rust; exact release pins still apply to release acceptance):
+
+```bash
+(cd frontend/viz && npm ci --ignore-scripts && npm run build && npm test)
+cargo build --locked --offline --manifest-path rust/Cargo.toml -p axiograph-cli --bin axiograph
+cargo run --locked --offline --manifest-path rust/Cargo.toml -p axiograph-cli \
+  --example read_only_client_workflow
+# Separate default Rust coverage: controlled temporary assets, no Node/npm needed.
+cargo test --locked --offline --manifest-path rust/Cargo.toml -p axiograph-cli \
+  --test db_server_e2e
+```
+
+The fixture creates fresh AxiStores and publishes/opens materializations using
+production repository APIs. Its logical entities and supporting report blobs are
+synthetic; the materialization receipts are genuine repository-bound image
+receipts, **not Lean checker receipts or evidence of canonical semantic validity**.
+The explicit `read_only_client_workflow` integration gate starts actual loopback
+servers, fetches `/viz`, and invokes the production TypeScript client. It fails on
+missing prerequisites rather than skipping. Default Rust e2e tests instead use
+small controlled temporary assets for HTTP/template checks and never invoke
+frontend tools; a workspace test pass does not cover the production-client gate.
+Logs show nonempty exact/approximate queries, truncation,
+status and complete runtime trust/non-claims, malformed/legacy query rejection,
+unsupported read-probed routes, and headless query availability after missing
+assets or UI-budget rejection. Children and temporary stores are cleaned up.
+No mutation/LLM request is sent. This is HTTP/client coverage, not browser/layout
+or accessibility coverage.
+
+For an existing legitimately published receipt-bound image, start the server:
+
+```bash
+rust/target/debug/axiograph db serve --dir "$AXISTORE_DIR" \
+  --materialization "$MATERIALIZATION_ID" --listen 127.0.0.1:7878
+# Open http://127.0.0.1:7878/viz in a browser.
+curl --fail http://127.0.0.1:7878/capabilities
+curl --fail http://127.0.0.1:7878/status
+curl --fail -H 'content-type: application/json' http://127.0.0.1:7878/query \
+  --data '{"query":{"version":1,"select_vars":["entity"],"where_atoms":[{"kind":"attr_eq","term":"?entity","key":"axiograph.value","value":"Alice"}],"limit":10}}'
+# Deliberate rejection: legacy AxQL is not this HTTP protocol (HTTP 400).
+curl -i -H 'content-type: application/json' http://127.0.0.1:7878/query \
+  --data '{"query":"select ?x where ...","certify":true}'
+```
+
+`Alice` is an example value, not a guaranteed entity in arbitrary images. Use the
+IR editor directly; Rust owns path parsing, name resolution, typing and execution.
+Local graph/context selections are not implicitly sent. The shared transport
+profile is `frontend/viz/src/server/read-only-api.json`, consumed by Rust discovery
+and the strict TypeScript boundary. The nested QueryIr schema is **descriptive**:
+its explicit-object branches are regression-checked, but it is not complete
+serde/semantic equivalence. For example serde permits omitted versions and some
+extra inner fields that the documented profile rejects; the browser requires an
+explicit version but delegates atom validation to Rust. This is not a complete
+OpenAPI description, generated SDK or browser query compiler.
+
+The client validates closed capability/status/result/trust envelopes, integer
+counts/u32 rows, row-variable consistency, runtime claims and required non-claims.
+Receipt internals and the descriptive schema remain explicitly opaque; nested
+semantic summary strings are shape-checked, not reinterpreted as checked refs.
+It rejects unknown versions/fields, bounds streamed JSON to 16 MiB, input to 1 MiB,
+and response structure to depth 64 / 500,000 visited values, with a 30-second
+request timeout. Superseded replies/editor changes cannot replace current output;
+failures visibly retain only the labelled previous successful output. Fixed
+same-origin API paths and redirect rejection prevent capability-supplied URLs.
+The older optional offline `?data=` graph loader is outside this API boundary;
+whole graph JSON validation remains open. No graph is relabeled authenticated
+from sampled status, and no remote query/evidence IDs are highlighted locally.
+
+Unsupported controls are disabled with CLI guidance, and their programmatic
+callbacks also deny remote requests. Existing local draft/graph inspection is
+preserved; cached legacy storage keys are not migrated from status or used as
+identity/authority. `/viz` caches one bounded export at startup after authenticated
+opening: no static directory routes, CORS, request-selected roots or HTML sanitizer.
+Missing/unbuilt/over-budget assets produce bounded 503 and `ui_available=false`;
+health/status/query continue. UI-only preflight caps are 1,000 entities / 4,000
+relations, 8 KiB per referenced string, 1 MiB aggregate repeated referenced text,
+and 16,384 attribute entries. Extraction selects at most 250 nodes / 1,000 edges,
+without meta/theory/equivalence expansion; JSON/template/script caps are
+1 MiB / 1 MiB / 2 MiB with a checked 4 MiB inlined payload ceiling. These bound
+intermediates and label amplification; 4 MiB payload is not a peak-memory claim.
+Build assets from the same checkout before starting the server.
+
+### Read-only client recovery evidence (review required)
+
+The timeout recovery's fresh available-tool run passed clean installation,
+script-disabled audit (zero vulnerabilities), both TypeScript configurations,
+**29 frontend tests**, debug then production builds (**38 modules / 91,425 JS
+bytes**), **999 workspace tests / 0 failures / 3 existing ignored / 96 groups**,
+strict default workspace all-target Clippy, strict no-default CLI/query all-target
+Clippy and formatting. Focused selections were nonempty: **7 viz**, **3 DB**,
+**6 genuine receipt-bound HTTP**, **1 unsupported-browser-boundary** and **1
+certificate-policy documentation** tests; counts overlap the workspace suite.
+The production TS/client example separately exercised all three available,
+UI-budget-unavailable and missing-asset cases. A fresh CLI Family export copied
+and inlined the exact production script (SHA-256
+`63d59683208d439c4e9322a2155ec7d4e6bbf198baba02fa4e09660198d5835e`), with
+22 nodes / 86 edges and unchanged Family input; temporary output was removed.
+
+`build/engineering-quality/read-only-client-recovery-final-01/` retains the first
+complete hash-guarded run. After this documentation update, the same full command
+list is rerun under `read-only-client-recovery-final-02/` before freezing, so the
+manifest must establish final documentation/source byte equality too. Review
+entry points are `read-only-client-recovery-review.diff` (complete original-stage
+increment, including new files), `read-only-client-recovery-only.diff`,
+`read-only-client-recovery-manifest.json`,
+`read-only-client-recovery-source-index.json`, and
+`read-only-client-recovery-handoff.md` under `build/engineering-quality/`.
+Review exact `.txt` copies only; do not invoke source tools on live TS/MJS/Rust
+after validation. The read-only path-restricted verifier is:
+
+```bash
+python3 build/engineering-quality/read-only-client-recovery-verify.py
+```
+
+Any drift blocks acceptance; expected hashes are not refreshed to hide changes.
+Available Node 26.1.0/npm 11.13.0 still fail the required 26.8.1/11.19.0 pin gate
+with actual exit **2**. This is development evidence, **not acceptance**, release,
+browser/layout/accessibility, live-provider or globally clean diagnostics evidence.
+The old 993-test integration is historical; all nine feature configurations and
+semantic/canonical integration gates still require the separate final integration.
+EQ-02/EQ-05 remain partial; the historical gitleaks timeout remains inconclusive.
+
+### Read-only client final integration evidence (review required)
+
+After independent source review, the separate integration rerun passed **999
+workspace tests / 0 failed / 3 existing ignored / 96 groups**, default strict
+workspace all-target Clippy and **all nine** strict CLI/query feature
+configurations. `verify-canonical-spine` passed **144 Rust tests**;
+`verify-semantics` passed **395 Rust tests / 2 existing ignored**;
+`verify-regulated-shipment` passed **12 Rust tests**; `verify-w02-compiler`
+passed **47 Rust tests and 11 Rust/Lean cases**. Counts overlap. Required query
+selectors actually executed **6 prepared-query**, **13 verifier-bridge**, **1
+prepared-AST golden**, and **1 shipment query** tests after the named gates'
+checker prerequisites. All **7 query-selection guard regressions** passed.
+Focused package/source-diagnostic/public-query parity passed **3 tests** and
+software-authoring passed **7**; these supplement, not replace, workspace checks.
+
+Fresh script-disabled frontend install/audit (zero vulnerabilities), both
+typechecks, **29 tests**, debug then production (**38 modules / 91,425 JS bytes**),
+the opt-in production client **three-case** HTTP workflow and fresh CLI byte-exact
+Family export passed again. The export retained **22 nodes / 86 edges**, copied
+and inlined SHA-256
+`63d59683208d439c4e9322a2155ec7d4e6bbf198baba02fa4e09660198d5835e`, and preserved
+Family source bytes. Default Rust HTTP tests remain frontend-tool-independent;
+controlled test assets are not production frontend evidence. The explicit
+example above is still required for production-client coverage.
+
+New evidence uses `build/engineering-quality/read-only-client-integration-*`:
+`final-01/` preserves the initial 30-command run; the same 30-command list runs
+again in `final-02/` after this documentation update. The final manifest requires
+all **736 declared input hashes** to match before/after every command. Review
+starts at `read-only-client-integration-handoff.md`: it maps the complete
+original-stage `review.diff` (including new files), additional integration-only
+`only.diff`, exact `.txt` source copies and log ranges. Full hash maps are separate.
+The read-only verifier is `read-only-client-integration-verify.py`; any later
+drift blocks acceptance, and expectations must not be repaired. Prior recovery
+and rendering artifacts remain unchanged historical checkpoints.
+
+The pin prerequisite still **fails with actual exit 2** on available Node
+26.1.0/npm 11.13.0 rather than required 26.8.1/11.19.0. No override, pinned
+frontend/release pass, browser/layout/accessibility or live-provider claim is
+made. Synthetic HTTP fixture support blobs are not checker receipts; the real
+semantic gates' checker results do not confer proof authority on the HTTP UI.
+Independent final review and parent verification remain required. EQ-02/EQ-05
+remain partial; global diagnostic cleanliness and the historical inconclusive
+gitleaks timeout are not resolved by this integration.
+
 ## Overview
 
 The Axiograph test suite provides comprehensive coverage across all layers:
@@ -72,7 +242,7 @@ make check-no-unsafe
 # Reject unreviewed unwrap, expect, panic, and unreachable paths in production Rust
 make check-no-panics
 
-# Exact-Node install, advisory audit, and production frontend build
+# Exact-Node install, advisory audit, typechecks, tests, and both frontend builds
 make verify-viz
 
 # Exact-lock RustSec audit with no ignored vulnerabilities
@@ -107,6 +277,93 @@ cargo run -p axiograph-cli --release -- tools perf axql --entities 200000 --edge
 cargo run -p axiograph-cli --release -- tools perf scenario --scenario proto_api --scale 10000 --index-depth 3
 ```
 
+## Required Query-Library Selections
+
+These named gates use `scripts/run_required_query_tests.py` against
+`axiograph-query --lib`, not the CLI crate:
+
+| Gate | Cargo substring filter |
+| --- | --- |
+| `make verify-lean-certificate-rejections` | `verifier_bridge::tests` |
+| `make verify-canonical-spine` | `prepared_query` |
+| `make verify-lean-e2e-query-result-module-v4` | `approved_lean_checker_matches_prepared_ast_goldens` |
+| `make verify-regulated-shipment` | `regulated_shipment_exact_path_query_is_complete_and_missing_rows_reject` |
+
+The helper preserves Cargo/test failures and requires a nonempty successful
+libtest summary backed by matching named passed tests. Missing/blank filters,
+zero matches, all-ignored selections, and missing/unrecognized output cannot pass.
+It uses the existing bounded subprocess runner (600 seconds, 8 MiB per output
+stream); exceeding those bounds fails the gate. The checker-dependent Make gates
+build Lean first; running the helper alone is not a substitute for that prerequisite.
+
+```bash
+# Focused guard regressions (including empty/ignored and failed commands)
+python3 -m unittest scripts.tests.test_run_required_query_tests
+
+# Process-free prepared-query library tests, with nonempty-selection protection
+python3 scripts/run_required_query_tests.py --package axiograph-query --filter prepared_query
+```
+
+## Strict CLI Feature Boundaries
+
+From the repository root, with the locked dependencies cached:
+
+```bash
+# Nine strict all-target configurations for axiograph-query and axiograph-cli:
+# default, minimal, six individual features, all-features.
+make lint-cli-feature-matrix
+
+# Actual subprocess entrypoints; no credentials or external provider fixtures.
+cargo test --manifest-path rust/Cargo.toml --locked --offline -p axiograph-cli --test feature_boundaries_cli
+cargo test --manifest-path rust/Cargo.toml --locked --offline -p axiograph-cli --no-default-features --test feature_boundaries_cli
+for feature in repl-rustyline llm-ollama llm-openai llm-anthropic profiling proposal-adapter-http; do
+  cargo test --manifest-path rust/Cargo.toml --locked --offline -p axiograph-cli --no-default-features --features "$feature" --test feature_boundaries_cli || exit
+done
+cargo test --manifest-path rust/Cargo.toml --locked --offline -p axiograph-cli --all-features --test feature_boundaries_cli
+
+# Minimal library/binary regressions and default integration checks:
+cargo test --manifest-path rust/Cargo.toml --locked --offline -p axiograph-cli --no-default-features --bin axiograph --lib
+cargo test --manifest-path rust/Cargo.toml --locked --offline --workspace
+cargo clippy --manifest-path rust/Cargo.toml --locked --offline --workspace --all-targets -- -D warnings
+cargo fmt --manifest-path rust/Cargo.toml --all -- --check
+```
+
+`lint-cli-feature-matrix` is an opt-in maintenance gate, not a new release
+prerequisite or a substitute for `release-gate`. Each Cargo invocation uses
+`--all-targets --locked --offline -- -D warnings`; the six single-feature runs
+use `--no-default-features --features axiograph-cli/<feature>`. Defaults and the
+original compile-only `check-cli-feature-matrix` are unchanged. This covers nine
+supported configurations, not every subset of optional features.
+
+`feature_boundaries_cli.rs` requires unavailable-provider errors from actual draft,
+augmentation and predictive-plugin commands, no connection to a loopback canary,
+and no output/trace mutation. Child environments are cleared. Mock output still
+requires exact canonical input bytes; tampered source rejects. No-provider
+candidate generation and exclusive-provider selection are checked in every build.
+Expected counts are 2 for default/all-features, 4 for a single LLM provider, and 5
+for minimal or a non-LLM single feature; unavailable-provider tests are compiled
+only when that provider is absent. These tests do not call enabled live providers.
+
+Current bounded EQ-19 evidence: all nine strict lint configurations and all nine
+subprocess test runs pass (36 overlapping passes); minimal CLI lib/bin tests pass
+254; fresh default workspace tests pass 975, with 3 existing ignored tests across
+94 groups. The earlier 40-diagnostic no-default lint failure and 973-test import
+integration remain historical in the engineering-quality roadmap. Existing parser,
+endpoint/peer-pinning and adapter tests are retained. Full rendered book, pinned
+frontend/release and live-provider/backend checks are separate, not implied here.
+
+The later bounded source-diagnostics integration rerun passed **993 workspace
+tests, 0 failed, 3 ignored across 96 groups**, default strict workspace Clippy,
+all nine strict feature configurations, and workspace formatting. It also passed
+`verify-w02-compiler` (47 Rust tests and 11 Rust/Lean cases),
+`verify-canonical-spine` (144 Rust tests), `verify-semantics` (394 Rust tests,
+2 existing ignored), and `verify-regulated-shipment` (12 Rust tests). Counts
+across commands overlap. The named query guards executed 6 prepared-query,
+13 rejection, 1 prepared-AST golden, and 1 shipment-query tests, not empty
+selections. See the [engineering-quality integration record](../roadmaps/ROADMAP_ENGINEERING_QUALITY.md#diagnostics-integration-eq-06eq-07-bounded-eq-19)
+for exact logs, real adapter checks, preservation evidence and open review scope.
+This is not broader diagnostic/LSP completion or a release-gate result.
+
 ## Choosing The Right Gate
 
 | Gate | Use it for | Notes |
@@ -115,7 +372,7 @@ cargo run -p axiograph-cli --release -- tools perf scenario --scenario proto_api
 | `make verify-regulated-shipment` | Primary usefulness and CI fixture | Compiles baseline/candidate canonical modules; checks runtime theory, CQ, evolution, behavior/codegen, TypeDB/PathDB projections, VerifyMain type/constraint/category certificates; runs `axiograph check finite-query` for baseline and candidate; binds the accepted exact-answer receipt into each reviewed trust gate; materializes a reviewed typed merge; reopens authenticated SQLite/PathDB state; builds accepted-derived grounding bound to the reopened receipt and exact query; compiles the generated Rust test; and requires adversarial reviewer, path, query, placeholder-receipt, explanation, and materialization cases to reject. |
 | `make check-no-unsafe` | First-party Rust safety policy | Verifies every workspace package inherits `unsafe_code = "forbid"`, scans every checked-in Rust source file for the `unsafe` keyword outside comments and literals, then checks all targets and features with the compiler lint enabled. |
 | `make check-no-panics` | First-party production panic policy | Runs Clippy over every workspace library and binary with all features and rejects `unwrap`, `expect`, `panic!`, and `unreachable!`. Three closed, resource-impossible or serializer-infallible invariants carry local reviewed lint exceptions; test-only assertion paths are outside this production target. |
-| `make verify-viz` | Frontend dependency and production-build gate | Requires Node.js 26.8.1 and npm 11.19.0 from `.node-version` and `.npm-version`, installs only `package-lock.json` with lifecycle scripts disabled, rejects moderate-or-higher npm advisories, and builds the Vite production bundle. Current pins are Vite 8.2.2, TypeScript 7.0.2, esbuild 0.28.2, PostCSS 8.5.26, and Rolldown 1.2.4; obsolete vulnerable Rollup is absent. |
+| `make verify-viz` | Frontend dependency, typecheck, test, and build gate | Requires Node.js 26.8.1 and npm 11.19.0 from `.node-version` and `.npm-version`, installs only `package-lock.json` with lifecycle scripts disabled, rejects moderate-or-higher npm advisories, runs typechecks and Node regression tests, then builds debug and production bundles (production last). Both build scripts also typecheck before invoking Vite. Current pins are Vite 8.2.2, TypeScript 7.0.2, esbuild 0.28.2, PostCSS 8.5.26, and Rolldown 1.2.4; obsolete vulnerable Rollup is absent. |
 | `make book` | Published documentation gate | Downloads the pinned mdBook 0.5.4 binary for the current host, verifies the platform-specific SHA-256 digest, validates the curated chapter graph, builds the static site, and rejects broken rendered links or missing search/theme artifacts. Pull requests build the same book; pushes to `main` publish it through immutable GitHub Pages actions. |
 | `make verify-rustsec` | Exact Rust lockfile advisory gate | Requires cargo-audit 0.22.2 and audits both workspace and isolated fuzz lockfiles without ignored vulnerabilities. RDF/XML uses Oxigraph's immutable upstream quick-xml 0.42 migration commit until a patched crate release; the structural preflight and semantic parser therefore share the patched XML line. The remaining `ttf-parser` notice is informational and unmaintained, not a RustSec vulnerability. |
 | `make verify-fuzz` | Bounded adversarial parser smoke | Requires pinned `nightly-2026-09-01` and `cargo-fuzz 0.13.2`; first compiles all five harnesses under a separate 600-second process-group bound, then copies checked seed corpora into a temporary directory and runs named `.axi`, certificate JSON, REPL-command, predictive-proposal adapter response, and authenticated `.axpd` byte targets with case-time, process-time, output, input-size, run-count, RSS, and single-artifact bounds. CI and release verification install and run the exact tool versions. |
@@ -147,6 +404,162 @@ For what these gates mean, read `docs/reference/KERNEL_IR.md`,
 `docs/reference/SEMANTIC_VCS.md`,
 `docs/reference/EMBEDDINGS_AND_EVIDENCE.md`, and
 `docs/howto/FORMAL_VERIFICATION.md`.
+
+## Frontend Context And Typecheck Regressions
+
+From the repository root:
+
+```bash
+cd frontend/viz
+npm ci --ignore-scripts
+node --test tests/context.test.mjs   # focused production context functions
+npm run typecheck
+npm test
+npm run build:debug
+npm run build
+cd ../..
+make verify-viz                     # requires the exact Node/npm pins
+```
+
+The Node built-in runner imports production TypeScript using Node's native type
+stripping; this is not typechecking. `npm run typecheck` separately checks `src`
+and applies strict checking to the migrated context, DOM builder, status and
+selection modules through `tsconfig.context.json`. Existing unchecked/non-strict frontend modules remain
+an [EQ-02](../roadmaps/ROADMAP_ENGINEERING_QUALITY.md#eq-02-frontend-contracts-safe-rendering-and-regression-coverage)
+gap; this gate is not a claim of whole-frontend strict typing or JSON validation.
+
+`context.test.mjs` checks numeric ordering, cross-fact deduplication, empty sets,
+re-enabling controls, selection/name/badge consistency, and hostile labels. It
+uses the production option builder plus small DOM write spies that reject HTML
+sinks and check literal `textContent`; no browser emulator or duplicate context
+logic is involved. Browser rendering, keyboard/accessibility, review, query, and
+promotion flows still need their own integration coverage.
+
+`typecheck-gate.test.mjs` copies the real sources, scripts, and configuration into
+a temporary directory, first checks valid sources, then injects invalid numeric
+and context-map assignments. The actual `typecheck`, `build`, and `build:debug`
+scripts must fail with TypeScript diagnostics without touching a bundle sentinel.
+The test cleans up its temporary directory and never alters checkout sources.
+Local results with different Node/npm versions are development evidence only;
+do not override the exact-toolchain check to claim `make verify-viz` passed.
+
+## Frontend Rendering And Draft Selection Regressions
+
+```bash
+cd frontend/viz
+node --test tests/rendering.test.mjs
+# User-oriented local scenario: select one proposal and see remote draft,
+# commit and promotion blocked for the read-only server.
+node --test --test-name-pattern='real draft-before-add' tests/rendering.test.mjs
+npm test                         # includes context and injected-error build gates
+npm run build:debug
+npm run build                    # production assets last
+```
+
+The following describes the historical accepted rendering slice; its mocked
+remote-success cases were subsequently migrated to zero-request rejection and
+local prefill assertions by the read-only client lane above. Current routing and
+production-client validation are described there, not by the old mocked flows.
+
+`rendering.test.mjs` bundles and imports the real list/detail/status/draft/add/LLM
+modules using the already locked esbuild dependency. Small DOM operation spies
+reject HTML sinks; they are not a browser, layout engine or accessibility tree.
+Coverage includes hostile labels/IDs/attributes/status text; grouping and virtual
+slice replacement; highlights and shift-click selection; rich detail sections,
+tabs, tuple fields and safe numeric same-page links; review filtering, checkbox
+selection, truncation, clearing, evidence lookup and initialization order. Draft
+selection copies only changed arrays/envelopes; read-only retained records and
+nullable chunk fields remain intact. Invalid selector shapes and stale IDs give
+actionable errors before requests or output clearing, not empty success. Backend
+proposal validation and accepted promotion authority are unchanged; this is not a
+complete frontend wire validator. Tests use no real credentials or accepted stores.
+
+The actual `llmAskBtn` callback is also exercised with mocked generated overlays:
+Review prefill must continue through clear/highlight/rerender with status `ok`.
+Persisted auto-commit preferences cannot enable the disabled option, send mutation
+fields/admin tokens, interpret commit-looking data as success, or navigate.
+Query-certificate policy precedence remains covered (`emit`, `verify`, and
+`require_verified`). Generated overlays receive evidence-only Review/CLI guidance.
+These are callback regressions, not live `/llm/agent` endpoint coverage.
+
+Commit/promote buttons explicitly say **CLI only**: at that historical checkpoint,
+`db_server.rs` exposed only `GET /healthz`, `GET /status` and `POST /query`. Its V2 status
+has no mutation role/capability. Both buttons block for every status result,
+including unavailable/malformed status and legacy `role=master`; no admin POST
+branch remains. They give canonical `.axi` check/authoring and AxiStore CLI
+guidance without clearing local drafts. The V2-shaped unit fixture deliberately
+has no authoritative receipt and is not a genuine server response. At that checkpoint, other
+frontend request routes (including `/discover/draft-axi`, proposal generation and
+DocChunk lookup) did not match the backend; mocked responses were not successful
+live workflows. The read-only client lane now removes/disables these remote paths
+rather than restoring unsupported endpoints.
+
+The context strict configuration also checks `render/dom.ts`, `core/status.ts`
+and `core/draft-selection.ts`. The negative gate tests reject mutation of the
+read-only selection and object-shaped fake DOM/text values in addition to the
+existing numeric context failures. The remaining legacy `@ts-nocheck` modules,
+whole-frontend strictness, full JSON validation, real browser interactions,
+keyboard focus, screen-reader labels/roles, layout/scrolling and accessibility
+remain open under EQ-02. Available Node 26.1.0/npm 11.13.0 runs do not satisfy the
+pinned Node 26.8.1/npm 11.19.0 frontend or release gate.
+
+To inspect the resulting offline UI manually after a production build:
+
+```bash
+out=$(mktemp -d)
+rust/target/debug/axiograph tools viz examples/Family.axi \
+  --out "$out/family.html" --format html --all --typed-overlay
+# Open "$out/family/index.html"; inspect grouped nodes, shift-click a path,
+# switch detail tabs, and confirm review remains evidence-only/offline.
+# Remove the temporary output when finished: rm -r "$out"
+```
+
+The CLI resolves and reads current `frontend/viz/dist` at runtime, copies assets
+and inlines its script for offline export; a Rust rebuild does not embed new JS.
+An export/inlining byte check is integration evidence, not a browser smoke pass.
+
+### Frozen rendering evidence recovery
+
+The original rendering and correction manifests describe historical checkpoints:
+native automatic formatting changed reviewed inputs after validation twice.
+The second drift affected only `tests/rendering.test.mjs` (tested SHA-256
+`7edce0bbdffb369e42602cbdf425424c1e446b3aeb6153fb83a8231a47ddbd4e`,
+then `8623682cf541c386b864780ab5c8c2585dc8240680b74ae03f40ed5f8c5d527e`,
+1,051 physical lines). The latest independent rereview found no additional
+behavioral issue, but could not establish final-byte evidence. Earlier logs and
+manifests remain unchanged; their final-byte claims do not cover that drift.
+
+The scoped recovery reran clean `npm ci --ignore-scripts`,
+`npm audit --audit-level=moderate --ignore-scripts` (zero vulnerabilities), both
+TypeScript configurations, all **21 tests** (including the real click handlers
+and isolated injected-error build gate), debug then production builds, the real
+CLI byte-exact export, **3 Rust visualization tests** and **1 query-policy test**.
+All **43 frontend inputs** matched before and after every command. This used the
+available toolchain only; `make check-node-toolchain` still failed with exit 2.
+No production/test edits or accepted-state mutations were part of this recovery.
+
+Review entry points under `build/engineering-quality/` are
+`rendering-frozen-manifest.json`, `rendering-frozen-combined.diff`,
+`rendering-frozen-recovery-only.diff` and `rendering-frozen-source-index.json`.
+After all validation and documentation, exact source/document copies are frozen
+as `.txt` files in `rendering-frozen/source/`, with original-path mappings,
+SHA-256, byte counts and physical line counts. Review those copies, not live
+TS/MJS through source tools that can invoke automatic formatting. From repo root:
+
+```bash
+python3 build/engineering-quality/rendering-frozen-verify.py
+```
+
+The standard-library verifier only reads declared originals, manifest and frozen
+copies; it fails on mismatches and never repairs bytes or refreshes expected
+hashes. Independent frozen review and subsequent parent hash verification remain
+required; this record is **not acceptance**. Historical primary LSP and cached
+auxiliary results remain scoped supplemental evidence, not fresh global scans.
+The historical gitleaks 120-second timeout remains inconclusive. A fresh lexical
+count across all declared `frontend/viz/src` inputs finds **24 empty catch sites**;
+this is a different scope from the earlier auxiliary report's 18 findings, not a
+fresh analyzer result. Persistence/error reporting, backend route drift, browser/
+accessibility coverage, exact pins and broader EQ-02 work remain open.
 
 ## Production Hardening Gates
 

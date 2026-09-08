@@ -23,7 +23,7 @@ mod analyze;
 mod authoring_workspace;
 mod axi_fmt;
 mod axi_input;
-mod axql;
+use axiograph_query::axql;
 mod behavior_case;
 mod competency_questions;
 mod context_report;
@@ -45,7 +45,7 @@ mod proposals_import;
 mod proposals_validate;
 mod proto;
 mod quality;
-mod query_ir;
+use axiograph_query::query_ir;
 mod relation_resolution;
 mod repl;
 mod repl_command;
@@ -61,10 +61,10 @@ mod semantic_tools;
 mod sqlish;
 mod synthetic_pathdb;
 mod transport_preview_tools;
-mod trust_contract;
+use axiograph_query::trust_contract;
 mod typed_authoring;
 mod typed_refinement;
-mod verifier_bridge;
+use axiograph_query::verifier_bridge;
 mod viz;
 mod web;
 
@@ -402,6 +402,18 @@ enum AuthoringCommands {
         /// JSON-encoded `authoring_workspace_request_v1`.
         #[arg(long)]
         request: PathBuf,
+        /// Override response detail. Full preserves the canonical machine artifact.
+        #[arg(long, value_enum)]
+        detail: Option<crate::authoring_workspace::AuthoringDetailV1>,
+        /// Select report sections (snake_case), overriding the detail preset.
+        #[arg(long, value_enum, value_delimiter = ',')]
+        section: Vec<crate::authoring_workspace::AuthoringSectionV1>,
+        /// Per-section collection bound, 1 through 100.
+        #[arg(long)]
+        page_limit: Option<usize>,
+        /// Follow-up consistency cursor; requires exactly one section.
+        #[arg(long)]
+        cursor: Option<String>,
         /// Output JSON path. Defaults to stdout.
         #[arg(short, long)]
         out: Option<PathBuf>,
@@ -1961,10 +1973,13 @@ fn main() -> Result<()> {
                     llm_plugin,
                     llm_plugin_arg,
                     llm_ollama,
+                    #[cfg(feature = "llm-ollama")]
                     llm_ollama_host,
                     llm_openai,
+                    #[cfg(feature = "llm-openai")]
                     llm_openai_base_url,
                     llm_anthropic,
+                    #[cfg(feature = "llm-anthropic")]
                     llm_anthropic_base_url,
                     llm_model,
                     llm_timeout_secs,
@@ -1974,6 +1989,7 @@ fn main() -> Result<()> {
                     no_roles,
                     no_todo_symbol,
                     no_infer_hints,
+                    ..
                 } => {
                     cmd_discover_augment_proposals(
                         &proposals,
@@ -1983,10 +1999,13 @@ fn main() -> Result<()> {
                         llm_plugin.as_deref(),
                         &llm_plugin_arg,
                         llm_ollama,
+                        #[cfg(feature = "llm-ollama")]
                         llm_ollama_host.as_deref(),
                         llm_openai,
+                        #[cfg(feature = "llm-openai")]
                         llm_openai_base_url.as_deref(),
                         llm_anthropic,
+                        #[cfg(feature = "llm-anthropic")]
                         llm_anthropic_base_url.as_deref(),
                         llm_model.as_deref(),
                         llm_timeout_secs,
@@ -2008,13 +2027,22 @@ fn main() -> Result<()> {
                     instance,
                     infer_constraints,
                     llm_ollama,
+                    #[cfg(feature = "llm-ollama")]
                     llm_ollama_host,
                     llm_openai,
+                    #[cfg(feature = "llm-openai")]
                     llm_openai_base_url,
                     llm_anthropic,
+                    #[cfg(feature = "llm-anthropic")]
                     llm_anthropic_base_url,
+                    #[cfg(any(
+                        feature = "llm-ollama",
+                        feature = "llm-openai",
+                        feature = "llm-anthropic"
+                    ))]
                     llm_model,
                     llm_timeout_secs,
+                    ..
                 } => {
                     let text = crate::security::read_utf8_file_bounded(
                         &proposals,
@@ -2131,12 +2159,15 @@ fn main() -> Result<()> {
                         }
                     };
 
-                    let draft =
+                    let draft = if suggestions.is_some() {
                         crate::schema_discovery::draft_axi_module_from_proposals_with_suggestions(
                             &file,
                             &options,
                             suggestions.as_ref(),
-                        )?;
+                        )?
+                    } else {
+                        base_draft
+                    };
 
                     crate::security::write_output_bounded(&out, draft, "CLI output")?;
                     println!("wrote {}", out.display());
@@ -3718,11 +3749,27 @@ fn cmd_authoring(command: AuthoringCommands) -> Result<()> {
         AuthoringCommands::Workspace {
             workspace,
             request,
+            detail,
+            section,
+            page_limit,
+            cursor,
             out,
         } => {
             let service = crate::authoring_workspace::AuthoringWorkspaceService::new(&workspace)?;
-            let request = crate::authoring_workspace::read_authoring_request(&request)?;
-            let report = service.execute(request)?;
+            let mut request = crate::authoring_workspace::read_authoring_request(&request)?;
+            if let Some(detail) = detail {
+                request.presentation.detail = detail;
+            }
+            if !section.is_empty() {
+                request.presentation.sections = Some(section);
+            }
+            if let Some(limit) = page_limit {
+                request.presentation.limit = limit;
+            }
+            if cursor.is_some() {
+                request.presentation.cursor = cursor;
+            }
+            let report = service.execute_response(request)?;
             write_json_output(&report, out.as_ref())
         }
         AuthoringCommands::MaterializeSkeletons {
@@ -4503,6 +4550,11 @@ fn run_llm_plugin(
     )
 }
 
+#[cfg(any(
+    feature = "llm-ollama",
+    feature = "llm-openai",
+    feature = "llm-anthropic"
+))]
 #[allow(clippy::too_many_arguments)]
 fn llm_augment_proposals(
     llm_backend: &str,
@@ -5176,6 +5228,11 @@ If you have no good suggestions, return empty arrays."#
     })
 }
 
+#[cfg(any(
+    feature = "llm-ollama",
+    feature = "llm-openai",
+    feature = "llm-anthropic"
+))]
 fn llm_suggest_schema_structure(
     llm_backend: &str,
     endpoint: &str,
@@ -5511,11 +5568,11 @@ fn cmd_discover_augment_proposals(
     llm_plugin: Option<&Path>,
     llm_plugin_args: &[String],
     llm_ollama: bool,
-    llm_ollama_host: Option<&str>,
+    #[cfg(feature = "llm-ollama")] llm_ollama_host: Option<&str>,
     llm_openai: bool,
-    llm_openai_base_url: Option<&str>,
+    #[cfg(feature = "llm-openai")] llm_openai_base_url: Option<&str>,
     llm_anthropic: bool,
-    llm_anthropic_base_url: Option<&str>,
+    #[cfg(feature = "llm-anthropic")] llm_anthropic_base_url: Option<&str>,
     llm_model: Option<&str>,
     llm_timeout_secs: Option<u64>,
     llm_add_proposals: bool,
@@ -6714,6 +6771,11 @@ fn resolve_llm_state_for_competency_questions(
 }
 
 const PREDICTIVE_PROPOSAL_BACKEND_ENV: &str = "PREDICTIVE_PROPOSAL_BACKEND";
+#[cfg(any(
+    feature = "llm-ollama",
+    feature = "llm-openai",
+    feature = "llm-anthropic"
+))]
 const PREDICTIVE_PROPOSAL_MODEL_ENV: &str = "PREDICTIVE_PROPOSAL_MODEL";
 
 fn resolve_llm_state_for_predictive_proposal_plugin(
@@ -6730,6 +6792,11 @@ fn resolve_llm_state_for_predictive_proposal_plugin(
         })
         .unwrap_or_else(|| "openai".to_string());
 
+    #[cfg(any(
+        feature = "llm-ollama",
+        feature = "llm-openai",
+        feature = "llm-anthropic"
+    ))]
     let model = args.model.clone().or_else(|| {
         env::var(PREDICTIVE_PROPOSAL_MODEL_ENV)
             .ok()
@@ -7872,6 +7939,7 @@ theory PlantTransport on Plant:
                         workspace,
                         request,
                         out,
+                        ..
                     },
             } => {
                 assert_eq!(workspace, PathBuf::from("/tmp/workspace"));
@@ -7879,6 +7947,62 @@ theory PlantTransport on Plant:
                 assert_eq!(out, Some(PathBuf::from("/tmp/authoring_report.json")));
             }
             _ => panic!("unexpected command parse result"),
+        }
+    }
+
+    #[test]
+    fn authoring_workspace_command_parses_presentation_switches() {
+        let base = [
+            "axiograph",
+            "authoring",
+            "workspace",
+            "--request",
+            "request.json",
+        ];
+        let cli = Cli::try_parse_from(base.into_iter().chain([
+            "--detail",
+            "standard",
+            "--section",
+            "diagnostics,stable_runtime_refs",
+            "--page-limit",
+            "10",
+            "--cursor",
+            "example-token",
+        ]))
+        .expect("presentation switches");
+        match cli.command {
+            Commands::Authoring {
+                command:
+                    AuthoringCommands::Workspace {
+                        detail,
+                        section,
+                        page_limit,
+                        cursor,
+                        ..
+                    },
+            } => {
+                assert_eq!(
+                    detail,
+                    Some(crate::authoring_workspace::AuthoringDetailV1::Standard)
+                );
+                assert_eq!(
+                    section,
+                    vec![
+                        crate::authoring_workspace::AuthoringSectionV1::Diagnostics,
+                        crate::authoring_workspace::AuthoringSectionV1::StableRuntimeRefs
+                    ]
+                );
+                assert_eq!(page_limit, Some(10));
+                assert_eq!(cursor.as_deref(), Some("example-token"));
+            }
+            _ => panic!("workspace command"),
+        }
+        for flags in [
+            ["--detail", "unknown"],
+            ["--section", "unknown"],
+            ["--page-limit", "-1"],
+        ] {
+            assert!(Cli::try_parse_from(base.into_iter().chain(flags)).is_err());
         }
     }
 

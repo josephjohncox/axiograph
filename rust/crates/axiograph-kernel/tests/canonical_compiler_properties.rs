@@ -18,6 +18,47 @@ fn compile(text: &str) -> Result<axiograph_kernel::CompiledKernelSnapshot, Kerne
     })
 }
 
+#[test]
+fn role_carrier_error_preserves_first_structured_occurrence_and_source() {
+    let text = "module M\nschema Earlier:\n  object Compny\n  relation Previous(value: Compny)\nschema Actual:\n  object Company\n  relation Employment(first: Company, next: indexed(refined(Compny; eq(Compny)); first), later: OtherTypo)\n";
+    let error = compile(text).unwrap_err();
+    let rendered = error.to_string();
+    let contextual = anyhow::Error::new(error.clone()).context("compile exact module M.axi");
+    let pretty = format!("{contextual:#}");
+    assert_eq!(pretty.matches(&rendered).count(), 1);
+    assert!(pretty.starts_with("compile exact module M.axi: "));
+    assert!(matches!(
+        contextual.downcast_ref::<KernelCompileError>(),
+        Some(KernelCompileError::RoleCarrier { .. })
+    ));
+    let KernelCompileError::RoleCarrier {
+        module,
+        schema_index,
+        relation_index,
+        role_index,
+        cause,
+    } = error
+    else {
+        panic!("structured carrier error")
+    };
+    assert_eq!(
+        (module.as_str(), schema_index, relation_index, role_index),
+        ("M", 1, 0, 1)
+    );
+    assert!(
+        matches!(cause.as_ref(), KernelCompileError::UnknownObjectTarget { target, .. } if target == "Compny")
+    );
+    assert_eq!(rendered, cause.to_string());
+    assert!(matches!(
+        compile("module M\nschema S:\n  object Company\n  subtype Compny <: Company\n"),
+        Err(KernelCompileError::UnknownObjectTarget { .. })
+    ));
+    let error = compile("module M\nschema S:\n  object Company\n  relation Employment(company: relation(Employmnt))\n").unwrap_err();
+    assert!(
+        matches!(error, KernelCompileError::RoleCarrier { cause, .. } if matches!(*cause, KernelCompileError::UnknownRelationTarget { .. }))
+    );
+}
+
 fn atom_strategy() -> impl Strategy<Value = String> {
     "[A-Za-z][A-Za-z0-9_]{0,12}".prop_filter("avoid fixture names", |value| {
         !matches!(value.as_str(), "A" | "B" | "C" | "Current")

@@ -14,6 +14,7 @@ workspace = true
 resolver = "2"
 members = [
   "crates/axiograph-cli",
+  "crates/axiograph-query",
   "crates/axiograph-security",
   "crates/axiograph-dsl",
   "crates/axiograph-kernel",

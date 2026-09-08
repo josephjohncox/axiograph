@@ -317,7 +317,10 @@ mod tests {
         let q = parse_sqlish_query(
             "SELECT y FROM Node AS y WHERE FOLLOW(0, 'rel_0/rel_1', y) LIMIT 10;",
         )?;
-        let res = crate::axql::execute_compiled_query_for_test(&db, &q)?;
+        let meta = axiograph_pathdb::axi_semantics::MetaPlaneIndex::from_db(&db)?;
+        let res = crate::query_ir::QueryIrV1::from_axql_query(&q)
+            .compile_with_meta(&db, Some(&meta))?
+            .execute(&db, Some(&meta))?;
         assert_eq!(res.rows.len(), 1);
         assert_eq!(res.rows[0].get("?y").copied(), Some(2));
         Ok(())
@@ -329,7 +332,10 @@ mod tests {
         let q = parse_sqlish_query(
             "SELECT x FROM Node AS x WHERE HAS(x, 'rel_0') AND ATTR(x, 'name') = 'a' LIMIT 5;",
         )?;
-        let res = crate::axql::execute_compiled_query_for_test(&db, &q)?;
+        let meta = axiograph_pathdb::axi_semantics::MetaPlaneIndex::from_db(&db)?;
+        let res = crate::query_ir::QueryIrV1::from_axql_query(&q)
+            .compile_with_meta(&db, Some(&meta))?
+            .execute(&db, Some(&meta))?;
         assert_eq!(res.rows.len(), 1);
         assert_eq!(res.rows[0].get("?x").copied(), Some(0));
         Ok(())
@@ -349,7 +355,10 @@ mod tests {
         let db = tiny_db();
         let q =
             parse_sqlish_query("SELECT x FROM Node AS x WHERE FOLLOW(x, 'rel_0', 'b') LIMIT 10;")?;
-        let res = crate::axql::execute_compiled_query_for_test(&db, &q)?;
+        let meta = axiograph_pathdb::axi_semantics::MetaPlaneIndex::from_db(&db)?;
+        let res = crate::query_ir::QueryIrV1::from_axql_query(&q)
+            .compile_with_meta(&db, Some(&meta))?
+            .execute(&db, Some(&meta))?;
         assert_eq!(res.rows.len(), 1);
         assert_eq!(res.rows[0].get("?x").copied(), Some(0));
         Ok(())

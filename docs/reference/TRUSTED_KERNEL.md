@@ -197,12 +197,13 @@ Missing, null, non-string, malformed, unknown, or old-protocol fields reject. A
 successful process exit without a matching full `VerifierReceiptV2` has no
 verification meaning. The stdio V1 reader was deleted.
 
-The server `/status` response keeps binary discovery separate from verification
-readiness. It reports the V2 protocol and expected build id, whether an actual
-checker file is available and executable, and whether an approved SHA-256,
-approved build id, and positive timeout were supplied. A neighboring
-`axiograph_verify.sha256` file is package integrity metadata, not operator
-approval; the server never reads it as verification authority.
+The read-only database server `/status` reports counts and the authenticated
+materialization receipt, not checker readiness. `/capabilities` describes its
+fixed execution-only protocol and optional `/viz`; neither endpoint authorizes
+HTTP access, binds a local graph to query IDs, or supplies a verified query
+certificate. Approved checker configuration belongs to the typed certificate/MCP
+surfaces. A neighboring `axiograph_verify.sha256` file is package integrity
+metadata, not operator approval.
 
 The receipt proves witness soundness and exact answer completeness for the
 bounded finite query denotation reconstructed from the accepted module. It does

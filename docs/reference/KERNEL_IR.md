@@ -37,6 +37,17 @@ It does not normalize or reserialize source before hashing. The canonical
 package path uses full SHA-256 identities and canonical JSON manifests; it does not
 use bincode or FNV.
 
+The named authoring/query projection in PathDB now consumes that immutable package
+through `axi_module_import::derive_package_query_index`. Exact sources are checked
+against every canonical closure revision; schemas and instances retain their
+canonical owner identities, and typed relation-fact references link allocated fact
+nodes. The existing runtime fact-ID attribute remains separate from canonical fact
+citations. This derived, in-memory seam is not receipt-bound accepted-store
+hydration. Its local execution namespace has explicit capability rejections even
+for some valid canonical packages; see
+[import-aware authoring projection](SOFTWARE_AUTHORING_TOOLS.md#import-aware-derived-query-projection).
+Canonical compilation and trusted checker scope are unchanged.
+
 A successful compilation returns one immutable `CompiledKernelSnapshot` with:
 
 1. `KernelSnapshotIr`: package/import-closure identity plus schema, theory, and

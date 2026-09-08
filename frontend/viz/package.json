@@ -5,8 +5,10 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
-    "build:debug": "vite build --mode debug",
+    "typecheck": "tsc --noEmit && tsc --project tsconfig.context.json --noEmit",
+    "test": "node --test tests/*.test.mjs",
+    "build": "npm run typecheck && vite build",
+    "build:debug": "npm run typecheck && vite build --mode debug",
     "preview": "vite preview"
   },
   "devDependencies": {

@@ -24,7 +24,7 @@ pub fn cmd_repl() -> Result<()> {
     }
     #[cfg(not(feature = "repl-rustyline"))]
     {
-        return cmd_repl_simple();
+        cmd_repl_simple()
     }
 }
 
@@ -540,12 +540,12 @@ fn refresh_completion_data(
         "answer".to_string(),
         "agent".to_string(),
     ];
-    let mut llm_use_backends = vec!["mock".to_string(), "command".to_string()];
-    #[cfg(feature = "llm-ollama")]
-    {
-        llm_use_backends.push("ollama".to_string());
-    }
-    completion_data.llm_use_backends = llm_use_backends;
+    completion_data.llm_use_backends = vec![
+        "mock".to_string(),
+        "command".to_string(),
+        #[cfg(feature = "llm-ollama")]
+        "ollama".to_string(),
+    ];
     completion_data.scenarios = vec![
         "enterprise".to_string(),
         "enterprise_large_api".to_string(),

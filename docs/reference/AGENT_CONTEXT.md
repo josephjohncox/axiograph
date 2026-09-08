@@ -238,6 +238,14 @@ Current cleanup pressure:
   `axiograph-cli` unless they become reusable ontology-engineering
   infrastructure.
 
+## Engineering Quality Work
+
+The [audit at 70c568b](ENGINEERING_AUDIT_70C568B.md) records the baseline.
+The [engineering-quality roadmap](../roadmaps/ROADMAP_ENGINEERING_QUALITY.md)
+tracks all findings, TODOs, acceptance checks, and implementation evidence.
+Continue its verified slices in priority order. Do not use the baseline audit as
+proof of the current tree or close a broad item after one partial fix.
+
 ## Harness Quality
 
 `AGENTS.md` should stay short enough for agents to actually use. If important

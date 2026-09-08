@@ -70,3 +70,7 @@
 - [Rust architecture](reference/RUST_ARCHITECTURE_CLEANUP.md)
 - [Applied category and type theory](research/APPLIED_CATEGORY_TYPE_THEORY_FOR_AXIograph.md)
 - [Production-readiness roadmap](roadmaps/ROADMAP_PRODUCTION_READINESS.md)
+- [Engineering quality baseline audit (70c568b)](reference/ENGINEERING_AUDIT_70C568B.md)
+- [Engineering quality roadmap](roadmaps/ROADMAP_ENGINEERING_QUALITY.md)
+- [Agent backlog](roadmaps/ROADMAP_AGENT_BACKLOG.md)
+- [LLM REPL plugin protocol](reference/LLM_REPL_PLUGIN.md)

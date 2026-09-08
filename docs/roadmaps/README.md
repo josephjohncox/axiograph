@@ -2,6 +2,7 @@
 
 Roadmaps are concrete TODO trackers derived from the book and design notes.
 
+- [Engineering quality implementation](ROADMAP_ENGINEERING_QUALITY.md) — audit remediation, acceptance checks, and evidence.
 - `docs/roadmaps/ROADMAP_AGENT_BACKLOG.md`
 - `docs/roadmaps/ROADMAP_PRODUCTION_READINESS.md`
 - `docs/roadmaps/ROADMAP_ONTOLOGY_ENGINEERING.md`

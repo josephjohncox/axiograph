@@ -248,13 +248,22 @@ certificate checking.
 | --------- | ------------ | --------------- | -------- |
 | Finite indexed path/groupoid laws | High | Lean | Implemented as theorem support; not a `VerifyMain` certificate family |
 | `.axi` parser parity | High | Lean + Rust | In progress |
-| Finite category presentation and relation projections | High | Rust canonical IR + Lean finite theory | Implemented finite Lean model; canonical IR serialization into `VerifyMain` remains open |
+| Finite category presentation and relation projections | High | Rust canonical IR + Lean finite theory | Implemented finite model and anchored `category_kernel_v3` serialization/dispatch in `VerifyMain`: formation, equation congruence, formal inverse cancellation, and bounded generator reachability replay. Acceptance-to-denotation theorem remains open. |
 | Reconciliation certificates | High | Lean + Rust emitters | Planned |
 | Modal/temporal semantics | Medium | Lean | Planned |
 | Semantic coverage reports | Medium | Rust, checked anchors | Planned |
 | Rust local invariant proofs | Medium | Rust tooling | Selective |
 
 ---
+
+The category wire checker reconstructs the presentation from exact anchored
+`.axi` bytes; it does not trust serialized Rust IR as source meaning. Its finite
+decision procedures and replay do not yet retype wire paths into dependent
+`GroupoidPath` values or connect acceptance to `GroupoidPath.denote`/`PathEquiv`.
+The separate indexed path families' denotation theorems do not close this gap.
+See [Lean theory evaluation](../reference/LEAN_THEORY_EVALUATION.md) for the
+current claim boundary and [EQ-14](../roadmaps/ROADMAP_ENGINEERING_QUALITY.md#eq-14-category-certificate-acceptance-to-denotation-theorem)
+for the remaining theorem work.
 
 ## 12. Recommended Path Forward
 

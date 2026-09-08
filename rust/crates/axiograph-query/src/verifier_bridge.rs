@@ -13,14 +13,19 @@ const MAX_VERIFIER_INPUT_BYTES: usize = 16 * 1024 * 1024;
 const MAX_VERIFIER_OUTPUT_BYTES: usize = 1024 * 1024;
 const MAX_VERIFIER_EXECUTABLE_BYTES: usize = 256 * 1024 * 1024;
 
+/// Trusted host/operator policy, never an untrusted authoring-request field.
+/// Executable, hash, and build approval must come from the embedding host's
+/// trusted configuration. A checked receipt establishes validation under that
+/// configured checker; it does not prove an arbitrary caller-supplied binary is
+/// Lean or belongs to the supported VerifyMain import closure.
 #[derive(Debug, Clone)]
-pub(crate) struct CertVerifyConfig {
-    pub(crate) verifier_bin: Option<PathBuf>,
-    pub(crate) timeout: Option<Duration>,
+pub struct CertVerifyConfig {
+    pub verifier_bin: Option<PathBuf>,
+    pub timeout: Option<Duration>,
     /// SHA-256 of the only checker executable approved for this server.
-    pub(crate) approved_checker_sha256: Option<String>,
+    pub approved_checker_sha256: Option<String>,
     /// Build identifier expected in the checker's structured receipt.
-    pub(crate) approved_checker_build_id: Option<String>,
+    pub approved_checker_build_id: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -67,7 +72,7 @@ pub(crate) enum VerifierDecisionV2 {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct VerifierReceiptV2 {
+struct VerifierReceiptWireV2 {
     version: String,
     nonce: VerifierNonceV2,
     checker_sha256: String,
@@ -82,34 +87,45 @@ pub(crate) struct VerifierReceiptV2 {
     message: String,
 }
 
+/// A receipt checked against the approved executable and this invocation's
+/// nonce, source, certificate, query, and answer. Serialized metadata cannot
+/// construct this handle; only the verifier bridge can issue it.
+///
+/// ```compile_fail
+/// use axiograph_query::verifier_bridge::VerifierReceiptV2;
+/// let forged: VerifierReceiptV2 = serde_json::from_str("{}").unwrap();
+/// ```
+#[derive(Debug, Clone, Serialize)]
+#[serde(transparent)]
+pub struct VerifierReceiptV2(VerifierReceiptWireV2);
+
 impl VerifierReceiptV2 {
-    pub(crate) fn accepted(&self) -> bool {
-        self.decision == VerifierDecisionV2::Accepted
+    pub fn accepted(&self) -> bool {
+        self.0.decision == VerifierDecisionV2::Accepted
     }
 
-    #[cfg(test)]
-    pub(crate) fn message(&self) -> &str {
-        &self.message
+    pub fn message(&self) -> &str {
+        &self.0.message
     }
 
-    pub(crate) fn revision_digest_v2(&self) -> &RevisionDigestV2 {
-        &self.revision_digest_v2
+    pub fn revision_digest_v2(&self) -> &RevisionDigestV2 {
+        &self.0.revision_digest_v2
     }
 
-    pub(crate) fn certificate_digest_v2(&self) -> &CertificateIdV2 {
-        &self.certificate_digest_v2
+    pub fn certificate_digest_v2(&self) -> &CertificateIdV2 {
+        &self.0.certificate_digest_v2
     }
 
-    pub(crate) fn prepared_query_digest_v1(&self) -> &QueryIdV2 {
-        &self.prepared_query_digest_v1
+    pub fn prepared_query_digest_v1(&self) -> &QueryIdV2 {
+        &self.0.prepared_query_digest_v1
     }
 
-    pub(crate) fn answer_digest_v1(&self) -> &AnswerIdV2 {
-        &self.answer_digest_v1
+    pub fn answer_digest_v1(&self) -> &AnswerIdV2 {
+        &self.0.answer_digest_v1
     }
 }
 
-pub(crate) fn resolve_verifier_bin(config: &CertVerifyConfig) -> Option<PathBuf> {
+pub fn resolve_verifier_bin(config: &CertVerifyConfig) -> Option<PathBuf> {
     if let Some(path) = config.verifier_bin.as_ref() {
         return Some(path.clone());
     }
@@ -179,7 +195,7 @@ fn run_stdio_with_timeout(
     Ok((output.status, output.stdout, output.stderr))
 }
 
-pub(crate) fn verify_certificate_with_lean(
+pub fn verify_certificate_with_lean(
     config: &CertVerifyConfig,
     module_axi: &str,
     certificate_json: &str,
@@ -255,7 +271,7 @@ pub(crate) fn verify_certificate_with_lean(
     if stdout.len() > MAX_VERIFIER_OUTPUT_BYTES || stderr.len() > MAX_VERIFIER_OUTPUT_BYTES {
         return Err(anyhow!("verifier output exceeded configured cap"));
     }
-    let receipt: VerifierReceiptV2 = crate::security::parse_json_bounded(
+    let receipt: VerifierReceiptWireV2 = crate::security::parse_json_bounded(
         &stdout,
         MAX_VERIFIER_OUTPUT_BYTES,
         "verifier V2 receipt",
@@ -282,8 +298,8 @@ pub(crate) fn verify_certificate_with_lean(
     }
 
     match receipt.decision {
-        VerifierDecisionV2::Accepted if status.success() => Ok(receipt),
-        VerifierDecisionV2::Rejected if !status.success() => Ok(receipt),
+        VerifierDecisionV2::Accepted if status.success() => Ok(VerifierReceiptV2(receipt)),
+        VerifierDecisionV2::Rejected if !status.success() => Ok(VerifierReceiptV2(receipt)),
         _ => Err(anyhow!(
             "verifier exit status and structured decision disagree"
         )),
@@ -783,7 +799,7 @@ printf '%s\n' '{"version":"axiograph-verifier-stdio-v2","nonce":"not-a-uuid","ch
             &answer_digest,
         )?;
         assert!(receipt.accepted(), "{}", receipt.message());
-        assert_eq!(receipt.claim_kind, "finite_exact_complete");
+        assert_eq!(receipt.0.claim_kind, "finite_exact_complete");
 
         let mut missing = emitted.certificate().clone();
         missing.proof.rows.clear();
