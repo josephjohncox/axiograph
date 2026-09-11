@@ -8,8 +8,12 @@ mod tests;
 
 const RESPONSE_VERSION: &str = "authoring_workspace_response_v1";
 const CURSOR_VERSION: &str = "authoring-page-v1";
+const NESTED_CURSOR_VERSION: &str = "authoring-nested-page-v1";
 const MAX_CURSOR_BYTES: usize = 256;
 const MAX_PAGE_LIMIT: usize = 100;
+const DEFAULT_NESTED_BYTE_LIMIT: usize = 256 * 1024;
+const MAX_NESTED_BYTE_LIMIT: usize = 1024 * 1024;
+const MAX_NESTED_ITEM_BYTES: usize = 256 * 1024;
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, clap::ValueEnum)]
 #[serde(rename_all = "snake_case")]
@@ -67,6 +71,76 @@ const SECTIONS: &[AuthoringSectionV1] = &[
     AuthoringSectionV1::CompetencyEvaluation,
 ];
 
+#[derive(
+    Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, clap::ValueEnum,
+)]
+#[serde(rename_all = "snake_case")]
+#[value(rename_all = "snake_case")]
+pub(crate) enum AuthoringNestedCollectionV1 {
+    ValidationFiniteResiduals,
+    RuntimeJudgments,
+    RuntimeAdmissibilityChecks,
+    RuntimeClosureSteps,
+    RuntimeAssumptionDiagnostics,
+    DependentContexts,
+    DependentResiduals,
+    PreparedInferredTypes,
+    PreparedKernelRefs,
+    PreparedRefinementHandles,
+    ExplanationPlan,
+    ExplanationTypedHoles,
+    ExplanationSuggestions,
+    ExplanationRefinementCandidates,
+    ExplanationSemanticClaims,
+    ExplanationTrustGaps,
+    CompetencyQuestions,
+    CompetencyEvaluations,
+    CompetencyUnresolved,
+    CompetencyPreparedKernelRefs,
+    CompetencyPreparedRefinementHandles,
+    CompetencyRefinementCandidates,
+}
+
+const NESTED_COLLECTIONS: &[AuthoringNestedCollectionV1] = &[
+    AuthoringNestedCollectionV1::ValidationFiniteResiduals,
+    AuthoringNestedCollectionV1::RuntimeJudgments,
+    AuthoringNestedCollectionV1::RuntimeAdmissibilityChecks,
+    AuthoringNestedCollectionV1::RuntimeClosureSteps,
+    AuthoringNestedCollectionV1::RuntimeAssumptionDiagnostics,
+    AuthoringNestedCollectionV1::DependentContexts,
+    AuthoringNestedCollectionV1::DependentResiduals,
+    AuthoringNestedCollectionV1::PreparedInferredTypes,
+    AuthoringNestedCollectionV1::PreparedKernelRefs,
+    AuthoringNestedCollectionV1::PreparedRefinementHandles,
+    AuthoringNestedCollectionV1::ExplanationPlan,
+    AuthoringNestedCollectionV1::ExplanationTypedHoles,
+    AuthoringNestedCollectionV1::ExplanationSuggestions,
+    AuthoringNestedCollectionV1::ExplanationRefinementCandidates,
+    AuthoringNestedCollectionV1::ExplanationSemanticClaims,
+    AuthoringNestedCollectionV1::ExplanationTrustGaps,
+    AuthoringNestedCollectionV1::CompetencyQuestions,
+    AuthoringNestedCollectionV1::CompetencyEvaluations,
+    AuthoringNestedCollectionV1::CompetencyUnresolved,
+    AuthoringNestedCollectionV1::CompetencyPreparedKernelRefs,
+    AuthoringNestedCollectionV1::CompetencyPreparedRefinementHandles,
+    AuthoringNestedCollectionV1::CompetencyRefinementCandidates,
+];
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct AuthoringNestedPageRequestV1 {
+    pub collection: AuthoringNestedCollectionV1,
+    #[serde(default = "default_limit")]
+    pub limit: usize,
+    #[serde(default = "default_nested_byte_limit")]
+    pub byte_limit: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
+}
+fn default_nested_byte_limit() -> usize {
+    DEFAULT_NESTED_BYTE_LIMIT
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct AuthoringPresentationV1 {
@@ -79,6 +153,9 @@ pub(crate) struct AuthoringPresentationV1 {
     pub limit: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cursor: Option<String>,
+    /// Lossless, identity-bound pages for collections nested inside canonical artifacts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nested: Option<AuthoringNestedPageRequestV1>,
 }
 fn default_limit() -> usize {
     20
@@ -90,6 +167,7 @@ impl Default for AuthoringPresentationV1 {
             sections: None,
             limit: default_limit(),
             cursor: None,
+            nested: None,
         }
     }
 }
@@ -106,10 +184,10 @@ impl AuthoringPresentationV1 {
             }
         }
         if self.detail == AuthoringDetailV1::Full
-            && (self.sections.is_some() || self.cursor.is_some())
+            && (self.sections.is_some() || self.cursor.is_some() || self.nested.is_some())
         {
             return Err(anyhow!(
-                "full returns the canonical report; sections/cursor require summary or standard"
+                "full returns the canonical report; sections/cursor/nested require summary or standard"
             ));
         }
         if let Some(cursor) = &self.cursor {
@@ -117,6 +195,30 @@ impl AuthoringPresentationV1 {
                 return Err(anyhow!(
                     "cursor requires exactly one section and at most {MAX_CURSOR_BYTES} bytes"
                 ));
+            }
+        }
+        if let Some(nested) = &self.nested {
+            if self.sections.is_some() || self.cursor.is_some() {
+                return Err(anyhow!(
+                    "nested drilldown cannot be combined with top-level sections/cursor"
+                ));
+            }
+            if !(1..=MAX_PAGE_LIMIT).contains(&nested.limit) {
+                return Err(anyhow!(
+                    "presentation.nested.limit must be between 1 and {MAX_PAGE_LIMIT}"
+                ));
+            }
+            if !(1..=MAX_NESTED_BYTE_LIMIT).contains(&nested.byte_limit) {
+                return Err(anyhow!(
+                    "presentation.nested.byte_limit must be between 1 and {MAX_NESTED_BYTE_LIMIT}"
+                ));
+            }
+            if nested
+                .cursor
+                .as_ref()
+                .is_some_and(|cursor| cursor.len() > MAX_CURSOR_BYTES)
+            {
+                return Err(anyhow!("nested cursor exceeds byte limit"));
             }
         }
         Ok(())
@@ -157,6 +259,8 @@ pub(crate) struct AuthoringCompactResponseV1 {
     follow_up_available: bool,
     /// Includes every selectable section, including omitted and empty sections.
     sections: Vec<SectionPage>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    nested_page: Option<AuthoringNestedPageV1>,
     omitted_items: usize,
     truncated: bool,
 }
@@ -197,6 +301,37 @@ struct CompetencyCounts {
     total: usize,
     promotion_gate: AuthoringGateDecisionV1,
 }
+#[derive(Debug, Serialize)]
+struct AuthoringNestedItemV1 {
+    version: &'static str,
+    collection: AuthoringNestedCollectionV1,
+    parent_identity: String,
+    ordinal: usize,
+    item_identity: String,
+    canonical_item_sha256: String,
+    canonical_item_bytes: usize,
+    media_type: &'static str,
+    /// Minified UTF-8 serialization of the exact canonical collection entry.
+    canonical_item_json: String,
+}
+
+#[derive(Debug, Serialize)]
+struct AuthoringNestedPageV1 {
+    version: &'static str,
+    collection: AuthoringNestedCollectionV1,
+    total: usize,
+    offset: usize,
+    returned: usize,
+    omitted: usize,
+    truncated: bool,
+    entry_limit: usize,
+    byte_limit: usize,
+    returned_bytes: usize,
+    max_item_bytes: usize,
+    next_cursor: Option<String>,
+    items: Vec<AuthoringNestedItemV1>,
+}
+
 #[derive(Debug, Serialize)]
 struct SectionPage {
     section: AuthoringSectionV1,
@@ -275,6 +410,18 @@ impl AuthoringWorkspaceService {
             }
             sections.push(page);
         }
+        let nested_page = presentation
+            .nested
+            .as_ref()
+            .map(|request| {
+                if !follow_up_available {
+                    return Err(anyhow!(
+                        "nested cursor cannot be checked: source/import closure compilation failed"
+                    ));
+                }
+                nested_page(&report, &input_identity, request)
+            })
+            .transpose()?;
         let omitted_items = sections.iter().map(|page| page.omitted).sum();
         let errors = report
             .diagnostics
@@ -336,7 +483,7 @@ impl AuthoringWorkspaceService {
                 if report.ok { "Runtime checks completed without error diagnostics" } else { "Runtime checks failed" },
                 report.promotion.protected_main_eligible, report.promotion.blockers.len()),
             validation, promotion: report.promotion, trust: report.trust, next_actions: report.next_actions,
-            follow_up_available, sections, omitted_items, truncated: omitted_items > 0,
+            follow_up_available, sections, nested_page, omitted_items, truncated: omitted_items > 0,
         })))
     }
 }
@@ -370,6 +517,379 @@ fn parse_cursor(token: &str, anchor: &str, section: AuthoringSectionV1) -> Resul
         return Err(anyhow!("invalid authoring cursor consistency check"));
     }
     Ok(offset)
+}
+
+fn nested_cursor(
+    anchor: &str,
+    collection: AuthoringNestedCollectionV1,
+    offset: usize,
+) -> Result<String> {
+    let checksum = digest(&serde_json::to_vec(&(
+        NESTED_CURSOR_VERSION,
+        anchor,
+        collection,
+        offset,
+    ))?);
+    Ok(format!(
+        "{NESTED_CURSOR_VERSION}:{anchor}:{offset}:{checksum}"
+    ))
+}
+
+fn parse_nested_cursor(
+    token: &str,
+    anchor: &str,
+    collection: AuthoringNestedCollectionV1,
+) -> Result<usize> {
+    if token.len() > MAX_CURSOR_BYTES {
+        return Err(anyhow!("nested cursor exceeds byte limit"));
+    }
+    let fields: Vec<_> = token.split(':').collect();
+    if fields.len() != 4
+        || fields[0] != NESTED_CURSOR_VERSION
+        || fields[1] != anchor
+        || fields[3].len() != 64
+        || !fields[3].bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Err(anyhow!("invalid or stale nested cursor binding"));
+    }
+    let offset = fields[2]
+        .parse::<usize>()
+        .map_err(|_| anyhow!("invalid nested cursor offset"))?;
+    if token != nested_cursor(anchor, collection, offset)? {
+        return Err(anyhow!("invalid nested cursor consistency check"));
+    }
+    Ok(offset)
+}
+
+fn push_nested_item<T: Serialize>(
+    items: &mut Vec<AuthoringNestedItemV1>,
+    collection: AuthoringNestedCollectionV1,
+    parent_identity: String,
+    item: &T,
+) -> Result<()> {
+    let canonical = serde_json::to_vec(item)?;
+    let canonical_item_sha256 = digest(&canonical);
+    let ordinal = items.len();
+    let item_identity = digest(&serde_json::to_vec(&(
+        NESTED_CURSOR_VERSION,
+        collection,
+        &parent_identity,
+        ordinal,
+        &canonical_item_sha256,
+    ))?);
+    let canonical_item_json = String::from_utf8(canonical)
+        .map_err(|_| anyhow!("canonical nested item serialization was not UTF-8"))?;
+    let value = AuthoringNestedItemV1 {
+        version: NESTED_CURSOR_VERSION,
+        collection,
+        parent_identity,
+        ordinal,
+        item_identity,
+        canonical_item_sha256,
+        canonical_item_bytes: canonical_item_json.len(),
+        media_type: "application/json",
+        canonical_item_json,
+    };
+    let item_bytes = serde_json::to_vec(&value)?.len();
+    if item_bytes > MAX_NESTED_ITEM_BYTES {
+        return Err(anyhow!(
+            "nested {collection:?} item {ordinal} requires {item_bytes} bytes; maximum is {MAX_NESTED_ITEM_BYTES}; select a deeper collection"
+        ));
+    }
+    items.push(value);
+    Ok(())
+}
+
+fn parent_identity<T: Serialize>(kind: &str, value: &T) -> Result<String> {
+    Ok(digest(&serde_json::to_vec(&(
+        NESTED_CURSOR_VERSION,
+        kind,
+        value,
+    ))?))
+}
+
+fn nested_collection_items(
+    report: &AuthoringWorkspaceReportV1,
+    collection: AuthoringNestedCollectionV1,
+) -> Result<Vec<AuthoringNestedItemV1>> {
+    use AuthoringNestedCollectionV1::*;
+    let mut items = Vec::new();
+    match collection {
+        ValidationFiniteResiduals => {
+            if let Some(gate) = &report.validation.finite_theory_gate {
+                let parent = parent_identity(
+                    "finite_theory_gate",
+                    &(&gate.accepted_snapshot_id, &gate.kernel_ir_digest),
+                )?;
+                for item in &gate.residual_obligations {
+                    push_nested_item(&mut items, collection, parent.clone(), item)?;
+                }
+            }
+        }
+        RuntimeJudgments
+        | RuntimeAdmissibilityChecks
+        | RuntimeClosureSteps
+        | RuntimeAssumptionDiagnostics => {
+            if let Some(module) = &report.validation.runtime_theory {
+                for runtime_report in &module.reports {
+                    let parent = parent_identity(
+                        "runtime_theory_report",
+                        &(&runtime_report.schema_id, &runtime_report.theory_ref),
+                    )?;
+                    match collection {
+                        RuntimeJudgments => {
+                            for item in &runtime_report.judgments {
+                                push_nested_item(&mut items, collection, parent.clone(), item)?;
+                            }
+                        }
+                        RuntimeAdmissibilityChecks => {
+                            for item in &runtime_report.admissibility_checks {
+                                push_nested_item(&mut items, collection, parent.clone(), item)?;
+                            }
+                        }
+                        RuntimeClosureSteps => {
+                            for item in &runtime_report.admissibility_scan.steps {
+                                push_nested_item(&mut items, collection, parent.clone(), item)?;
+                            }
+                        }
+                        RuntimeAssumptionDiagnostics => {
+                            for item in &runtime_report.assumption_diagnostics {
+                                push_nested_item(&mut items, collection, parent.clone(), item)?;
+                            }
+                        }
+                        _ => {
+                            return Err(anyhow!(
+                                "internal nested runtime collection dispatch mismatch"
+                            ))
+                        }
+                    }
+                }
+            }
+        }
+        DependentContexts | DependentResiduals => {
+            for refinement in &report.dependent_refinements {
+                let parent = parent_identity("dependent_refinement", &refinement.instance_id)?;
+                match collection {
+                    DependentContexts => {
+                        for item in &refinement.contexts {
+                            push_nested_item(&mut items, collection, parent.clone(), item)?;
+                        }
+                    }
+                    DependentResiduals => {
+                        for item in &refinement.residual_obligations {
+                            push_nested_item(&mut items, collection, parent.clone(), item)?;
+                        }
+                    }
+                    _ => {
+                        return Err(anyhow!(
+                            "internal nested dependent collection dispatch mismatch"
+                        ))
+                    }
+                }
+            }
+        }
+        PreparedInferredTypes | PreparedKernelRefs | PreparedRefinementHandles => {
+            if let Some(prepared) = &report.prepared_query {
+                let parent = parent_identity("prepared_query", &prepared.prepared_query_id)?;
+                match collection {
+                    PreparedInferredTypes => {
+                        for (variable, inferred_types) in &prepared.inferred_types {
+                            push_nested_item(
+                                &mut items,
+                                collection,
+                                parent.clone(),
+                                &json!({"variable": variable, "inferred_types": inferred_types}),
+                            )?;
+                        }
+                    }
+                    PreparedKernelRefs => {
+                        for item in &prepared.kernel_refs {
+                            push_nested_item(&mut items, collection, parent.clone(), item)?;
+                        }
+                    }
+                    PreparedRefinementHandles => {
+                        for item in &prepared.refinement_handles {
+                            push_nested_item(&mut items, collection, parent.clone(), item)?;
+                        }
+                    }
+                    _ => {
+                        return Err(anyhow!(
+                            "internal nested prepared-query collection dispatch mismatch"
+                        ))
+                    }
+                }
+            }
+        }
+        ExplanationPlan
+        | ExplanationTypedHoles
+        | ExplanationSuggestions
+        | ExplanationRefinementCandidates
+        | ExplanationSemanticClaims
+        | ExplanationTrustGaps => {
+            if let Some(explanation) = &report.query_explanation {
+                let parent =
+                    parent_identity("query_explanation", &explanation.elaborated_query_ir_v1)?;
+                match collection {
+                    ExplanationPlan => {
+                        for item in &explanation.plan {
+                            push_nested_item(&mut items, collection, parent.clone(), item)?;
+                        }
+                    }
+                    ExplanationTypedHoles => {
+                        for item in &explanation.exploration.typed_holes {
+                            push_nested_item(&mut items, collection, parent.clone(), item)?;
+                        }
+                    }
+                    ExplanationSuggestions => {
+                        for item in &explanation.exploration.exploration_suggestions {
+                            push_nested_item(&mut items, collection, parent.clone(), item)?;
+                        }
+                    }
+                    ExplanationRefinementCandidates => {
+                        for item in &explanation.exploration.refinement_candidates {
+                            push_nested_item(&mut items, collection, parent.clone(), item)?;
+                        }
+                    }
+                    ExplanationSemanticClaims => {
+                        for item in &explanation.exploration.semantic_claims {
+                            push_nested_item(&mut items, collection, parent.clone(), item)?;
+                        }
+                    }
+                    ExplanationTrustGaps => {
+                        for item in &explanation.exploration.trust_gaps {
+                            push_nested_item(&mut items, collection, parent.clone(), item)?;
+                        }
+                    }
+                    _ => {
+                        return Err(anyhow!(
+                            "internal nested explanation collection dispatch mismatch"
+                        ))
+                    }
+                }
+            }
+        }
+        CompetencyQuestions | CompetencyUnresolved => {
+            if let Some(competency) = &report.competency_questions {
+                let parent = parent_identity(
+                    "competency_report",
+                    &(&report.workspace_root, &report.source),
+                )?;
+                match collection {
+                    CompetencyQuestions => {
+                        for item in &competency.questions {
+                            push_nested_item(&mut items, collection, parent.clone(), item)?;
+                        }
+                    }
+                    CompetencyUnresolved => {
+                        for item in &competency.unresolved_question_names {
+                            push_nested_item(&mut items, collection, parent.clone(), item)?;
+                        }
+                    }
+                    _ => {
+                        return Err(anyhow!(
+                            "internal nested competency collection dispatch mismatch"
+                        ))
+                    }
+                }
+            }
+        }
+        CompetencyEvaluations
+        | CompetencyPreparedKernelRefs
+        | CompetencyPreparedRefinementHandles
+        | CompetencyRefinementCandidates => {
+            if let Some(evaluation) = report
+                .competency_questions
+                .as_ref()
+                .and_then(|competency| competency.evaluation.as_ref())
+            {
+                for question in &evaluation.questions {
+                    let parent = parent_identity("competency_evaluation", &question.name)?;
+                    match collection {
+                        CompetencyEvaluations => {
+                            push_nested_item(&mut items, collection, parent, question)?;
+                        }
+                        CompetencyPreparedKernelRefs => {
+                            if let Some(prepared) = &question.prepared_query {
+                                for item in &prepared.kernel_refs {
+                                    push_nested_item(&mut items, collection, parent.clone(), item)?;
+                                }
+                            }
+                        }
+                        CompetencyPreparedRefinementHandles => {
+                            if let Some(prepared) = &question.prepared_query {
+                                for item in &prepared.refinement_handles {
+                                    push_nested_item(&mut items, collection, parent.clone(), item)?;
+                                }
+                            }
+                        }
+                        CompetencyRefinementCandidates => {
+                            for item in &question.refinement_candidates {
+                                push_nested_item(&mut items, collection, parent.clone(), item)?;
+                            }
+                        }
+                        _ => {
+                            return Err(anyhow!(
+                            "internal nested competency-evaluation collection dispatch mismatch"
+                        ))
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(items)
+}
+
+fn nested_page(
+    report: &AuthoringWorkspaceReportV1,
+    input_identity: &str,
+    request: &AuthoringNestedPageRequestV1,
+) -> Result<AuthoringNestedPageV1> {
+    let items = nested_collection_items(report, request.collection)?;
+    let offset = request
+        .cursor
+        .as_deref()
+        .map(|token| parse_nested_cursor(token, input_identity, request.collection))
+        .transpose()?
+        .unwrap_or(0);
+    if offset > items.len() || (offset != 0 && offset == items.len()) {
+        return Err(anyhow!("nested cursor offset outside collection"));
+    }
+    let mut end = offset;
+    let mut returned_bytes = 0usize;
+    while end < items.len() && end - offset < request.limit {
+        let item_bytes = serde_json::to_vec(&items[end])?.len();
+        if item_bytes > request.byte_limit.saturating_sub(returned_bytes) {
+            if end == offset {
+                return Err(anyhow!(
+                    "nested item requires {item_bytes} bytes but request byte_limit is {}; increase byte_limit without exceeding {MAX_NESTED_BYTE_LIMIT}",
+                    request.byte_limit
+                ));
+            }
+            break;
+        }
+        returned_bytes += item_bytes;
+        end += 1;
+    }
+    let returned = end - offset;
+    let next_cursor = (end < items.len())
+        .then(|| nested_cursor(input_identity, request.collection, end))
+        .transpose()?;
+    Ok(AuthoringNestedPageV1 {
+        version: NESTED_CURSOR_VERSION,
+        collection: request.collection,
+        total: items.len(),
+        offset,
+        returned,
+        omitted: items.len() - returned,
+        truncated: end < items.len(),
+        entry_limit: request.limit,
+        byte_limit: request.byte_limit,
+        returned_bytes,
+        max_item_bytes: MAX_NESTED_ITEM_BYTES,
+        next_cursor,
+        items: items.into_iter().skip(offset).take(returned).collect(),
+    })
 }
 
 fn section_page(
@@ -455,7 +975,13 @@ pub(super) fn presentation_schema() -> Value {
         "detail":{"enum":["summary","standard","full"],"default":"summary"},
         "sections":{"type":"array","uniqueItems":true,"maxItems":SECTIONS.len(),"items":{"enum":SECTIONS}},
         "limit":{"type":"integer","minimum":1,"maximum":MAX_PAGE_LIMIT,"default":default_limit()},
-        "cursor":{"type":"string","maxLength":MAX_CURSOR_BYTES}
+        "cursor":{"type":"string","maxLength":MAX_CURSOR_BYTES},
+        "nested":{"type":"object","additionalProperties":false,"required":["collection"],"properties":{
+            "collection":{"enum":NESTED_COLLECTIONS},
+            "limit":{"type":"integer","minimum":1,"maximum":MAX_PAGE_LIMIT,"default":default_limit()},
+            "byte_limit":{"type":"integer","minimum":1,"maximum":MAX_NESTED_BYTE_LIMIT,"default":DEFAULT_NESTED_BYTE_LIMIT},
+            "cursor":{"type":"string","maxLength":MAX_CURSOR_BYTES}
+        }}
     }})
 }
 
@@ -525,13 +1051,33 @@ pub(super) fn response_schema_object() -> JsonObject {
     );
     page["allOf"] = json!([{"if":{"properties":{"section":{"const":"diagnostics"}}},
         "then":{"properties":{"items":{"type":"array","items":diagnostic}}}}]);
-    let compact = object(
+    let nested_item = object(object_properties!({
+        "version":{"const":NESTED_CURSOR_VERSION},"collection":{"enum":NESTED_COLLECTIONS},
+        "parent_identity":{"type":"string","pattern":"^[0-9a-f]{64}$"},"ordinal":count,
+        "item_identity":{"type":"string","pattern":"^[0-9a-f]{64}$"},
+        "canonical_item_sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"},
+        "canonical_item_bytes":{"type":"integer","minimum":0,"maximum":MAX_NESTED_ITEM_BYTES},
+        "media_type":{"const":"application/json"},
+        "canonical_item_json":{"type":"string","maxLength":MAX_NESTED_ITEM_BYTES}
+    }));
+    let nested_page = object(object_properties!({
+        "version":{"const":NESTED_CURSOR_VERSION},"collection":{"enum":NESTED_COLLECTIONS},
+        "total":count,"offset":count,"returned":count,"omitted":count,"truncated":boolean,
+        "entry_limit":{"type":"integer","minimum":1,"maximum":MAX_PAGE_LIMIT},
+        "byte_limit":{"type":"integer","minimum":1,"maximum":MAX_NESTED_BYTE_LIMIT},
+        "returned_bytes":{"type":"integer","minimum":0,"maximum":MAX_NESTED_BYTE_LIMIT},
+        "max_item_bytes":{"const":MAX_NESTED_ITEM_BYTES},
+        "next_cursor":{"type":["string","null"],"maxLength":MAX_CURSOR_BYTES},
+        "items":{"type":"array","maxItems":MAX_PAGE_LIMIT,"items":nested_item}
+    }));
+    let mut compact = object(
         object_properties!({"version":{"const":RESPONSE_VERSION},"operation":{"enum":["inspect","validate","apply_repair","promotion_review"]},
         "detail":{"enum":["summary","standard"]},"workspace_root":string,"requested_path":string,"input_identity":{"type":"string","pattern":"^[0-9a-f]{64}$"},
         "source":{"anyOf":[source,{"type":"null"}]},"ok":boolean,"summary":string,"validation":validation,"promotion":promotion,"trust":trust,
         "next_actions":strings,"follow_up_available":boolean,"sections":{"type":"array","minItems":SECTIONS.len(),"maxItems":SECTIONS.len(),"items":page},
         "omitted_items":count,"truncated":boolean}),
     );
+    compact["properties"]["nested_page"] = nested_page;
     let artifact = json!({"type":"object"});
     let artifacts = json!({"type":"array","items":artifact});
     let full = json!({"type":"object","additionalProperties":false,"required":["version","operation","workspace_root","ok","validation","promotion","trust","diagnostics","typed_holes","dependent_refinements","repairs","stable_runtime_refs","next_actions"],

@@ -1,0 +1,3495 @@
+{
+  "schema": "axiograph-engineering-quality-units-v1",
+  "catalogStatus": "pending_parent",
+  "requirementsLedger": "docs/roadmaps/ENGINEERING_QUALITY_REQUIREMENTS_V1.json",
+  "sourceRoadmapSha256": "949db32a2c4f67767963ad9fab283376eeec202847cae5d1a4760f3a9aea14a8",
+  "unitCount": 70,
+  "unitLimit": 96,
+  "wave01": {
+    "size": 6,
+    "selectedUnitIds": [
+      "EQ-02-U01",
+      "EQ18-U01",
+      "EQ-03-U01",
+      "AE-01",
+      "RG-U01",
+      "EQ16-U01"
+    ],
+    "selectionRule": "The first six units have no pending unit dependency. Their order follows the roadmap's priority lanes.",
+    "status": "selected_not_implemented"
+  },
+  "duplicateMapping": [
+    {
+      "panelUnitId": "EQ19-U00",
+      "canonicalUnitId": null,
+      "kind": "accepted-baseline",
+      "reason": "This object preserves completed release evidence. It has no pending implementation and must not consume a wave slot."
+    },
+    {
+      "panelUnitId": "EQ19-U02",
+      "canonicalUnitId": "EQ-02-U04",
+      "kind": "merged-duplicate",
+      "reason": "Both objects require the same real-browser read-only keyboard, layout, accessibility, stale-response, and authority workflow."
+    },
+    {
+      "panelUnitId": "EQ19-U04",
+      "canonicalUnitId": "RG-U13",
+      "kind": "merged-duplicate",
+      "reason": "Both objects integrate the same production retrieval evaluation, capacity, exact-oracle, evidence, and tutorial workflow."
+    }
+  ],
+  "units": [
+    {
+      "id": "EQ-02-U01",
+      "areas": [
+        "EQ-02"
+      ],
+      "title": "Whole-frontend strict state migration",
+      "objective": "Replace remaining loose graph/review/draft/authoring state with explicit boundary types and bring every production frontend module under strict TypeScript checking without `@ts-nocheck`, suppression, unsafe casts, or dummy uses.",
+      "requirementIds": [
+        "EQ-02-R01",
+        "EQ-02-R02"
+      ],
+      "dependsOn": [],
+      "priority": 1,
+      "targetPaths": [
+        "frontend/viz/src/**/*.ts",
+        "frontend/viz/tsconfig.json",
+        "frontend/viz/tsconfig.context.json",
+        "frontend/viz/package.json",
+        "frontend/viz/tests/typecheck-gate.test.mjs",
+        "frontend/viz/tests/rendering.test.mjs",
+        "Makefile",
+        "docs/howto/TESTING.md"
+      ],
+      "acceptance": [
+        "All production frontend modules are included in strict checking; no legacy unchecked island remains.",
+        "Graph, review, draft, query, and authoring state use explicit discriminated boundary types and preserve numeric context IDs.",
+        "Existing accepted context/read-only behavior and evidence-only mutation denial remain unchanged.",
+        "Invalid state/ID fixtures fail typecheck and both build entrypoints before bundle output."
+      ],
+      "validation": [
+        "Run native/LSP diagnostics on every touched TS module before builds.",
+        "Under the pinned Node 26.8.1/npm 11.19.0 environment, run script-disabled clean install/audit, both typechecks, production-function tests, injected-error build tests, debug build, then production build.",
+        "Run `make verify-viz` and focused Rust visualization/source-policy tests after final formatting/source reads.",
+        "Freeze complete tracked/new-file source and compare pre/post command hashes; browser claims are not part of this unit."
+      ],
+      "prerequisites": [
+        "Preserve accepted EQ-01 behavior and current read-only route/authority contract.",
+        "Inventory all `@ts-nocheck` and assertion boundaries through approved indexed/semantic discovery; do not substitute rejected discovery with text search.",
+        "One source writer; compare against the inherited wave baseline, not HEAD alone."
+      ],
+      "risk": "trust-boundary",
+      "catalogOrder": 1,
+      "wave01Selected": true,
+      "status": "pending_parent"
+    },
+    {
+      "id": "EQ18-U01",
+      "areas": [
+        "EQ-18"
+      ],
+      "title": "Correct retrieval and score terminology",
+      "objective": "Replace stale ANN claims and provider-specific score naming with truthful versioned terminology while preserving evidence-only semantics and wire compatibility only where an explicit contract requires it.",
+      "requirementIds": [
+        "EQ18-R02",
+        "EQ18-A01"
+      ],
+      "dependsOn": [],
+      "priority": 1,
+      "targetPaths": [
+        "rust/crates/axiograph-cli/src/llm.rs",
+        "rust/crates/axiograph-cli/src/embeddings.rs",
+        "docs/reference/EMBEDDINGS_AND_EVIDENCE.md",
+        "docs/reference/ENGINEERING_AUDIT_70C568B.md",
+        "docs/howto/LLM_QUERY_INTEGRATION.md",
+        "examples/llm_sync/"
+      ],
+      "acceptance": [
+        "Production comments identify exhaustive scan, token-hash ranking, pairwise cosine, and any future ANN path accurately.",
+        "Provider-neutral typed fields expose token, embedding, and fusion semantics; malformed/legacy ambiguity fails closed rather than silently relabeling a different score.",
+        "The historical audit keeps its original baseline observation and is not rewritten as if the stale code never existed.",
+        "No similarity result gains semantic, certificate, or promotion authority."
+      ],
+      "validation": [
+        "Focused production `tool_semantic_search` tests cover Ollama and OpenAI embedding sources, deterministic ties, absent scores, and serialized field semantics without live credentials.",
+        "Run strict default/minimal/provider Clippy configurations and relevant CLI/embedding tests under the pinned environment.",
+        "Run documentation graph/rendered-link checks and tutorial/example command checks; retain exact final source hashes."
+      ],
+      "prerequisites": [
+        "Inventory external consumers of score fields before changing wire names; use an explicit versioned migration or deliberate removal, not an undocumented alias.",
+        "Review installed dependency versions and official provider API documentation for any provider-specific metric claim; do not rely on memory."
+      ],
+      "risk": "trust-boundary",
+      "catalogOrder": 2,
+      "wave01Selected": true,
+      "status": "pending_parent"
+    },
+    {
+      "id": "EQ-03-U01",
+      "areas": [
+        "EQ-03",
+        "EQ-05"
+      ],
+      "title": "Nested validation/query/CQ drilldown and bounds",
+      "objective": "Measure and subdivide nested validation, prepared-query, explanation, runtime-theory, dependent-refinement, and CQ artifacts into typed identity-bound pages with explicit byte and entry limits.",
+      "requirementIds": [
+        "EQ-03-R03",
+        "EQ-03-R03B",
+        "EQ-05-R01B"
+      ],
+      "dependsOn": [],
+      "priority": 1,
+      "targetPaths": [
+        "rust/crates/axiograph-cli/src/authoring_workspace.rs",
+        "rust/crates/axiograph-cli/src/authoring_workspace/projection.rs",
+        "rust/crates/axiograph-query/src/query_ir.rs",
+        "rust/crates/axiograph-query/src/competency_questions.rs",
+        "rust/crates/axiograph-pathdb/src/runtime_theory_checker.rs",
+        "examples/software_authoring/compact_authoring_client.py",
+        "examples/software_authoring/**",
+        "examples/regulated_shipment/**",
+        "docs/reference/SOFTWARE_AUTHORING_TOOLS.md",
+        "docs/howto/TESTING.md"
+      ],
+      "acceptance": [
+        "Production-path measurements identify which nested collections need drilldown; no tiny teaching fixture supports a broad capacity claim.",
+        "Each selected nested family has typed closed item/page shapes, total/returned/omitted/truncated counts, deterministic ordering, and a tested byte/entry ceiling.",
+        "Nested page unions equal canonical full collections without duplicates or omissions.",
+        "Summary and partial pages retain failures, trust, residuals, source identity, promotion blockers, and next actions.",
+        "Source/query/answer/certificate identities are invariant across display/page modes; invalid limits and stale/cross-workspace cursors fail closed."
+      ],
+      "validation": [
+        "Establish baseline sizes first on software-authoring, regulated-shipment, and a generated realistic high-cardinality package within resource limits.",
+        "Run hand-checked N/N+1, empty, singleton, large-item, malformed cursor, changed-import, and hidden-failure cases against production projection code.",
+        "Exercise CLI, MCP, HTTP, and LSP adapter parity plus the real compact HTTP client.",
+        "Run focused locked/offline Rust tests, canonical-spine/semantic/rejection gates, and final hash guards; the 16 MiB transport rejection alone is not acceptance."
+      ],
+      "prerequisites": [
+        "Keep `authoring-page-v1` behavior stable or version ordering/binding changes explicitly.",
+        "No change to accepted `.axi` bytes, canonical IDs, opaque receipts, or promotion authority.",
+        "Coordinate schema shape with EQ-05 work; use maintained schema tooling after installed-version/official-doc checks."
+      ],
+      "risk": "trust-boundary",
+      "catalogOrder": 3,
+      "wave01Selected": true,
+      "status": "pending_parent"
+    },
+    {
+      "id": "AE-01",
+      "areas": [
+        "EQ-06"
+      ],
+      "title": "General canonical occurrence source map",
+      "objective": "Extend parser-owned, nonserialized source mapping from role carriers to all supported canonical declaration and term occurrences needed by diagnostics and editor services, while proving exact accepted bytes, AST/IR serialization, semantic IDs, and checker input are unchanged.",
+      "requirementIds": [
+        "EQ06-REQ-01",
+        "EQ06-REQ-02",
+        "EQ06-SLICE-01"
+      ],
+      "dependsOn": [],
+      "priority": 1,
+      "targetPaths": [
+        "rust/crates/axiograph-dsl/src/schema_v1.rs",
+        "rust/crates/axiograph-dsl/src/axi_v1.rs",
+        "rust/crates/axiograph-dsl/tests/canonical_source_map.rs",
+        "rust/crates/axiograph-kernel/src/package.rs",
+        "rust/crates/axiograph-kernel/tests/canonical_compiler_properties.rs"
+      ],
+      "acceptance": [
+        "Every supported declaration/term occurrence has an unambiguous typed syntactic address and exact half-open UTF-8 span in the parser's original image.",
+        "Source maps remain outside accepted AST, KernelSnapshotIr, digests, certificates, and VerifyMain serialization; removing the map leaves all semantic bytes/IDs identical.",
+        "Mapping is linear or otherwise explicitly bounded under existing 4 MiB/line/declaration limits; repeated spellings, comments, multiline syntax, CRLF, and Unicode do not use token-search guessing.",
+        "Unsupported/unrecoverable occurrences are represented as absent rather than fabricated coordinates."
+      ],
+      "validation": [
+        "Run focused DSL source-map and kernel package/property tests with exact positive/adversarial fixtures.",
+        "Run make verify-w02-compiler and compare Rust/Lean corpus outcomes and canonical wire goldens.",
+        "Add scale regressions with algorithmic operation bounds; timing may supplement but not establish the bound.",
+        "Freeze and review exact changed parser/kernel source before broader compilation."
+      ],
+      "prerequisites": [
+        "Use the existing parser and canonical compiler; do not introduce a second recognizer.",
+        "Preserve the accepted role-carrier map behavior and monotonic mapping guarantee."
+      ],
+      "risk": "trust-boundary",
+      "catalogOrder": 4,
+      "wave01Selected": true,
+      "status": "pending_parent"
+    },
+    {
+      "id": "RG-U01",
+      "areas": [
+        "EQ-10"
+      ],
+      "title": "Versioned relevance corpus and metric kernel",
+      "objective": "Add a public, semantics-free retrieval-evaluation library with versioned query/qrels schemas and exact Recall@k, Precision@k, MRR, and nDCG definitions. Build a non-tiny regression corpus from real versioned Axiograph modules/documents, with hand-reviewed labels, corpus cards, licenses, and no production ranking change.",
+      "requirementIds": [
+        "EQ-10-R01",
+        "EQ-10-R02"
+      ],
+      "dependsOn": [],
+      "priority": 1,
+      "targetPaths": [
+        "rust/Cargo.toml",
+        "rust/crates/axiograph-retrieval/Cargo.toml",
+        "rust/crates/axiograph-retrieval/src/metrics.rs",
+        "rust/crates/axiograph-retrieval/src/evaluation.rs",
+        "rust/crates/axiograph-retrieval/src/lib.rs",
+        "rust/crates/axiograph-retrieval/tests/metric_edges.rs",
+        "examples/retrieval_evaluation/",
+        "docs/howto/RELEVANCE_EVALUATION.md",
+        "docs/howto/TESTING.md",
+        "docs/README.md",
+        "docs/SUMMARY.md"
+      ],
+      "acceptance": [
+        "Versioned corpus/query/qrels formats reject unknown versions, duplicate ids, unknown targets, invalid grades, invalid k, and over-limit bytes/items.",
+        "The regression corpus contains at least three real Axiograph domain/document packages, at least 500 indexed targets, and at least 100 hand-judged queries; a corpus card records provenance, sampling, assessors, disagreements, and limitations.",
+        "Metric definitions explicitly cover no-relevant-result queries, zero returned results, duplicate result ids, deterministic ties, graded relevance, and macro aggregation.",
+        "No small-fixture or regression-corpus score is described as production quality."
+      ],
+      "validation": [
+        "Run package unit/property tests with hand-calculated rankings for all four metrics, including ties, duplicates, empty rankings, and no-relevant cases.",
+        "Run the schema loader against the complete corpus and deliberate malformed fixtures under byte/item limits.",
+        "Run native/LSP diagnostics before Cargo checks; run locked offline fmt, Clippy, and tests for the new crate; record exact source/input hashes in the local stage evidence.",
+        "Review qrels manually against exact source locators; the reviewer receives frozen corpus, schema, helper, and dependency text plus the complete incremental diff."
+      ],
+      "prerequisites": [
+        "Use the branch baseline/current-source-state.json rather than HEAD as the source baseline.",
+        "No external credentials or live model calls are required.",
+        "Do not alter the production retriever in this unit; this establishes metric and data prerequisites for the baseline."
+      ],
+      "risk": "ordinary",
+      "catalogOrder": 5,
+      "wave01Selected": true,
+      "status": "pending_parent"
+    },
+    {
+      "id": "EQ16-U01",
+      "areas": [
+        "EQ-16"
+      ],
+      "title": "Canonical `.axi` AST and exact-byte contract",
+      "objective": "Specify the complete versioned language/AST, source-byte anchor, normalized comparison, bounds, and rejection taxonomy before changing parser behavior.",
+      "requirementIds": [
+        "EQ16-R01"
+      ],
+      "dependsOn": [],
+      "priority": 1,
+      "targetPaths": [
+        "docs/reference/CANONICAL_AXI_V1_CONTRACT.md",
+        "docs/reference/TRUSTED_KERNEL.md",
+        "docs/reference/SECURITY_BOUNDARIES.md",
+        "docs/reference/KERNEL_IR.md",
+        "docs/reference/README.md",
+        "docs/README.md",
+        "docs/SUMMARY.md",
+        "fixtures/canonical/contract/axi_v1_contract.json",
+        "rust/crates/axiograph-dsl/src/schema_v1.rs",
+        "lean/Axiograph/Axi/SchemaV1.lean",
+        "lean/Axiograph/Axi/AxiV1.lean",
+        "lean/Axiograph/Identity.lean",
+        "rust/crates/axiograph-kernel/src/identity.rs"
+      ],
+      "acceptance": [
+        "Contract enumerates every current AST constructor and explicit unsupported form, preserves import/declaration order, and separates parser acceptance from typecheck/formation acceptance.",
+        "Exact UTF-8 bytes, not normalized text or Rust serialization, remain the revision anchor; comments, whitespace, and order stay identity-significant.",
+        "Rust and Lean independently reconstruct their ASTs; the contract does not permit deserializing Rust IR as Lean source meaning.",
+        "Resource bounds and stable rejection classes are stated as operational contracts, not theorems."
+      ],
+      "validation": [
+        "Mechanically compare contract enum/tag inventories with Rust and Lean declarations.",
+        "Run `make verify-axi-parse-e2e` and `make verify-identity-parity`.",
+        "Run `python3 scripts/check_book.py` and local link checks; no broad checklist closure."
+      ],
+      "prerequisites": [
+        "Use the provided fresh indexed-discovery baseline and refresh it before edits if the index is stale.",
+        "Writer must capture a complete tracked/new-file baseline against `build/engineering-quality/roadmap-wave-01/bootstrap/baseline/current-source-state.json`.",
+        "Reuse the pinned environment under `build/engineering-quality/release-roadmap/complete-kani-with-verified-path-20260908T044738Z`; do not reconstruct PATH.",
+        "Review any changed trust-language and exact-byte framing before dependent units."
+      ],
+      "risk": "trust-boundary",
+      "catalogOrder": 6,
+      "wave01Selected": true,
+      "status": "pending_parent"
+    },
+    {
+      "id": "EQ-02-U02",
+      "areas": [
+        "EQ-02"
+      ],
+      "title": "Complete frontend JSON boundary validation",
+      "objective": "Validate every live frontend JSON ingress with production validators and deterministic resource bounds while leaving opaque receipt/checker metadata non-authoritative.",
+      "requirementIds": [
+        "EQ-02-R03"
+      ],
+      "dependsOn": [
+        "EQ-02-U01"
+      ],
+      "priority": 2,
+      "targetPaths": [
+        "frontend/viz/src/server/read-only-client.ts",
+        "frontend/viz/src/server/read-only-api.json",
+        "frontend/viz/src/graph.ts",
+        "frontend/viz/src/main.ts",
+        "frontend/viz/src/core/draft.ts",
+        "frontend/viz/src/tabs/query.ts",
+        "frontend/viz/src/tabs/review.ts",
+        "frontend/viz/src/tabs/llm.ts",
+        "frontend/viz/tests/read-only-client.test.mjs",
+        "frontend/viz/tests/rendering.test.mjs",
+        "rust/crates/axiograph-cli/src/db_server.rs",
+        "rust/crates/axiograph-cli/tests/db_server_e2e.rs",
+        "docs/howto/TESTING.md"
+      ],
+      "acceptance": [
+        "Offline/embedded graph, authoring, draft, query, evidence, and persisted input are parsed by closed production validators before use.",
+        "Unknown versions/fields, malformed IDs/counts, depth/size excess, stale replies, mixed-image graph/query IDs, and partial envelopes reject without replacing valid UI state.",
+        "Receipt internals remain opaque; image authentication is not relabeled query proof, HTTP authentication, or ontology completeness.",
+        "No unsupported mutation, LLM, proposal, or bare-file database route is restored."
+      ],
+      "validation": [
+        "Test actual production validators with real successful and failed adapter responses plus malformed/adversarial fixtures.",
+        "Run real localhost read-only HTTP/client workflows against genuine temporary AxiStore publication/opening; do not fabricate usable receipts.",
+        "Add N/N+1 byte/depth/value/fanout tests and stale/cross-image atomic-binding tests.",
+        "Run pinned frontend gates and focused `db_server_e2e`; disclose browser coverage separately."
+      ],
+      "prerequisites": [
+        "EQ-02-U01 typed boundary model.",
+        "Use fresh temporary stores only and production AxiStore APIs.",
+        "If graph/query highlighting requires a new authority binding, escalate the trust-boundary design before implementation."
+      ],
+      "risk": "trust-boundary",
+      "catalogOrder": 7,
+      "wave01Selected": false,
+      "status": "pending_parent"
+    },
+    {
+      "id": "AE-02",
+      "areas": [
+        "EQ-06"
+      ],
+      "title": "Bounded multi-diagnostic taxonomy and conservative suggestions",
+      "objective": "Introduce a typed diagnostic collector that reports multiple independent parse/import/type errors with generalized locations and conservative namespace-aware suggestions, while preserving deterministic order and explicit unlocated fallbacks.",
+      "requirementIds": [
+        "EQ06-REQ-02",
+        "EQ06-REQ-03",
+        "EQ06-REQ-05"
+      ],
+      "dependsOn": [
+        "AE-01"
+      ],
+      "priority": 2,
+      "targetPaths": [
+        "rust/crates/axiograph-kernel/src/package.rs",
+        "rust/crates/axiograph-cli/src/axi_input/diagnostics.rs",
+        "rust/crates/axiograph-cli/src/authoring_workspace.rs",
+        "rust/crates/axiograph-cli/src/authoring_workspace/diagnostics_tests.rs",
+        "rust/crates/axiograph-cli/src/authoring_workspace/diagnostics_tests/lsp_regressions.rs",
+        "examples/software_authoring/source_diagnostics"
+      ],
+      "acceptance": [
+        "Collector has explicit item/count/byte/work bounds and deterministic source order; one malformed declaration cannot make unrelated locations guess or drift.",
+        "Typed subjects become checked refs only after successful resolution; parse/import/missing-file errors use truthful syntactic or unlocated subjects.",
+        "Suggestions are unique, namespace-correct, bounded, advisory, and absent for ties/unsupported namespaces/stale images.",
+        "Overall validation and promotion stay failed when multiple errors are paged or hidden."
+      ],
+      "validation": [
+        "Add production parser/compiler tests for multiple errors across root/imports, missing files, malformed syntax, duplicate/repeated text, CRLF, Unicode, and suggestion refusal cases.",
+        "Run focused authoring diagnostic/full/compact tests and source_diagnostics_cli.",
+        "Rerun make verify-w02-compiler and compact page-union/identity tests.",
+        "Review diagnostic ordering and resource complexity against SECURITY_BOUNDARIES.md."
+      ],
+      "prerequisites": [
+        "AE-01 exact occurrence map.",
+        "Choose recovery/accumulation points that do not change which canonical-invalid inputs are rejected or make invalid modules executable."
+      ],
+      "risk": "ordinary",
+      "catalogOrder": 8,
+      "wave01Selected": false,
+      "status": "pending_parent"
+    },
+    {
+      "id": "RG-U02",
+      "areas": [
+        "EQ-10",
+        "EQ-11"
+      ],
+      "title": "Production-path retrieval baseline and ablation report",
+      "objective": "Expose the released retrieval algorithm through a reusable library-owned service without changing ranking semantics, prove adapter parity, and run the EQ-10 corpus through the actual service with lexical/token-hash, precomputed-model-vector, graph-enrichment, and hybrid ablations. Freeze the baseline before replacement work.",
+      "requirementIds": [
+        "EQ-10-R03",
+        "EQ-10-R04",
+        "EQ-11-R05"
+      ],
+      "dependsOn": [
+        "RG-U01"
+      ],
+      "priority": 2,
+      "targetPaths": [
+        "rust/crates/axiograph-retrieval/src/service.rs",
+        "rust/crates/axiograph-retrieval/src/report.rs",
+        "rust/crates/axiograph-cli/src/llm.rs",
+        "rust/crates/axiograph-cli/src/embeddings.rs",
+        "rust/crates/axiograph-llm-sync/src/grounding.rs",
+        "rust/crates/axiograph-pathdb/src/text_index.rs",
+        "rust/crates/axiograph-cli/src/main.rs",
+        "examples/retrieval_evaluation/baselines/",
+        "docs/howto/RELEVANCE_EVALUATION.md",
+        "docs/reference/EMBEDDINGS_AND_EVIDENCE.md",
+        "docs/howto/TESTING.md"
+      ],
+      "acceptance": [
+        "The evaluation command directly calls the same public service used by production CLI/grounding adapters; it does not copy ranking logic, include private source, or execute the CLI.",
+        "Refactor-only parity fixtures freeze released rankings, component scores, ties, limits, truncation, and errors before any algorithm replacement.",
+        "A bounded report records source state, corpus/qrels digest, accepted snapshot/materialization where applicable, retriever/method version, index and model identities, dimensions, normalization, query limits, per-query result counts, omissions, metrics, operation counts, and measured latency.",
+        "Precomputed query/target vectors carry public model/version-or-digest and text identities, so vector ablations run offline without provider credentials.",
+        "Ranking/metric content is deterministic; wall-clock observations are explicitly non-deterministic measurements and excluded from the report content digest."
+      ],
+      "validation": [
+        "Run the deterministic offline command twice and compare all content except explicitly labeled timing observations.",
+        "Run production adapter parity tests and deliberate stale snapshot, wrong model/dimension, malformed vector, duplicate result, tie, zero-overlap, and limit cases.",
+        "Run lexical-only, vector-only, graph-only, lexical+graph, and full-hybrid ablations over the complete RG-U01 corpus; record baseline before RG-U04 or later ranking edits.",
+        "Run locked offline package/workspace-scoped tests, Clippy, fmt, and the relevant canonical/regulated-shipment grounding workflow without live providers or accepted-store mutation."
+      ],
+      "prerequisites": [
+        "RG-U01 corpus and metrics are frozen and reviewed.",
+        "Precomputed embedding artifacts must have documented public model identity/license and exact digests; do not call a live provider.",
+        "The change is refactor/instrumentation only until the baseline artifact exists and parity is independently reviewed."
+      ],
+      "risk": "trust-boundary",
+      "catalogOrder": 9,
+      "wave01Selected": false,
+      "status": "pending_parent"
+    },
+    {
+      "id": "EQ16-U02",
+      "areas": [
+        "EQ-16"
+      ],
+      "title": "Deterministic Rust/Lean differential parser runner",
+      "objective": "Replace small acceptance-only comparisons with bounded normalized-AST, digest, typecheck, and rejection-class differential evidence driven by the shared contract.",
+      "requirementIds": [
+        "EQ16-R02",
+        "EQ16-R03"
+      ],
+      "dependsOn": [
+        "EQ16-U01"
+      ],
+      "priority": 2,
+      "targetPaths": [
+        "fixtures/canonical/contract/corpus.json",
+        "fixtures/canonical/contract/seeds/",
+        "scripts/check_axi_contract_conformance.py",
+        "scripts/check_w02_compiler_conformance.sh",
+        "rust/crates/axiograph-dsl/src/bin/axiograph_parse_axi_v1.rs",
+        "rust/crates/axiograph-dsl/src/schema_v1.rs",
+        "lean/Axiograph/Axi/AxiV1ParseMain.lean",
+        "lean/Axiograph/Axi/SchemaV1ParseMain.lean",
+        "lean/Axiograph/Axi/TypeCheckMain.lean",
+        "Makefile",
+        "docs/howto/TESTING.md"
+      ],
+      "acceptance": [
+        "A deterministic seed records generator version, seed, case count, maximum bytes/depth/counts, and stable ordering.",
+        "Both binaries emit a contract-defined normalized AST/rejection envelope; the runner compares parse, digest, typecheck/formation, and rejection class, not only exit status.",
+        "Hand-calculated positive and negative goldens catch shared-bug agreement and unsupported-as-success behavior.",
+        "Runner fails on timeout, truncation, malformed output, zero cases, duplicate case IDs, or an unrecognized rejection class."
+      ],
+      "validation": [
+        "Run the new bounded differential target twice and compare reports byte-for-byte aside from explicitly excluded measured duration.",
+        "Run `make verify-w02-compiler`, `make verify-axi-parse-e2e`, and `make verify-identity-parity`.",
+        "Run actual Rust and Lean binaries on at least one hand-audited case from every contract section."
+      ],
+      "prerequisites": [
+        "EQ16-U01 accepted for implementation review.",
+        "Exact Rust 1.98 and checked-in Lean toolchain available through the preserved environment.",
+        "No generated case may alter existing accepted `.axi` examples; use new fixtures or temporary inputs.",
+        "Compiler/helper invocations must stay within the stated 600-second subprocess bound and explicit output limits."
+      ],
+      "risk": "trust-boundary",
+      "catalogOrder": 10,
+      "wave01Selected": false,
+      "status": "pending_parent"
+    },
+    {
+      "id": "EQ18-U02",
+      "areas": [
+        "EQ-18"
+      ],
+      "title": "Reconcile roadmap status and claim taxonomy",
+      "objective": "Make current documentation consistently distinguish design targets, historical baselines, runtime checks, operational release evidence, and trusted formal results without converting bounded slices into broad completion.",
+      "requirementIds": [
+        "EQ18-R01",
+        "EQ18-R03",
+        "EQ18-R04",
+        "EQ18-R06",
+        "EQ18-A01"
+      ],
+      "dependsOn": [
+        "EQ18-U01"
+      ],
+      "priority": 2,
+      "targetPaths": [
+        "docs/roadmaps/ROADMAP_ENGINEERING_QUALITY.md",
+        "docs/roadmaps/ROADMAP_AGENT_BACKLOG.md",
+        "docs/roadmaps/ROADMAP_PRODUCTION_READINESS.md",
+        "docs/roadmaps/ROADMAP_RUNTIME_THEORY_AND_TYPED_WORKFLOWS.md",
+        "docs/roadmaps/ROADMAP_SEMANTIC_KERNEL_AND_VCS.md",
+        "docs/reference/TRUSTED_KERNEL.md",
+        "docs/reference/LEAN_THEORY_EVALUATION.md",
+        "docs/reference/AGENT_CONTEXT.md",
+        "docs/reference/RELEASE_BASELINE_V20260908.md",
+        "docs/explanation/TYPE_THEORY_DESIGN.md",
+        "docs/README.md",
+        "docs/reference/README.md",
+        "docs/roadmaps/README.md",
+        "docs/SUMMARY.md"
+      ],
+      "acceptance": [
+        "Every current claim has a visible status class and points to the authoritative reference or executable gate.",
+        "The 70c568b audit and append-only historical validation records remain identifiable as historical evidence.",
+        "Only parent-authorized checklist markers change; broad requirements remain open where their acceptance is unmet.",
+        "Index pages expose all durable findings and accepted evidence without relying on ignored build artifacts."
+      ],
+      "validation": [
+        "Mechanically compare current roadmap markers and cross-roadmap status statements against the frozen ledger and accepted release baseline.",
+        "Run `python3 scripts/check_book.py`, the full rendered book gate with pinned tools, local file/anchor/link checks, STE lint where applicable, and `git diff --check`.",
+        "Independent trust-language review checks `VerifyMain` import-closure claims, runtime non-claims, release non-claims, and `.axpd` authority wording."
+      ],
+      "prerequisites": [
+        "Freeze the pre-unit tracked/new-file baseline and preserve the bootstrap documentation delta.",
+        "Do not edit historical audit observations except to add clearly dated correction notes outside quoted baseline text."
+      ],
+      "risk": "trust-boundary",
+      "catalogOrder": 11,
+      "wave01Selected": false,
+      "status": "pending_parent"
+    },
+    {
+      "id": "EQ-02-U03",
+      "areas": [
+        "EQ-02"
+      ],
+      "title": "Remaining rendering-sink data-flow closure",
+      "objective": "Inspect all production dynamic rendering data flows and replace every risky remaining sink with explicit DOM construction or a justified maintained sanitizer, without asserting an exploit from scanner output alone.",
+      "requirementIds": [
+        "EQ-02-R04"
+      ],
+      "dependsOn": [
+        "EQ-02-U01"
+      ],
+      "priority": 3,
+      "targetPaths": [
+        "frontend/viz/src/render/**/*.ts",
+        "frontend/viz/src/core/**/*.ts",
+        "frontend/viz/src/tabs/**/*.ts",
+        "frontend/viz/src/dom.ts",
+        "frontend/viz/tests/rendering.test.mjs",
+        "docs/howto/TESTING.md"
+      ],
+      "acceptance": [
+        "Every dynamic HTML sink has a documented production data-flow disposition: removed, safe fixed markup, or protected by a maintained sanitizer.",
+        "Model/evidence/source labels and locators render literally and cannot execute markup.",
+        "Rich sections, navigation, list/detail/draft/status behavior, and evidence-only controls retain functionality.",
+        "No blanket scanner waiver, exploit claim without flow evidence, or custom HTML parser is introduced."
+      ],
+      "validation": [
+        "Use approved semantic/AST discovery to inventory sinks and callers.",
+        "Run production-module hostile-label and malformed-navigation tests; keep DOM-spy tests as unit evidence only.",
+        "If a sanitizer is needed, verify installed/selected version and official documentation before dependency changes, then add browser tests for bypass cases.",
+        "Run pinned typecheck/tests/builds and freeze final source hashes."
+      ],
+      "prerequisites": [
+        "EQ-02-U01 strict DOM/state types.",
+        "No unrelated lockfile churn; prefer explicit DOM construction unless actual rich untrusted HTML requires a maintained sanitizer."
+      ],
+      "risk": "ordinary",
+      "catalogOrder": 12,
+      "wave01Selected": false,
+      "status": "pending_parent"
+    },
+    {
+      "id": "RG-U03",
+      "areas": [
+        "EQ-10",
+        "EQ-13"
+      ],
+      "title": "Citation and unsupported-answer evaluation contract",
+      "objective": "Extend the corpus and evaluator with exact citation qrels and typed answer-claim labels, then implement citation recall and unsupported-answer measurements without treating generated prose or retrieval as proof.",
+      "requirementIds": [
+        "EQ-10-R05"
+      ],
+      "dependsOn": [
+        "RG-U01",
+        "RG-U02"
+      ],
+      "priority": 3,
+      "targetPaths": [
+        "rust/crates/axiograph-retrieval/src/citations.rs",
+        "rust/crates/axiograph-retrieval/src/answer_eval.rs",
+        "rust/crates/axiograph-retrieval/tests/citation_edges.rs",
+        "examples/retrieval_evaluation/citations/",
+        "docs/howto/RELEVANCE_EVALUATION.md",
+        "docs/reference/EMBEDDINGS_AND_EVIDENCE.md"
+      ],
+      "acceptance": [
+        "Canonical citations identify exact revision/module/import-closure plus byte range and typed ref where available; document citations identify document/chunk/span/text digest.",
+        "Citation recall and unsupported-answer rate have explicit denominators and unknown/not-applicable states; missing, stale, contradictory, irrelevant, duplicate, and partially supported cases are defined.",
+        "The gold answer set is reviewed data, not a live model call, and results remain evaluation evidence.",
+        "A materialization/entity display citation alone cannot pass exact-source support."
+      ],
+      "validation": [
+        "Hand-calculate citation recall and unsupported-answer results for adversarial fixtures and compare with implementation.",
+        "Tamper every locator identity component and require stale/unknown rather than support.",
+        "Run the offline evaluator against complete citation qrels with deterministic bounds and no external service.",
+        "Review source-map use against exact accepted bytes and confirm no semantic identity changes."
+      ],
+      "prerequisites": [
+        "RG-U02 production baseline report is frozen.",
+        "Exact source-map or compiled-IR locator data must be available; if discovery shows it cannot represent a corpus item, label that item unsupported rather than fabricate a locator."
+      ],
+      "risk": "trust-boundary",
+      "catalogOrder": 13,
+      "wave01Selected": false,
+      "status": "pending_parent"
+    },
+    {
+      "id": "EQ16-U03",
+      "areas": [
+        "EQ-16"
+      ],
+      "title": "Import, dependent-role, scope, encoding, and limit corpus",
+      "objective": "Close the named parser-contract coverage gaps with real multi-file and N/N+1 cases.",
+      "requirementIds": [
+        "EQ16-R03"
+      ],
+      "dependsOn": [
+        "EQ16-U02"
+      ],
+      "priority": 3,
+      "targetPaths": [
+        "fixtures/canonical/contract/imports/",
+        "fixtures/canonical/contract/dependent_roles/",
+        "fixtures/canonical/contract/refinements/",
+        "fixtures/canonical/contract/equations/",
+        "fixtures/canonical/contract/scopes/",
+        "fixtures/canonical/contract/limits/",
+        "fixtures/canonical/contract/corpus.json",
+        "scripts/check_axi_contract_conformance.py",
+        "rust/crates/axiograph-kernel/tests/canonical_compiler_properties.rs",
+        "lean/Axiograph/Axi/TypeCheckTests.lean",
+        "lean/Axiograph/Axi/SchemaV1Tests.lean",
+        "lean/Axiograph/VerifyMain.lean",
+        "Makefile",
+        "docs/howto/TESTING.md"
+      ],
+      "acceptance": [
+        "Corpus covers every named requirement dimension with positive and adversarial cases and exact expected parser/typecheck/formation/rejection classes.",
+        "Import tests execute ordered multi-file closure behavior and distinguish legal imported dependent instances from missing, duplicate, cyclic, ambiguous, and imported-equation certificate limitations.",
+        "N/N+1 tests cover bytes, syntax depth, file/anchor/import count, and relevant declaration/collection bounds in actual entrypoints.",
+        "CRLF, Unicode, malformed UTF-8, comments, and exact-byte digest changes are tested without normalizing source identity."
+      ],
+      "validation": [
+        "Run the contract differential target and `make verify-w02-compiler`.",
+        "Run actual `axiograph_verify` file-mode cases for exact-byte and multi-anchor limits; malformed UTF-8 and extra/missing anchor cases must reject.",
+        "Run `make verify-lean-e2e-category-kernel-v3` to retain the single-module imported-equation non-claim.",
+        "Run the `.axi` parser fuzz lane only through the existing bounded production harness; fuzz evidence supplements but does not replace deterministic corpus parity."
+      ],
+      "prerequisites": [
+        "EQ16-U02 runner reviewed and deterministic.",
+        "Trust-boundary review of any proposed change to `VerifyMain` input limits or anchor shape; do not widen limits merely to make fixtures pass.",
+        "No test depends on serialized Rust IR as Lean input."
+      ],
+      "risk": "trust-boundary",
+      "catalogOrder": 14,
+      "wave01Selected": false,
+      "status": "pending_parent"
+    },
+    {
+      "id": "EQ18-U03",
+      "areas": [
+        "EQ-18"
+      ],
+      "title": "Publish runnable tutorials for shipped compact, diagnostic, and embedding workflows",
+      "objective": "Turn existing production commands into indexed tutorials for compact authoring, source diagnostics, process-free query embedding, and evidence-only embedding clients.",
+      "requirementIds": [
+        "EQ18-R05",
+        "EQ18-R06",
+        "EQ18-A01"
+      ],
+      "dependsOn": [
+        "EQ18-U02"
+      ],
+      "priority": 3,
+      "targetPaths": [
+        "docs/tutorials/README.md",
+        "docs/tutorials/",
+        "docs/howto/TESTING.md",
+        "docs/reference/SOFTWARE_AUTHORING_TOOLS.md",
+        "docs/reference/EMBEDDINGS_AND_EVIDENCE.md",
+        "examples/software_authoring/run_source_diagnostics.sh",
+        "examples/software_authoring/",
+        "examples/llm_sync/",
+        "rust/crates/axiograph-query/examples/embedded_query.rs",
+        "docs/README.md",
+        "docs/SUMMARY.md"
+      ],
+      "acceptance": [
+        "Each tutorial invokes production library/CLI paths, uses temporary workspaces or stores, and states expected output and trust class.",
+        "Compact and paged reports preserve failures, source identities, promotion blockers, totals, and truncation.",
+        "Diagnostics retain exact byte/scalar/UTF-16 behavior and remain non-authoritative suggestions.",
+        "Embedding tutorials label vectors, scores, retrieved items, and generated prose as evidence only."
+      ],
+      "validation": [
+        "Execute every documented command in the pinned environment and assert nonempty expected outputs rather than exit status alone.",
+        "Run compact full/page parity and fixture ceiling regressions, source-diagnostic CLI/LSP regressions, process-free query tests, and embedding overlay validation.",
+        "Run book graph, rendered book/link checks, and final hash-guarded independent review."
+      ],
+      "prerequisites": [
+        "Use existing production examples; do not create duplicate tutorial-only semantic implementations.",
+        "Do not add relevance-evaluation or authoring-workbench success claims before EQ10/EQ08 production capabilities exist."
+      ],
+      "risk": "ordinary",
+      "catalogOrder": 15,
+      "wave01Selected": false,
+      "status": "pending_parent"
+    },
+    {
+      "id": "EQ-03-U02",
+      "areas": [
+        "EQ-03",
+        "EQ-05"
+      ],
+      "title": "Nested evolution/olog/repair artifact drilldown",
+      "objective": "Extend the nested paging/bounds contract to evolution previews, checked/applied ologs, applied repairs, and other optional canonical artifacts without hiding semantic deltas or obligations.",
+      "requirementIds": [
+        "EQ-03-R03",
+        "EQ-03-R03B",
+        "EQ-05-R01B"
+      ],
+      "dependsOn": [
+        "EQ-03-U01"
+      ],
+      "priority": 4,
+      "targetPaths": [
+        "rust/crates/axiograph-cli/src/authoring_workspace.rs",
+        "rust/crates/axiograph-cli/src/authoring_workspace/projection.rs",
+        "rust/crates/axiograph-cli/src/evolution_preview.rs",
+        "rust/crates/axiograph-cli/src/typed_authoring.rs",
+        "rust/crates/axiograph-cli/src/typed_refinement.rs",
+        "examples/regulated_shipment/**",
+        "docs/reference/SOFTWARE_AUTHORING_TOOLS.md"
+      ],
+      "acceptance": [
+        "Evolution additions/removals/changes, obligations, holes, repairs, and olog results are individually addressable under exact candidate/baseline/source anchors.",
+        "Page union reconstructs canonical order and preserves complete semantic delta/residual totals and fail-closed promotion status.",
+        "Oversized individual records have explicit bounded detail behavior rather than silent truncation or whole-response ambiguity.",
+        "No page/detail handle is accepted authority, a proof receipt, or a mutation capability."
+      ],
+      "validation": [
+        "Use realistic evolution fixtures with many changed refs and large repair/obligation sets; record baseline and post-change bytes.",
+        "Test stale baseline/candidate/import/CQ/olog changes, invalid offsets/checksums, hidden failures, and cross-section reuse.",
+        "Compare full canonical artifacts with all page unions through production CLI and HTTP adapters.",
+        "Run regulated-shipment consumer, canonical-spine, semantic, and rejection gates with non-vacuous selectors."
+      ],
+      "prerequisites": [
+        "EQ-03-U01 shared nested cursor/schema primitives.",
+        "Preserve exact finite compiled payload fingerprints and canonical full artifact bytes unless a separately reviewed version change is intentional."
+      ],
+      "risk": "trust-boundary",
+      "catalogOrder": 16,
+      "wave01Selected": false,
+      "status": "pending_parent"
+    },
+    {
+      "id": "AE-04",
+      "areas": [
+        "EQ-06",
+        "EQ-07"
+      ],
+      "title": "Versioned LSP document graph and unsaved import overlays",
+      "objective": "Replace full-text-only, disk-import LSP session state with a bounded versioned document graph that supports new unsaved roots, unsaved imports, valid incremental edits, and dependent revalidation.",
+      "requirementIds": [
+        "EQ06-REQ-05",
+        "EQ07-REQ-07",
+        "EQ07-SLICE-01"
+      ],
+      "dependsOn": [
+        "AE-01"
+      ],
+      "priority": 4,
+      "targetPaths": [
+        "rust/crates/axiograph-cli/src/authoring_workspace.rs",
+        "rust/crates/axiograph-cli/src/authoring_workspace/diagnostics_tests/lsp_regressions.rs",
+        "rust/crates/axiograph-security/src/lib.rs",
+        "examples/software_authoring/host_integrations/axiograph_authoring_lsp_stdio.json"
+      ],
+      "acceptance": [
+        "Session state binds client URI, canonical workspace path, document version, exact revision digest, text, dependency owners, and publication/action generations.",
+        "New unsaved roots and unsaved imported modules compile as one exact overlay closure without writing disk or mixing stale disk bytes.",
+        "Incremental range edits validate UTF-16 boundaries/version monotonicity and fail closed on invalid/stale ranges; limits remove unsafe cache state and retain sticky unlocated behavior.",
+        "didChange/didSave/didClose invalidate and revalidate all affected importers deterministically; aliases and ambiguous images cannot recover stale precision."
+      ],
+      "validation": [
+        "Add real framed stdio sequences for didOpen/new file/import overlay/incremental edits/save/close, out-of-order versions, astral UTF-16 ranges, URI aliases, document 65, aggregate bytes, and importer fanout.",
+        "Assert no disk/source writes and byte-identical fixtures after each sequence.",
+        "Run the existing accepted LSP regressions unchanged plus focused resource/security tests.",
+        "Run native/LSP diagnostics on changed files before frozen validation."
+      ],
+      "prerequisites": [
+        "AE-01 generalized occurrence mapping.",
+        "Respect existing document count/aggregate byte/frame/queue bounds; define bounded dependency fanout/work before implementation."
+      ],
+      "risk": "trust-boundary",
+      "catalogOrder": 17,
+      "wave01Selected": false,
+      "status": "pending_parent"
+    },
+    {
+      "id": "RG-U04",
+      "areas": [
+        "EQ-11"
+      ],
+      "title": "Maintained lexical ranker in the shared production service",
+      "objective": "After the baseline, select and integrate a maintained lexical ranking implementation into the shared production service, preserving accepted-source identity and evidence authority while replacing unranked/basic token matching as the sole lexical mechanism.",
+      "requirementIds": [
+        "EQ-11-R01",
+        "EQ-11-R05"
+      ],
+      "dependsOn": [
+        "RG-U02"
+      ],
+      "priority": 4,
+      "targetPaths": [
+        "rust/Cargo.toml",
+        "rust/Cargo.lock",
+        "rust/crates/axiograph-retrieval/Cargo.toml",
+        "rust/crates/axiograph-retrieval/src/lexical.rs",
+        "rust/crates/axiograph-retrieval/src/service.rs",
+        "rust/crates/axiograph-pathdb/src/text_index.rs",
+        "rust/crates/axiograph-llm-sync/src/grounding.rs",
+        "rust/crates/axiograph-cli/src/llm.rs",
+        "rust/crates/axiograph-retrieval/tests/lexical_ranking.rs",
+        "docs/reference/EMBEDDINGS_AND_EVIDENCE.md",
+        "docs/howto/RELEVANCE_EVALUATION.md"
+      ],
+      "acceptance": [
+        "The dependency decision records current installed/resolvable version, official documentation, maintenance, license, platform support, indexing bounds, deterministic tie behavior, and transitive risk; no dependency is chosen from memory.",
+        "Production CLI and accepted/evidence grounding adapters use the shared lexical ranker, not duplicated or test-only logic.",
+        "Scores use stable provider-neutral fields; ties use stable semantic/target identity rather than unrelated graph ids where available.",
+        "Unknown limits, oversized text/corpora, stale indexes, and unsupported tokenization configurations fail closed or report explicit bounded truncation.",
+        "All outputs state lexical retrieval is evidence selection, not entailment or completeness."
+      ],
+      "validation": [
+        "Run rare-term, synonym, zero-overlap, duplicate-document, punctuation/Unicode, deterministic-tie, and limit tests through production functions.",
+        "Run RG-U02 adapter parity where semantics should remain invariant and record intentional ranking deltas separately.",
+        "Run RG-U01 metrics against the frozen baseline and report quality and latency regressions without claiming production quality.",
+        "Run locked offline dependency, test, Clippy, fmt, security, and relevant grounding/regulated-shipment checks; reject unrelated lockfile churn."
+      ],
+      "prerequisites": [
+        "RG-U02 baseline must exist before dependency or ranking changes.",
+        "Official docs and the selected crate version must be available for review; if discovery fails, preserve the exact error and stop this unit without source mutation.",
+        "No external credentials are required."
+      ],
+      "risk": "ordinary",
+      "catalogOrder": 18,
+      "wave01Selected": false,
+      "status": "pending_parent"
+    },
+    {
+      "id": "EQ16-U04",
+      "areas": [
+        "EQ-16"
+      ],
+      "title": "Contract-driven drift removal without shared authority",
+      "objective": "Mechanically align pure contract vocabulary and remove safe duplicate interpretation paths while preserving independent trusted reconstruction.",
+      "requirementIds": [
+        "EQ16-R04"
+      ],
+      "dependsOn": [
+        "EQ16-U02",
+        "EQ16-U03"
+      ],
+      "priority": 4,
+      "targetPaths": [
+        "fixtures/canonical/contract/axi_v1_contract.json",
+        "scripts/check_axi_contract_conformance.py",
+        "scripts/check_axi_contract_drift.py",
+        "rust/crates/axiograph-dsl/src/schema_v1.rs",
+        "rust/crates/axiograph-kernel/src/package.rs",
+        "lean/Axiograph/Axi/SchemaV1.lean",
+        "lean/Axiograph/Axi/TypeCheck.lean",
+        "lean/Axiograph/Theory/Finite.lean",
+        "lean/Axiograph/Certificate/Check.lean",
+        "Makefile",
+        "docs/reference/CANONICAL_AXI_V1_CONTRACT.md",
+        "docs/howto/TESTING.md"
+      ],
+      "acceptance": [
+        "Mechanical drift check covers AST tags, role/refinement/constraint/rewrite kinds, relevant bounds, and rejection codes.",
+        "Ad hoc alternate parser or canonical-meaning helpers are removed only where the contract and differential corpus prove equivalent behavior.",
+        "Lean continues to parse exact source and independently reconstruct category/type meaning; no Rust AST/IR deserializer enters `VerifyMain`.",
+        "Any deliberately duplicated semantic implementation is documented as an independence requirement rather than falsely counted as removed."
+      ],
+      "validation": [
+        "Run contract drift/differential gates, `make verify-w02-compiler`, and `make verify-semantics`.",
+        "Run scoped native/LSP diagnostics on changed Rust files before builds and Pi Lens session diagnostics before final validation.",
+        "Review complete release-to-current and incremental new-file-aware diffs; run `cargo fmt --check` only before the final hash-guarded validation."
+      ],
+      "prerequisites": [
+        "EQ16-U03 complete with adequate negative coverage.",
+        "Separate reviewer must classify each removed duplicate as pure contract duplication or semantic/trusted reconstruction.",
+        "Escalate any proposal that would make Lean consume untrusted serialized Rust meaning."
+      ],
+      "risk": "trust-boundary",
+      "catalogOrder": 19,
+      "wave01Selected": false,
+      "status": "pending_parent"
+    },
+    {
+      "id": "EQ17-U01",
+      "areas": [
+        "EQ-17",
+        "EQ-19"
+      ],
+      "title": "Extract typed LLM provider and report contracts",
+      "objective": "Create one public feature-gated provider boundary and typed evidence/report vocabulary, moving provider I/O and report construction out of the CLI while retaining distinct protocol/security rules.",
+      "requirementIds": [
+        "EQ17-R01",
+        "EQ17-R05",
+        "EQ17-A01",
+        "EQ19-R01",
+        "EQ19-R02"
+      ],
+      "dependsOn": [
+        "EQ18-U01"
+      ],
+      "priority": 4,
+      "targetPaths": [
+        "rust/crates/axiograph-cli/src/llm.rs",
+        "rust/crates/axiograph-cli/src/predictive_proposals.rs",
+        "rust/crates/axiograph-cli/src/embeddings.rs",
+        "rust/crates/axiograph-llm-sync/src/lib.rs",
+        "rust/crates/axiograph-llm-sync/src/",
+        "rust/crates/axiograph-cli/Cargo.toml",
+        "rust/crates/axiograph-llm-sync/Cargo.toml",
+        "rust/Cargo.toml",
+        "rust/Cargo.lock"
+      ],
+      "acceptance": [
+        "A public typed provider interface owns request preparation, response parsing, limits, and evidence-only report DTOs.",
+        "CLI, predictive-proposal, and test callers use the public API; no private source inclusion or process facade remains.",
+        "OpenAI, Anthropic, and Ollama retain their distinct authentication, endpoint, peer-pinning, timeout, and response rules.",
+        "No provider is enabled by default, no blanket lint suppression is added, and callers cannot deserialize accepted or verified state."
+      ],
+      "validation": [
+        "Mock production HTTP adapters with maintained test tooling and cover success, malformed, oversized, timeout, redirect/private-peer, and provider-mismatch behavior without credentials.",
+        "Run all nine strict feature configurations plus `feature_boundaries_cli` in all supported configurations.",
+        "Run full locked workspace tests and focused predictive/LLM/security tests on final bytes; record source/dependency rationale and lockfile review."
+      ],
+      "prerequisites": [
+        "Use installed-version and official docs before selecting or adding HTTP/mock/config crates.",
+        "Choose whether the public owner is an existing crate or a narrowly justified new crate from dependency analysis; do not overload `axiograph-llm-sync` merely for naming convenience.",
+        "Preserve evidence-plane output and fail-closed promotion boundaries."
+      ],
+      "risk": "trust-boundary",
+      "catalogOrder": 20,
+      "wave01Selected": false,
+      "status": "pending_parent"
+    },
+    {
+      "id": "EQ17-U03",
+      "areas": [
+        "EQ-17"
+      ],
+      "title": "Separate AxQL syntax and elaboration",
+      "objective": "Split parsing/syntax DTOs from schema-aware name resolution, type inference, hole production, and prepared-query elaboration without changing canonical identity or unsupported namespace behavior.",
+      "requirementIds": [
+        "EQ17-R02",
+        "EQ17-A01"
+      ],
+      "dependsOn": [],
+      "priority": 4,
+      "targetPaths": [
+        "rust/crates/axiograph-query/src/axql.rs",
+        "rust/crates/axiograph-query/src/query_ir.rs",
+        "rust/crates/axiograph-query/src/lib.rs",
+        "rust/crates/axiograph-query/tests/",
+        "rust/crates/axiograph-cli/src/sqlish.rs",
+        "docs/reference/QUERY_LANG.md"
+      ],
+      "acceptance": [
+        "Syntax types parse without PathDB execution or verifier dependencies; elaboration consumes explicit compiled/runtime schema context.",
+        "Prepared query, source, schema, and query digests remain byte-for-byte stable for supported fixtures.",
+        "Unsupported identity collisions continue to reject before DB construction; local-name behavior is not broadened silently.",
+        "CLI, MCP, LSP, HTTP, CQ, and external clients consume the same public elaboration API."
+      ],
+      "validation": [
+        "Run parser/property/golden tests plus import-aware, namespace-collision, typed-hole, refinement, CRLF/Unicode, and malformed query cases.",
+        "Compare library and CLI prepared-query metadata and trust outputs for canonical/import-aware fixtures.",
+        "Run required non-vacuous prepared-query selectors, canonical spine, full locked workspace tests, strict query/CLI Clippy, and formatting."
+      ],
+      "prerequisites": [
+        "Freeze existing public wire and digest goldens before moving code.",
+        "Coordinate with the broader EQ04 qualified-resolution requirement; this unit must not claim to implement it accidentally."
+      ],
+      "risk": "trust-boundary",
+      "catalogOrder": 21,
+      "wave01Selected": false,
+      "status": "pending_parent"
+    },
+    {
+      "id": "EQ-04-U01",
+      "areas": [
+        "EQ-04"
+      ],
+      "title": "Public workspace authoring service extraction",
+      "objective": "Create a public library owner for complete workspace authoring requests, reports, import resolution, compact projection, validation, CQ/query orchestration, olog repair, evolution preview, and promotion review, leaving the CLI as an adapter.",
+      "requirementIds": [
+        "EQ-04-R01",
+        "EQ-04-R03"
+      ],
+      "dependsOn": [
+        "EQ-03-U02"
+      ],
+      "priority": 5,
+      "targetPaths": [
+        "rust/Cargo.toml",
+        "rust/crates/axiograph-authoring/Cargo.toml",
+        "rust/crates/axiograph-authoring/src/**/*.rs",
+        "rust/crates/axiograph-cli/src/authoring_workspace.rs",
+        "rust/crates/axiograph-cli/src/authoring_workspace/**/*.rs",
+        "rust/crates/axiograph-cli/src/typed_authoring.rs",
+        "rust/crates/axiograph-cli/src/evolution_preview.rs",
+        "rust/crates/axiograph-cli/src/typed_refinement.rs",
+        "docs/reference/SOFTWARE_AUTHORING_TOOLS.md",
+        "docs/reference/RUST_ARCHITECTURE_CLEANUP.md"
+      ],
+      "acceptance": [
+        "A public crate exposes explicit typed request/options/report/service surfaces for the complete current workspace behavior.",
+        "The crate has no CLI, MCP, HTTP, LSP, REPL, LLM, or editor dependency and owns moved implementation rather than including private source.",
+        "CanonicalCompiler remains the only semantic compiler; exact ordered source closure and IDs are unchanged.",
+        "Promotion review remains read-only and fail-closed; no public deserialize/default/unchecked path mints accepted or verified state.",
+        "No stale compatibility exports or duplicate implementations remain."
+      ],
+      "validation": [
+        "Before moves, map definitions/callers/dependencies with indexed discovery and LSP/call-graph tools.",
+        "Add public API compile tests, process-free service tests, and compile-fail tests for private/unchecked lifecycle construction.",
+        "Run moved-behavior parity on canonical, import-aware, invalid, unsaved-root, compact/full, query/CQ, olog/evolution, and promotion-blocked fixtures.",
+        "Run workspace format/strict Clippy/tests plus canonical-spine, semantics, regulated-shipment, and required query selection guards."
+      ],
+      "prerequisites": [
+        "Nested report contracts are stable from EQ-03-U01/U02.",
+        "Review `docs/reference/SOFTWARE_AUTHORING_TOOLS.md`, `KERNEL_IR.md`, `RUST_LIFECYCLE_TYPES.md`, `SECURITY_BOUNDARIES.md`, and `RUST_ARCHITECTURE_CLEANUP.md`.",
+        "One writer; no broad crate move without a frozen complete source/dependency/caller review package."
+      ],
+      "risk": "trust-boundary",
+      "catalogOrder": 22,
+      "wave01Selected": false,
+      "status": "pending_parent"
+    },
+    {
+      "id": "RG-U05",
+      "areas": [
+        "EQ-11"
+      ],
+      "title": "Typed hybrid rank fusion and request-scoped embedding reuse",
+      "objective": "Replace max fusion with one named tested fusion policy, make component scores provider-neutral, record the exact retrieval method, and compute one query embedding per complete shared model identity within a request.",
+      "requirementIds": [
+        "EQ-11-R02",
+        "EQ-11-R03",
+        "EQ-11-R04",
+        "EQ-11-R05"
+      ],
+      "dependsOn": [
+        "RG-U04"
+      ],
+      "priority": 5,
+      "targetPaths": [
+        "rust/crates/axiograph-retrieval/src/fusion.rs",
+        "rust/crates/axiograph-retrieval/src/model.rs",
+        "rust/crates/axiograph-retrieval/src/service.rs",
+        "rust/crates/axiograph-cli/src/llm.rs",
+        "rust/crates/axiograph-cli/src/embeddings.rs",
+        "rust/crates/axiograph-retrieval/tests/hybrid_ranking.rs",
+        "docs/reference/EMBEDDINGS_AND_EVIDENCE.md",
+        "docs/howto/RELEVANCE_EVALUATION.md"
+      ],
+      "acceptance": [
+        "The report exposes typed components such as lexical_score, vector_score, graph_score, component rank, fusion score, and method/version; it removes the false Ollama-specific meaning from provider-neutral results.",
+        "Fusion is rank-based or calibrated under a documented finite policy and cannot compare raw incomparable scales with max.",
+        "One request-scoped query embedding is reused only when backend, model, version/digest/deployment, dimension, normalization, and prompt/text policy all match; mismatches trigger separate computation or fail closed.",
+        "Tie order, top-k bounds, snapshot scope, omissions, and evidence-only authority are stable and explicit.",
+        "No compatibility alias is retained unless an explicit accepted wire contract requires it."
+      ],
+      "validation": [
+        "Use counting fake provider boundaries around the real production service to prove one call for shared entity/chunk model identity and separate calls for mismatches; no test-only ranker replaces production behavior.",
+        "Exercise mixed score scales, absent components, duplicate ids, ties, NaN/infinity rejection, zero overlap, and deterministic repeated runs.",
+        "Run lexical/vector/graph/hybrid ablations and compare against RG-U02 and RG-U04 results.",
+        "Run feature-matrix compile/tests for enabled and disabled providers without live requests, plus locked fmt/Clippy/tests."
+      ],
+      "prerequisites": [
+        "RG-U04 shared lexical service is reviewed.",
+        "RG-U02 baseline identities and report schema are frozen.",
+        "No live provider call is allowed; provider behavior tests use bounded local fakes at the existing network boundary."
+      ],
+      "risk": "trust-boundary",
+      "catalogOrder": 23,
+      "wave01Selected": false,
+      "status": "pending_parent"
+    },
+    {
+      "id": "EQ14-U01",
+      "areas": [
+        "EQ-14"
+      ],
+      "title": "Dependent retyping for category-kernel wire paths",
+      "objective": "Convert validated index-based category and formal-groupoid paths into dependent Lean paths over the exact reconstructed presentation.",
+      "requirementIds": [
+        "EQ14-R01"
+      ],
+      "dependsOn": [
+        "EQ16-U01"
+      ],
+      "priority": 5,
+      "targetPaths": [
+        "lean/Axiograph/Theory/Finite.lean",
+        "lean/Axiograph/Theory/FiniteTests.lean",
+        "lean/Axiograph/Certificate/CategoryKernelSoundness.lean",
+        "lean/lakefile.lean",
+        "docs/reference/KERNEL_IR.md"
+      ],
+      "acceptance": [
+        "Forward and signed wire paths retype only when every index, direction, and endpoint composes over the exact presentation.",
+        "Success yields `Path p a b` or `GroupoidPath p a b` with endpoints in the type; invalid endpoint/index/composition cases reject.",
+        "Round-trip/erasure lemmas show retyped paths retain the exact wire word and endpoints.",
+        "No theorem interprets a formal inverse as an executable inverse of ontology data."
+      ],
+      "validation": [
+        "Build and run focused Lean tests for empty identities, forward generators, inverse generators, mixed words, and N/N+1 invalid indexes.",
+        "Run `make verify-lean-e2e-category-kernel-v3` and `make verify-lean-theory`.",
+        "Run the first-party no-`axiom`/no-`sorry`/no-`unsafe def` scan used by `verify-lean-theory`."
+      ],
+      "prerequisites": [
+        "EQ16-U01 fixes the wire/AST contract.",
+        "Use current mathlib/Lean lockfiles; no `lake update` or new axiom.",
+        "Formal reviewer checks dependent casts and endpoint equalities, not only executable test results."
+      ],
+      "risk": "formal",
+      "catalogOrder": 24,
+      "wave01Selected": false,
+      "status": "pending_parent"
+    },
+    {
+      "id": "EQ17-U02",
+      "areas": [
+        "EQ-17",
+        "EQ-19"
+      ],
+      "title": "Extract LLM tool execution and retrieval services",
+      "objective": "Move tool-loop execution and current retrieval/ranking behavior behind bounded public services after provider contracts stabilize, deduplicating entity/chunk processing without changing ranking semantics prematurely.",
+      "requirementIds": [
+        "EQ17-R01",
+        "EQ17-R05",
+        "EQ17-A01",
+        "EQ19-R06-N01"
+      ],
+      "dependsOn": [
+        "EQ17-U01",
+        "RG-U02"
+      ],
+      "priority": 5,
+      "targetPaths": [
+        "rust/crates/axiograph-cli/src/llm.rs",
+        "rust/crates/axiograph-cli/src/doc_chunks.rs",
+        "rust/crates/axiograph-cli/src/embeddings.rs",
+        "rust/crates/axiograph-pathdb/src/text_index.rs",
+        "rust/crates/axiograph-query/src/",
+        "rust/crates/axiograph-llm-sync/src/grounding.rs",
+        "docs/reference/EMBEDDINGS_AND_EVIDENCE.md"
+      ],
+      "acceptance": [
+        "Tool execution has explicit typed inputs, resource limits, and output/trust contracts independent of provider transport.",
+        "Entity and chunk ranking share only genuinely identical typed mechanics; token and embedding scores remain distinguishable and deterministic.",
+        "The production retrieval baseline is preserved before EQ10/EQ11 changes; no exhaustive scan is renamed ANN and no exact fallback is hidden.",
+        "Model outputs, retrieved evidence, and scores cannot mint accepted state or certificates."
+      ],
+      "validation": [
+        "Golden/parity tests compare pre-extraction and post-extraction production outputs for deterministic fixtures, ties, duplicate IDs, empty results, stale snapshots, and mixed score availability.",
+        "Run real process-free library consumers and CLI/REPL parity without invoking live providers.",
+        "Rerun compact client parity, full locked workspace tests, strict feature matrix, security tests, and retrieval bounds on final bytes."
+      ],
+      "prerequisites": [
+        "Capture a production-path retrieval baseline before changing code shape.",
+        "Do not select BM25, fusion, ANN, or reranking behavior in this architecture-only unit; those depend on EQ10 evaluation."
+      ],
+      "risk": "trust-boundary",
+      "catalogOrder": 25,
+      "wave01Selected": false,
+      "status": "pending_parent"
+    },
+    {
+      "id": "EQ17-U04",
+      "areas": [
+        "EQ-17"
+      ],
+      "title": "Separate query execution and certification lifecycle",
+      "objective": "Give finite execution and certificate policy distinct public modules joined by one typed prepared-query handle, preserving opaque verified receipts and checker approval requirements.",
+      "requirementIds": [
+        "EQ17-R02",
+        "EQ17-A01"
+      ],
+      "dependsOn": [
+        "EQ17-U03"
+      ],
+      "priority": 5,
+      "targetPaths": [
+        "rust/crates/axiograph-query/src/query_ir.rs",
+        "rust/crates/axiograph-query/src/trust_contract.rs",
+        "rust/crates/axiograph-query/src/verifier_bridge.rs",
+        "rust/crates/axiograph-query/src/lib.rs",
+        "rust/crates/axiograph-query/tests/public_query_service.rs",
+        "rust/crates/axiograph-cli/src/repl.rs",
+        "rust/crates/axiograph-cli/src/db_server.rs",
+        "docs/reference/CERTIFICATES.md",
+        "docs/reference/TRUSTED_KERNEL.md"
+      ],
+      "acceptance": [
+        "Execution requires a prepared handle bound to the same DB/snapshot identity; certification consumes exact source/query/answer/certificate identities.",
+        "Verified receipt types remain output-only and cannot be created by Deserialize, Default, unchecked constructors, or report metadata.",
+        "HTTP read-only query execution does not imply checker readiness or certificate authority.",
+        "All adapters share one certificate-policy implementation and retain explicit unsupported/non-claim states."
+      ],
+      "validation": [
+        "Run same-DB/cross-DB, source/query/answer/certificate tamper, stale handle, disabled checker, malformed receipt, and compile-fail construction tests.",
+        "Run all required guarded query tests after Lean checker prerequisites, `verify-canonical-spine`, `verify-semantics`, and regulated-shipment exact-query rejection.",
+        "Run external process-free client and CLI/REPL/server parity plus full workspace tests and strict feature matrix."
+      ],
+      "prerequisites": [
+        "Treat verifier wire and accepted `.axi` anchors as trust-boundary code requiring independent review.",
+        "Do not change certificate versions or trusted import closure as a refactor side effect."
+      ],
+      "risk": "trust-boundary",
+      "catalogOrder": 26,
+      "wave01Selected": false,
+      "status": "pending_parent"
+    },
+    {
+      "id": "EQ-04-U03",
+      "areas": [
+        "EQ-04"
+      ],
+      "title": "Process-free full workspace embedding client",
+      "objective": "Add an external integration client and runnable example that embeds the complete public authoring service without importing CLI-private modules or launching the CLI.",
+      "requirementIds": [
+        "EQ-04-R04"
+      ],
+      "dependsOn": [
+        "EQ-04-U01"
+      ],
+      "priority": 6,
+      "targetPaths": [
+        "rust/crates/axiograph-authoring/examples/embedded_workspace.rs",
+        "rust/crates/axiograph-authoring/tests/public_workspace_service.rs",
+        "examples/software_authoring/**",
+        "docs/reference/SOFTWARE_AUTHORING_TOOLS.md",
+        "docs/howto/TESTING.md"
+      ],
+      "acceptance": [
+        "An external crate/test embeds validation, compact/full reports, query/CQ, olog/evolution, repair application, and fail-closed promotion review process-free.",
+        "Canonical and import-aware fixtures retain exact source closure, query/CQ/trust results, and stable identities equivalent to CLI output.",
+        "No private module, source inclusion, test-only implementation, subprocess, bare `.axpd` loading, or fabricated receipt is used.",
+        "Example output clearly separates runtime evidence, emitted certificate metadata, verified receipt state, and accepted promotion."
+      ],
+      "validation": [
+        "Compile the consumer only against public dependencies and include compile-fail checks for private/unchecked construction.",
+        "Compare its reports to actual CLI/adapters on software-authoring and regulated-shipment fixtures.",
+        "Exercise malformed paths, changed unsaved buffers/imports, unsupported projection namespaces, missing CQ/checker receipt, and resource bounds.",
+        "Run locked/offline package tests and canonical/semantic/rejection gates."
+      ],
+      "prerequisites": [
+        "EQ-04-U01 public service API.",
+        "Use exact canonical sources and temporary workspaces; no accepted-store mutation is needed."
+      ],
+      "risk": "trust-boundary",
+      "catalogOrder": 27,
+      "wave01Selected": false,
+      "status": "pending_parent"
+    },
+    {
+      "id": "RG-U06",
+      "areas": [
+        "EQ-10",
+        "EQ-11"
+      ],
+      "title": "Post-ranking relevance regression and production workflow gate",
+      "objective": "Turn the EQ-10 evaluator into the mandatory regression gate for the lexical and hybrid production changes, including required edge cases, bounded capacity observations, and honest baseline deltas.",
+      "requirementIds": [
+        "EQ-10-R03",
+        "EQ-10-R04",
+        "EQ-11-R01",
+        "EQ-11-R02",
+        "EQ-11-R03",
+        "EQ-11-R04",
+        "EQ-11-R05"
+      ],
+      "dependsOn": [
+        "RG-U05"
+      ],
+      "priority": 6,
+      "targetPaths": [
+        "Makefile",
+        "scripts/run_retrieval_evaluation.py",
+        "scripts/tests/test_run_retrieval_evaluation.py",
+        "examples/retrieval_evaluation/baselines/",
+        "docs/howto/TESTING.md",
+        "docs/howto/RELEVANCE_EVALUATION.md",
+        "docs/reference/EMBEDDINGS_AND_EVIDENCE.md"
+      ],
+      "acceptance": [
+        "A bounded offline gate invokes the production service, requires nonempty complete corpus/query selections, records exact inputs/source state, and fails on malformed/truncated-unacknowledged reports.",
+        "The gate compares baseline and candidate metrics/latency/result counts for all required ablations and separately reports synonym, rare-term, zero-overlap, duplicate, tie, and mixed-scale cohorts.",
+        "Thresholds are explicit and justified from the frozen baseline; no zero-query, all-skipped, missing-component, or empty-default path can pass.",
+        "The record says regression corpus, not production-quality benchmark."
+      ],
+      "validation": [
+        "Positive complete-corpus run plus negative zero-query, absent baseline, unknown ablation, malformed report, timeout, output-overflow, and all-skipped helper tests.",
+        "Run twice to establish deterministic metric/ranking fields and bounded output.",
+        "Run the real semantic-search and accepted-grounding workflows and verify no automatic proposal, commit, promotion, or accepted-store mutation occurs.",
+        "Record native/LSP diagnostics before final hash-guarded validation; freeze logs, dependencies, helpers, complete incremental diff, and release-to-current new-file-aware diff."
+      ],
+      "prerequisites": [
+        "RG-U01 through RG-U05 reviewed.",
+        "Use the prepared exact tool environment and bounded subprocess helper; a 600-second command bound is not permission for an unbounded suite.",
+        "Do not mark roadmap completion or commit without parent acceptance."
+      ],
+      "risk": "ordinary",
+      "catalogOrder": 28,
+      "wave01Selected": false,
+      "status": "pending_parent"
+    },
+    {
+      "id": "EQ14-U02",
+      "areas": [
+        "EQ-14"
+      ],
+      "title": "Formal cancellation replay denotation theorem",
+      "objective": "Prove that every accepted category-kernel signed cancellation trace preserves free-groupoid denotation after wire retyping.",
+      "requirementIds": [
+        "EQ14-R02"
+      ],
+      "dependsOn": [
+        "EQ14-U01"
+      ],
+      "priority": 6,
+      "targetPaths": [
+        "lean/Axiograph/Certificate/CategoryKernelSoundness.lean",
+        "lean/Axiograph/Theory/Finite.lean",
+        "lean/Axiograph/Theory/FiniteTests.lean",
+        "lean/Axiograph/Certificate/Invariants.lean",
+        "docs/reference/LEAN_THEORY_EVALUATION.md"
+      ],
+      "acceptance": [
+        "One-step adjacent inverse cancellation preserves denotation for both directions and all valid offsets.",
+        "Trace induction proves accepted normalization input and output have equal denotation.",
+        "The theorem consumes the actual V3 replay relation/data, not generic `PathExprV2` helpers.",
+        "Statement contains no data-level reversibility, confidence equality, arbitrary rewrite, or ontology-closure claim."
+      ],
+      "validation": [
+        "Lean builds the theorem with no `sorry`, new first-party axiom, or unsafe definition.",
+        "Focused tests instantiate forward/inverse laws for non-reversible declared arrows as formal syntax while proving no executable inverse claim.",
+        "Rust-emitted valid traces accept; wrong direction, arrow, offset, endpoint, output, and incomplete coverage reject through the real verifier."
+      ],
+      "prerequisites": [
+        "EQ14-U01 dependent retyping reviewed.",
+        "No change to accepted certificate bytes unless separately justified; prefer proving over V3.",
+        "Formal reviewer audits every use of dependent equality/casts."
+      ],
+      "risk": "formal",
+      "catalogOrder": 29,
+      "wave01Selected": false,
+      "status": "pending_parent"
+    },
+    {
+      "id": "EQ-04-U02",
+      "areas": [
+        "EQ-04",
+        "EQ-05"
+      ],
+      "title": "Adapter migration to the public authoring owner",
+      "objective": "Make CLI, semantic/authoring MCP, authoring HTTP, LSP, and REPL discovery/commands thin adapters over the public workspace service and remove CLI-private semantic branches.",
+      "requirementIds": [
+        "EQ-04-R02",
+        "EQ-04-R03",
+        "EQ-05-R04"
+      ],
+      "dependsOn": [
+        "EQ-04-U01"
+      ],
+      "priority": 7,
+      "targetPaths": [
+        "rust/crates/axiograph-cli/src/main.rs",
+        "rust/crates/axiograph-cli/src/mcp.rs",
+        "rust/crates/axiograph-cli/src/web.rs",
+        "rust/crates/axiograph-cli/src/repl.rs",
+        "rust/crates/axiograph-cli/src/authoring_workspace.rs",
+        "rust/crates/axiograph-cli/tests/public_query_service_parity.rs",
+        "rust/crates/axiograph-cli/tests/examples_e2e.rs",
+        "examples/software_authoring/host_integrations/**",
+        "docs/reference/SOFTWARE_AUTHORING_TOOLS.md"
+      ],
+      "acceptance": [
+        "Every adapter deserializes its transport, invokes the public service, and projects the same typed result; no adapter owns duplicate authoring/query/CQ/olog/evolution semantics.",
+        "Canonical and import-aware fixtures produce equivalent source/query/CQ/trust/promotion results across adapters.",
+        "Unsupported capabilities are not advertised; read-only routes stay read-only.",
+        "Compact defaults and explicit full artifacts preserve source/trust identities and canonical full bytes."
+      ],
+      "validation": [
+        "Run actual CLI commands, rmcp requests, localhost authoring HTTP, framed LSP sequences, and REPL discovery against the same fixture matrix.",
+        "Contract tests compare successful, failed, malformed, stale, bounded, and unsupported cases rather than DTO snapshots alone.",
+        "Run external package compile tests to ensure adapters no longer expose/import private CLI modules.",
+        "Run nine feature configurations, workspace tests, canonical/semantic/shipment gates, and final native/LSP diagnostics."
+      ],
+      "prerequisites": [
+        "EQ-04-U01 public owner.",
+        "Do not add process-launch facades for embedding clients.",
+        "Any authority/capability expansion requires explicit review; adapter parity cannot broaden promotion rights."
+      ],
+      "risk": "trust-boundary",
+      "catalogOrder": 30,
+      "wave01Selected": false,
+      "status": "pending_parent"
+    },
+    {
+      "id": "EQ17-U05",
+      "areas": [
+        "EQ-17",
+        "EQ-18"
+      ],
+      "title": "Extract reusable authoring dispatch and thin CLI/REPL",
+      "objective": "Move pure authoring, CQ-file, olog, report, and command actions into typed public services so `main.rs` and `repl.rs` retain only boundary orchestration.",
+      "requirementIds": [
+        "EQ17-R03",
+        "EQ17-R03-N01",
+        "EQ17-A01",
+        "EQ18-R05"
+      ],
+      "dependsOn": [
+        "EQ17-U03",
+        "EQ17-U04",
+        "EQ-04-U02",
+        "EQ-04-U03"
+      ],
+      "priority": 6,
+      "targetPaths": [
+        "rust/crates/axiograph-cli/src/main.rs",
+        "rust/crates/axiograph-cli/src/repl.rs",
+        "rust/crates/axiograph-cli/src/authoring_workspace.rs",
+        "rust/crates/axiograph-cli/src/competency_questions.rs",
+        "rust/crates/axiograph-cli/src/evolution_preview.rs",
+        "rust/crates/axiograph-cli/src/typed_authoring.rs",
+        "rust/crates/axiograph-software-authoring/src/",
+        "rust/crates/axiograph-query/src/",
+        "docs/reference/SOFTWARE_AUTHORING_TOOLS.md",
+        "examples/software_authoring/"
+      ],
+      "acceptance": [
+        "A process-free external client performs full workspace authoring through public types without importing CLI-private modules.",
+        "CLI, REPL, MCP, HTTP, and LSP remain adapters over the same service and produce equivalent source/query/CQ/trust/promotion results.",
+        "Filesystem, env, process, terminal, and exit-code concerns remain adapter-owned; semantic logic is not duplicated.",
+        "Authoring stays read-only until a separately explicit validated/reviewed AxiStore lifecycle exists; no automatic commit or DB mutation route is introduced."
+      ],
+      "validation": [
+        "Run process-free authoring clients, adapter parity, compact pagination, import-aware package, olog/CQ, diagnostics, and promotion-blocker regressions.",
+        "Run full locked workspace tests, nine strict configurations, canonical spine, semantics, regulated shipment, and frontend contract tests affected by discovery.",
+        "Execute and update the compact-authoring tutorial using production code."
+      ],
+      "prerequisites": [
+        "Decide the public owning crate from dependency analysis; do not expose a blanket set of CLI internals.",
+        "Preserve exact accepted bytes/import order/anchors/semantic IDs and current unsupported namespace status."
+      ],
+      "risk": "trust-boundary",
+      "catalogOrder": 31,
+      "wave01Selected": false,
+      "status": "pending_parent"
+    },
+    {
+      "id": "AE-07",
+      "areas": [
+        "EQ-07"
+      ],
+      "title": "Semantic tokens and exact-byte formatting previews",
+      "objective": "Add semantic tokens and formatting through parser-owned occurrences, with a required exact-byte preview before any client edit.",
+      "requirementIds": [
+        "EQ07-REQ-05"
+      ],
+      "dependsOn": [
+        "AE-01",
+        "AE-04"
+      ],
+      "priority": 7,
+      "targetPaths": [
+        "rust/crates/axiograph-cli/src/axi_fmt.rs",
+        "rust/crates/axiograph-cli/src/authoring_workspace.rs",
+        "rust/crates/axiograph-cli/src/authoring_workspace/diagnostics_tests/lsp_regressions.rs",
+        "rust/crates/axiograph-dsl/src/schema_v1.rs"
+      ],
+      "acceptance": [
+        "Semantic tokens derive from production parser occurrences and use correct delta encoding/UTF-16 ranges under current document version.",
+        "Formatting returns complete before/after digests and exact-byte edits/preview; no automatic apply, disk write, import reorder, or accepted-state mutation occurs.",
+        "Comments, CRLF/LF, Unicode, declaration/import order, and byte-only changes are represented honestly; unchanged formatting yields an explicit empty preview.",
+        "Stale document or closure versions reject, and capability advertisement matches implementation."
+      ],
+      "validation": [
+        "Add formatter golden/idempotence tests and semantic-token protocol fixtures using real parser/formatter code.",
+        "Exercise CRLF, combining/astral characters, comments, long files, incremental changes, stale previews, and byte-only identity changes.",
+        "Run make verify-w02-compiler to prove semantic parse behavior and rejection corpus remain unchanged.",
+        "Review exact diffs from frozen sources before running broader checks."
+      ],
+      "prerequisites": [
+        "Inspect and reuse rust/crates/axiograph-cli/src/axi_fmt.rs; do not add a duplicate formatter.",
+        "AE-01 and AE-04."
+      ],
+      "risk": "trust-boundary",
+      "catalogOrder": 32,
+      "wave01Selected": false,
+      "status": "pending_parent"
+    },
+    {
+      "id": "RG-U07",
+      "areas": [
+        "EQ-12"
+      ],
+      "title": "Maintained ANN backend with explicit exact oracle",
+      "objective": "After measured ranking work, select a maintained ANN backend and implement it behind the shared retrieval service while retaining exhaustive vector search as a separately named evaluation oracle, never a hidden production fallback.",
+      "requirementIds": [
+        "EQ-12-R01",
+        "EQ-12-R04"
+      ],
+      "dependsOn": [
+        "RG-U02",
+        "RG-U05"
+      ],
+      "priority": 7,
+      "targetPaths": [
+        "rust/Cargo.toml",
+        "rust/Cargo.lock",
+        "rust/crates/axiograph-retrieval/Cargo.toml",
+        "rust/crates/axiograph-retrieval/src/ann.rs",
+        "rust/crates/axiograph-retrieval/src/exact_vector_oracle.rs",
+        "rust/crates/axiograph-retrieval/src/service.rs",
+        "rust/crates/axiograph-retrieval/tests/ann_oracle.rs",
+        "docs/reference/EMBEDDINGS_AND_EVIDENCE.md",
+        "docs/howto/RELEVANCE_EVALUATION.md"
+      ],
+      "acceptance": [
+        "Selection evidence uses official documentation and the actually resolvable crate version and covers maintenance, license, supported targets, build/persistence model, determinism, parameter bounds, memory, corruption behavior, and transitive unsafe/supply-chain implications.",
+        "Production approximate search has an explicit method/backend/version and never labels exhaustive scanning ANN.",
+        "ExactVectorOracle is available only through evaluation/diagnostic configuration and is not silently substituted when ANN open/query fails.",
+        "Same-vector comparisons define Recall@k under deterministic tie handling.",
+        "ANN and oracle results remain evidence-only."
+      ],
+      "validation": [
+        "Compare ANN and exact oracle over identical vectors for ties, duplicate vectors, zero vectors, dimensions, k bounds, and deterministic seeds.",
+        "Force ANN unavailable/corrupt/query failures and require errors, not exhaustive fallback.",
+        "Run compiler/lint/tests across supported platforms/features available locally; record unavailable platform checks honestly.",
+        "Run dependency/advisory checks without waiving pins or accepting unrelated lock churn."
+      ],
+      "prerequisites": [
+        "RG-U02 baseline and RG-U05 shared vector/fusion contracts are reviewed.",
+        "Official backend documentation and dependency source/version must be available. Discovery failure stops this unit without mutation.",
+        "No live model provider is needed; use versioned vectors."
+      ],
+      "risk": "trust-boundary",
+      "catalogOrder": 33,
+      "wave01Selected": false,
+      "status": "pending_parent"
+    },
+    {
+      "id": "EQ14-U03",
+      "areas": [
+        "EQ-14"
+      ],
+      "title": "Declared-equation congruence denotation theorem",
+      "objective": "Prove contextual replay preservation under an explicit denotational assumption for each declared equation.",
+      "requirementIds": [
+        "EQ14-R02"
+      ],
+      "dependsOn": [
+        "EQ14-U01"
+      ],
+      "priority": 7,
+      "targetPaths": [
+        "lean/Axiograph/Certificate/CategoryKernelSoundness.lean",
+        "lean/Axiograph/Theory/Finite.lean",
+        "lean/Axiograph/Theory/FiniteTests.lean",
+        "lean/Axiograph/Certificate/Invariants.lean",
+        "docs/reference/LEAN_THEORY_EVALUATION.md"
+      ],
+      "acceptance": [
+        "Define an explicit model/assumption environment that requires parallel endpoints and denotational equality for each declared equation.",
+        "Retype prefix, matched segment, replacement, and suffix; prove one contextual replacement and trace replay preserve denotation under that environment.",
+        "Empty identity equations and replacement at nonzero offsets are covered.",
+        "No theorem derives user equation truth from parsing, parallelism, or Rust output."
+      ],
+      "validation": [
+        "Lean proof builds without `sorry` or new axioms.",
+        "Real regulated-shipment contextual equation fixture instantiates the conditional theorem contract; bad equation index/direction/offset/typed segment/assumption mapping rejects.",
+        "Run `make verify-lean-e2e-category-kernel-v3` and focused theorem tests."
+      ],
+      "prerequisites": [
+        "EQ14-U01 complete.",
+        "Formal design review agrees on the explicit equation-assumption boundary before coding.",
+        "Do not encode assumptions as unchecked booleans that can mint a trusted result."
+      ],
+      "risk": "formal",
+      "catalogOrder": 34,
+      "wave01Selected": false,
+      "status": "pending_parent"
+    },
+    {
+      "id": "EQ17-U06",
+      "areas": [
+        "EQ-17"
+      ],
+      "title": "Factor canonical package and runtime theory boundaries",
+      "objective": "Move canonical package and theory derivation to the narrowest justified owners while keeping `CanonicalCompiler` the only meaning compiler and runtime reports explicitly untrusted.",
+      "requirementIds": [
+        "EQ17-R04",
+        "EQ17-R05",
+        "EQ17-A01"
+      ],
+      "dependsOn": [
+        "EQ17-U03",
+        "EQ17-U05"
+      ],
+      "priority": 7,
+      "targetPaths": [
+        "rust/crates/axiograph-kernel/src/",
+        "rust/crates/axiograph-pathdb/src/axi_module_import.rs",
+        "rust/crates/axiograph-pathdb/src/axi_module_import/package.rs",
+        "rust/crates/axiograph-pathdb/src/kernel_ir.rs",
+        "rust/crates/axiograph-pathdb/src/runtime_theory_checker.rs",
+        "rust/crates/axiograph-pathdb/src/runtime_handle.rs",
+        "docs/reference/KERNEL_IR.md",
+        "docs/reference/RUNTIME_THEORY_CHECKER.md",
+        "docs/reference/RUST_ARCHITECTURE_CLEANUP.md"
+      ],
+      "acceptance": [
+        "Canonical package closure, schema/theory/instance IR, and stable IDs have one owner under `CompiledKernelSnapshot`.",
+        "PathDB consumes compiled snapshots and emits derived runtime indexes/reports; serialization cannot recreate authority.",
+        "Repeated theory/ref/report types are consolidated only where trust class, anchors, and semantics match.",
+        "Package-aware imports, dependent instances, relation-object roles, constraints, equations, contexts, and unsupported collisions preserve behavior."
+      ],
+      "validation": [
+        "Run canonical compiler properties, W02 Rust/Lean parity, package projection tests, runtime theory suites, semantic VCS, regulated shipment, and tamper cases.",
+        "Prove with compile-fail/public API tests that PathDB consumers cannot mint accepted snapshot handles.",
+        "Run full locked workspace, strict Clippy/format, canonical spine, and semantics after final moves."
+      ],
+      "prerequisites": [
+        "Produce a dependency/call-graph rationale before crate extraction; if no stable boundary exists, improve module facades instead of creating churn.",
+        "No accepted `.axi` bytes, checker input, or compiled IR wire version may change without separate trust review."
+      ],
+      "risk": "trust-boundary",
+      "catalogOrder": 35,
+      "wave01Selected": false,
+      "status": "pending_parent"
+    },
+    {
+      "id": "EQ-04-U04",
+      "areas": [
+        "EQ-04"
+      ],
+      "title": "Canonical identity-aware execution namespaces",
+      "objective": "Replace local-name runtime/AxQL resolution with canonical identity-aware qualified resolution across package metadata, runtime indexes, query elaboration, CQ execution, and citations.",
+      "requirementIds": [
+        "EQ-04-R05",
+        "EQ-04-R05A"
+      ],
+      "dependsOn": [
+        "EQ-04-U01"
+      ],
+      "priority": 8,
+      "targetPaths": [
+        "rust/crates/axiograph-pathdb/src/axi_module_import.rs",
+        "rust/crates/axiograph-pathdb/src/axi_module_import/package.rs",
+        "rust/crates/axiograph-pathdb/src/kernel_ir.rs",
+        "rust/crates/axiograph-query/src/axql.rs",
+        "rust/crates/axiograph-query/src/query_ir.rs",
+        "rust/crates/axiograph-query/src/competency_questions.rs",
+        "rust/crates/axiograph-cli/src/authoring_workspace/package_tests.rs",
+        "rust/crates/axiograph-query/tests/package_query_service.rs",
+        "rust/crates/axiograph-cli/tests/authoring_package_cli.rs",
+        "docs/reference/KERNEL_IR.md",
+        "docs/reference/QUERY_LANG.md",
+        "docs/reference/SOFTWARE_AUTHORING_TOOLS.md"
+      ],
+      "acceptance": [
+        "Qualified resolution is based on canonical module/schema/relation/generator/role identities, not lossy local strings.",
+        "Repeated labels across modules/schemas resolve when qualification is sufficient; ambiguous, reserved, unsupported endpoint, and cross-owner cases reject atomically before any DB escapes.",
+        "Metadata, runtime, AxQL, CQ, adapter results, and exact-source citations agree on identity.",
+        "Canonical-valid status remains separate from derived projection capability; accepted bytes/IDs and CanonicalCompiler behavior do not change.",
+        "No hidden local-name fallback remains."
+      ],
+      "validation": [
+        "Establish the current restricted projection as baseline, including all documented collision rejections.",
+        "Add canonical-positive and adversarial matrices for relation/relation, relation/generator, generator/generator, role/virtual/reserved/dotted names, duplicate owners, source permutation, metadata-only packages, dependent/forward fact references, and relation-object endpoints.",
+        "Compare process-free library, CLI, MCP, HTTP, and CQ results and ensure no partial DB/result on rejection.",
+        "Run PathDB/query/authoring suites, canonical-spine, semantics, regulated-shipment, parser parity if syntax changes, and tamper/rejection gates."
+      ],
+      "prerequisites": [
+        "Approve a typed qualified-name contract before implementation; prefer existing canonical `KernelRefV2` identities over a parallel ID scheme.",
+        "If syntax must change, preserve exact-byte anchors and coordinate with Rust/Lean parser contracts rather than silently widening grammar.",
+        "No accepted-store or durable `.axpd` authority change."
+      ],
+      "risk": "trust-boundary",
+      "catalogOrder": 36,
+      "wave01Selected": false,
+      "status": "pending_parent"
+    },
+    {
+      "id": "AE-05",
+      "areas": [
+        "EQ-07"
+      ],
+      "title": "Identity-aware LSP symbol and navigation index",
+      "objective": "Build one exact-image semantic occurrence index for completion, hover, definitions, references, and document symbols across root and imported overlays.",
+      "requirementIds": [
+        "EQ07-REQ-01",
+        "EQ07-REQ-02",
+        "EQ07-REQ-03"
+      ],
+      "dependsOn": [
+        "AE-01",
+        "AE-04",
+        "EQ-04-U04"
+      ],
+      "priority": 5,
+      "targetPaths": [
+        "rust/crates/axiograph-cli/src/authoring_workspace.rs",
+        "rust/crates/axiograph-cli/src/authoring_workspace/diagnostics_tests/lsp_regressions.rs",
+        "rust/crates/axiograph-kernel/src/package.rs",
+        "rust/crates/axiograph-pathdb/src/kernel_ir.rs",
+        "rust/crates/axiograph-query/src/query_ir.rs"
+      ],
+      "acceptance": [
+        "Completion is position- and namespace-aware for schema/type/relation/role references and rejects ambiguous/unrepresentable resolution.",
+        "Hover displays inferred type, exact owner/source ref, candidate closure identity, scoped trust, and non-claims without manufacturing accepted refs.",
+        "Definitions/references/document symbols use canonical identity plus exact occurrences, deterministic ordering, bounded results, correct owner URIs, and current document versions.",
+        "Capabilities are advertised only when handlers and protocol tests exist."
+      ],
+      "validation": [
+        "Run real stdio initialize and request sequences for every method over disk and unsaved import overlays, including CRLF and astral UTF-16.",
+        "Test collisions, repeated local names, aliases, stale versions, missing imports, changed closure, bounds, and unsupported syntax.",
+        "Compare navigation results with canonical compiler stable refs and source anchors, not duplicate test parsers.",
+        "Run focused kernel/import-aware query tests and LSP protocol tests."
+      ],
+      "prerequisites": [
+        "AE-01 and AE-04.",
+        "Canonical identity-aware namespace support from EQ-04 is required for broad collision cases; until it lands, reject unsupported namespaces honestly rather than local-name guessing."
+      ],
+      "risk": "ordinary",
+      "catalogOrder": 37,
+      "wave01Selected": false,
+      "status": "pending_parent"
+    },
+    {
+      "id": "AE-06",
+      "areas": [
+        "EQ-07"
+      ],
+      "title": "Precondition-bound concrete LSP repairs",
+      "objective": "Convert applicable typed refinement handles and safe typo diagnostics into concrete WorkspaceEdits tied to exact source versions and semantic preconditions.",
+      "requirementIds": [
+        "EQ07-REQ-04"
+      ],
+      "dependsOn": [
+        "AE-02",
+        "AE-04",
+        "AE-05"
+      ],
+      "priority": 6,
+      "targetPaths": [
+        "rust/crates/axiograph-cli/src/authoring_workspace.rs",
+        "rust/crates/axiograph-cli/src/typed_authoring.rs",
+        "rust/crates/axiograph-query/src/typed_refinement.rs",
+        "rust/crates/axiograph-cli/src/authoring_workspace/diagnostics_tests/lsp_regressions.rs"
+      ],
+      "acceptance": [
+        "Every edit cites document version, revision digest, occurrence/ref, expected old bytes, closure/request identity, lifecycle, and semantic preconditions.",
+        "Stale, cross-workspace, changed-import, ambiguous, already-applied, wrong-domain, and non-applicable handles reject without an edit.",
+        "Applying an edit creates only a changed unsaved proposal and fresh diagnostics; it never marks Reviewed/Accepted/LeanVerified or calls AxiStore.",
+        "Generic inspection remains distinct from quick-fix edits and unsupported repairs are not advertised."
+      ],
+      "validation": [
+        "Real stdio codeAction/resolve or equivalent sequences apply one query/olog/diagnostic repair, then recompile and compare fresh handles.",
+        "Adversarially mutate root/import bytes, version, handle, subject, lifecycle, and workspace between request and apply.",
+        "Assert no filesystem/AxiStore mutation and stale diagnostics/actions clear.",
+        "Run query/olog refinement unit tests and full authoring adapter parity tests."
+      ],
+      "prerequisites": [
+        "AE-02 typed diagnostics, AE-04 versions, AE-05 occurrence index.",
+        "Public clients must not deserialize metadata into accepted/verified typestates."
+      ],
+      "risk": "trust-boundary",
+      "catalogOrder": 38,
+      "wave01Selected": false,
+      "status": "pending_parent"
+    },
+    {
+      "id": "AE-08",
+      "areas": [
+        "EQ-07"
+      ],
+      "title": "Rename with semantic and CQ impact preview",
+      "objective": "Implement rename as an explicit, version-bound source proposal with canonical delta, reference, CQ, residual, and trust impact previews.",
+      "requirementIds": [
+        "EQ07-REQ-06"
+      ],
+      "dependsOn": [
+        "AE-04",
+        "AE-05",
+        "AE-07"
+      ],
+      "priority": 8,
+      "targetPaths": [
+        "rust/crates/axiograph-cli/src/authoring_workspace.rs",
+        "rust/crates/axiograph-cli/src/evolution_preview.rs",
+        "rust/crates/axiograph-cli/src/semantic_merge_lattice.rs",
+        "rust/crates/axiograph-store/src/model.rs",
+        "rust/crates/axiograph-cli/src/authoring_workspace/diagnostics_tests/lsp_regressions.rs"
+      ],
+      "acceptance": [
+        "prepareRename only permits supported canonical identities at exact current occurrences; collisions and unsupported namespace fragments reject.",
+        "rename returns versioned WorkspaceEdits plus exact closure/canonical-delta, CQ gate, residual, stable-ref, and trust impact; it does not assert semantic equivalence.",
+        "No accepted-store, branch, tag, or disk state changes; changed candidate must undergo fresh validation and explicit review.",
+        "A stale edit, changed import, payload-changing same ID, or omitted required CQ invalidates the preview."
+      ],
+      "validation": [
+        "Run real stdio prepareRename/rename sequences followed by authoring validate and promotion_review on the resulting unsaved candidate.",
+        "Test schema/object/relation/role supported cases, collisions, references across imports, stale versions, CRLF/Unicode, and unsupported constructs.",
+        "Compare finite payload fingerprints and CQ outcomes before/after using production services.",
+        "Assert AxiStore status and source files remain unchanged."
+      ],
+      "prerequisites": [
+        "AE-04, AE-05, and AE-07.",
+        "Broad canonical namespace resolution may depend on EQ-04; reject unsupported collisions until implemented."
+      ],
+      "risk": "trust-boundary",
+      "catalogOrder": 39,
+      "wave01Selected": false,
+      "status": "pending_parent"
+    },
+    {
+      "id": "RG-U08",
+      "areas": [
+        "EQ-12"
+      ],
+      "title": "Snapshot-scoped ANN sidecar receipts and fail-closed opening",
+      "objective": "Bind ANN bytes and all model/text/corpus/index identities to an authenticated materialization-derived sidecar receipt, with a production open path that rejects stale, corrupt, incompatible, and cross-snapshot artifacts.",
+      "requirementIds": [
+        "EQ-12-R02",
+        "EQ-12-R03"
+      ],
+      "dependsOn": [
+        "RG-U07"
+      ],
+      "priority": 8,
+      "targetPaths": [
+        "rust/crates/axiograph-retrieval/src/ann_receipt.rs",
+        "rust/crates/axiograph-retrieval/src/ann_store.rs",
+        "rust/crates/axiograph-cli/src/embeddings.rs",
+        "rust/crates/axiograph-llm-sync/src/grounding.rs",
+        "rust/crates/axiograph-pathdb/src/materialization.rs",
+        "rust/crates/axiograph-retrieval/tests/ann_receipt.rs",
+        "docs/reference/EMBEDDINGS_AND_EVIDENCE.md",
+        "docs/reference/SECURITY_BOUNDARIES.md",
+        "docs/howto/TESTING.md"
+      ],
+      "acceptance": [
+        "The receipt commits to repository, accepted snapshot/tree/module closure, kernel/fact-log/materialization/logical/exact-image identities, corpus and ordered target/text digests, embedding file/model/dimension/normalization, ANN backend/version/parameters, index bytes, and build method.",
+        "An accepted-derived ANN handle can be constructed only from MaterializedPathDb plus verified sidecar/index bytes; public deserialize/default/unchecked constructors cannot mint accepted-derived status.",
+        "Opening rejects unknown versions/fields, truncation, trailing data, size/depth/count overflow, wrong index digest, stale text/model/corpus, incompatible dimension/backend/parameters, and every cross-snapshot substitution.",
+        "Vector/ANN sidecars remain separate evidence artifacts and do not become a second .axpd format or semantic authority."
+      ],
+      "validation": [
+        "Publish/open genuine materializations only in fresh temporary AxiStores through production APIs, then build/open/query the sidecar.",
+        "Tamper each committed field and index byte class independently; test stale, corrupt, incompatible, and cross-repository/snapshot/materialization cases.",
+        "Compile-fail or visibility tests prove external callers cannot construct/deserialise accepted-derived handles.",
+        "Run security bounds, materialization tests, grounding tests, fmt/Clippy, and no-unsafe/no-panic gates applicable to changed paths."
+      ],
+      "prerequisites": [
+        "RG-U07 backend and index format are frozen.",
+        "Trust/authority review is required before implementation because this introduces a receipt-shaped accepted-derived retrieval handle; it must not widen accepted or verified authority.",
+        "Use only temporary stores and never mutate an unrelated accepted store."
+      ],
+      "risk": "trust-boundary",
+      "catalogOrder": 40,
+      "wave01Selected": false,
+      "status": "pending_parent"
+    },
+    {
+      "id": "EQ14-U04",
+      "areas": [
+        "EQ-14"
+      ],
+      "title": "Actual `verifyV3` acceptance theorem and parity matrix",
+      "objective": "Lift retyping and replay theorems to the real category certificate acceptance function, strengthen adversarial parity, and update claims exactly.",
+      "requirementIds": [
+        "EQ14-R03",
+        "EQ14-R04"
+      ],
+      "dependsOn": [
+        "EQ14-U02",
+        "EQ14-U03",
+        "EQ16-U04"
+      ],
+      "priority": 8,
+      "targetPaths": [
+        "lean/Axiograph/Certificate/CategoryKernelSoundness.lean",
+        "lean/Axiograph/Certificate/Invariants.lean",
+        "lean/Axiograph/Certificate/Check.lean",
+        "lean/Axiograph/VerifyMain.lean",
+        "lean/lakefile.lean",
+        "rust/crates/axiograph-kernel/src/theory.rs",
+        "rust/crates/axiograph-kernel/examples/emit_category_kernel_certificate.rs",
+        "fixtures/canonical/category_kernel/corpus.json",
+        "scripts/check_category_kernel_conformance.sh",
+        "Makefile",
+        "docs/reference/TRUSTED_KERNEL.md",
+        "docs/reference/KERNEL_IR.md",
+        "docs/reference/LEAN_THEORY_EVALUATION.md",
+        "docs/reference/CERTIFICATES.md",
+        "docs/howto/FORMAL_VERIFICATION.md",
+        "docs/howto/TESTING.md"
+      ],
+      "acceptance": [
+        "The main theorem premise names `CategoryKernelCertificate.verifyV3 module proof = .ok result` and concludes exact scoped retyping/normalization plus conditional congruence denotation facts.",
+        "The theorem module is in the `VerifyMain` import closure and an import audit pins that closure.",
+        "Real Rust emitter/Lean verifier positives and all new theorem-bound tamper/rejection cases pass with nonempty case accounting.",
+        "Claim matrix may move only the proved subclaims to theorem-backed status; presentation/saturation/data interpretation and arbitrary relation reversibility remain separately classified."
+      ],
+      "validation": [
+        "Run `make verify-lean-e2e-category-kernel-v3`, `make verify-lean-theory`, `make verify-semantics`, and the no-axiom/sorry/unsafe scan.",
+        "Run real regulated-shipment emission then `axiograph_verify` on exact bytes; mutate each newly theorem-relevant field and require rejection.",
+        "Mechanically record the `VerifyMain` import closure and review its delta.",
+        "Run book/link checks and scoped Rust/Lean diagnostics before final hash-guarded validation."
+      ],
+      "prerequisites": [
+        "EQ14-U02 and EQ14-U03 formally reviewed; EQ16-U04 contract/drift gate complete.",
+        "Trust-boundary reviewer and parent approval before changing the product claim classification or verifier import closure.",
+        "No commit, checklist `[x]`, release, tag, publication, or deployment without later parent acceptance."
+      ],
+      "risk": "trust-boundary",
+      "catalogOrder": 41,
+      "wave01Selected": false,
+      "status": "pending_parent"
+    },
+    {
+      "id": "EQ17-U07",
+      "areas": [
+        "EQ-17"
+      ],
+      "title": "Facade PathDB runtime responsibilities and remove residual duplication",
+      "objective": "Separate storage/index, materialization hydration, runtime theory, query support, and certificate-facing APIs through crisp modules or justified crates, then delete stale duplicate provider/ranking/report paths.",
+      "requirementIds": [
+        "EQ17-R04",
+        "EQ17-R05",
+        "EQ17-A01"
+      ],
+      "dependsOn": [
+        "EQ17-U02",
+        "EQ17-U04",
+        "EQ17-U06"
+      ],
+      "priority": 8,
+      "targetPaths": [
+        "rust/crates/axiograph-pathdb/src/lib.rs",
+        "rust/crates/axiograph-pathdb/src/materialization.rs",
+        "rust/crates/axiograph-pathdb/src/fact_index.rs",
+        "rust/crates/axiograph-pathdb/src/text_index.rs",
+        "rust/crates/axiograph-pathdb/src/runtime_theory_checker.rs",
+        "rust/crates/axiograph-pathdb/src/certificate.rs",
+        "rust/crates/axiograph-query/src/",
+        "rust/crates/axiograph-llm-sync/src/",
+        "docs/reference/RUST_ARCHITECTURE_CLEANUP.md"
+      ],
+      "acceptance": [
+        "Each public facade has one responsibility and a documented dependency direction.",
+        "Durable `.axpd` opening remains exclusively receipt-checked through AxiStore; no bare-file, legacy codec, custom WAL, or reverse export returns.",
+        "Query and LLM consumers use public APIs, not private inclusion or duplicated PathDB internals.",
+        "Removed stale paths have production parity tests; line-count reduction is not used as the architectural success measure."
+      ],
+      "validation": [
+        "Run materialization corruption/substitution/recovery tests, PathDB large/index tests, query/certificate gates, LLM grounding tests, and compile every repository-owned caller.",
+        "Run `check-greenfield-surface`, no-unsafe, no-panics, full locked workspace, strict feature matrix, canonical spine, and semantics.",
+        "Independent architecture review checks dependency direction and authority surfaces against exact frozen source."
+      ],
+      "prerequisites": [
+        "Benchmark compile/runtime impact and inspect call graphs before deciding module versus crate boundaries.",
+        "Use maintained crates only for generic infrastructure and only after installed-version/official-doc review."
+      ],
+      "risk": "trust-boundary",
+      "catalogOrder": 42,
+      "wave01Selected": false,
+      "status": "pending_parent"
+    },
+    {
+      "id": "EQ-05-U01",
+      "areas": [
+        "EQ-05"
+      ],
+      "title": "Closed generated domain schemas",
+      "objective": "Create one mechanically checked schema source for all public authoring request/response and nested artifact families, including compact and nested detail pages, without making lifecycle metadata construct authoritative Rust states.",
+      "requirementIds": [
+        "EQ-05-R01",
+        "EQ-05-R01B"
+      ],
+      "dependsOn": [
+        "EQ-03-U02",
+        "EQ-04-U01"
+      ],
+      "priority": 9,
+      "targetPaths": [
+        "rust/crates/axiograph-authoring/src/**/*.rs",
+        "rust/crates/axiograph-query/src/**/*.rs",
+        "rust/crates/axiograph-cli/src/mcp.rs",
+        "rust/crates/axiograph-cli/src/authoring_workspace.rs",
+        "frontend/viz/src/server/read-only-api.json",
+        "examples/software_authoring/**",
+        "docs/reference/SOFTWARE_AUTHORING_TOOLS.md",
+        "docs/reference/RUST_LIFECYCLE_TYPES.md"
+      ],
+      "acceptance": [
+        "Every public request, compact/full response, nested artifact, page, error, trust, lifecycle, and promotion shape is closed, versioned, and generated or mechanically checked against production serialization.",
+        "Real successful and failed responses validate; unknown/missing/wrong-type/version/cross-family fixtures reject.",
+        "Opaque authority-bearing Rust handles remain non-Deserialize/non-default/non-publicly constructible; schemas describe metadata only.",
+        "Schema generation is deterministic and checked for drift without hand-maintained duplicate semantics."
+      ],
+      "validation": [
+        "Before selecting or adding schema tooling, inspect locked dependencies/installed versions and official docs; prefer a maintained crate and avoid unrelated lock churn.",
+        "Generate/check schemas from production types and round-trip real CLI/MCP/HTTP/LSP responses from canonical, import-aware, invalid, compact/full, and nested-page workflows.",
+        "Maintain adversarial malformed fixtures for every discriminant and authority boundary.",
+        "Run compile-fail lifecycle tests, schema validator tests, adapter parity, workspace strict checks, and semantic/rejection gates."
+      ],
+      "prerequisites": [
+        "EQ-03 nested page contracts and EQ-04 public DTO owner.",
+        "Explicit review of whether any type cannot truthfully expose a transport schema; retain opacity rather than overclaiming.",
+        "No public client may mint `Accepted`, `LeanVerified`, accepted handles, certificates, or receipts by deserialization."
+      ],
+      "risk": "trust-boundary",
+      "catalogOrder": 43,
+      "wave01Selected": false,
+      "status": "pending_parent"
+    },
+    {
+      "id": "AE-03",
+      "areas": [
+        "EQ-06"
+      ],
+      "title": "Library-owned diagnostic parity across adapters",
+      "objective": "Move the generalized diagnostic DTO/derivation into the reusable authoring owner and make CLI, LSP, MCP, and HTTP project the same typed successful and failed results.",
+      "requirementIds": [
+        "EQ06-REQ-04",
+        "EQ06-ACC-01"
+      ],
+      "dependsOn": [
+        "AE-02",
+        "AE-04",
+        "EQ-04-U01",
+        "EQ-05-U01"
+      ],
+      "priority": 3,
+      "targetPaths": [
+        "rust/crates/axiograph-cli/src/authoring_workspace.rs",
+        "rust/crates/axiograph-cli/src/authoring_workspace/projection.rs",
+        "rust/crates/axiograph-cli/src/mcp.rs",
+        "rust/crates/axiograph-cli/tests/source_diagnostics_cli.rs",
+        "rust/crates/axiograph-cli/src/authoring_workspace/diagnostics_tests.rs",
+        "rust/crates/axiograph-query/src/typed_refinement.rs",
+        "examples/software_authoring/run_source_diagnostics.sh",
+        "docs/reference/SOFTWARE_AUTHORING_TOOLS.md"
+      ],
+      "acceptance": [
+        "One production diagnostic family and source-location schema serves all adapters; no adapter reparses compiler messages or source text.",
+        "Real full/summary/selected-page success and failure responses agree on diagnostics, source identity, trust, blockers, totals, and unavailable cursors.",
+        "Company/Compny points at the exact wrong role token and every supported generalized error preserves exact-byte identity and stale clearing.",
+        "Opaque/unlocated and unsupported cases remain explicitly so in schema and UI-facing JSON."
+      ],
+      "validation": [
+        "Run real temporary-workspace CLI, localhost authoring HTTP, rmcp tool, and framed stdio LSP flows over identical root/import bytes.",
+        "Validate real responses and malformed fixtures with the maintained offline JSON Schema validator.",
+        "Run focused authoring/adapter parity tests, make verify-canonical-spine, and make verify-w02-compiler.",
+        "Do not treat transport exit zero as semantic success; assert report ok=false and blockers."
+      ],
+      "prerequisites": [
+        "AE-02 diagnostic family.",
+        "AE-04 versioned overlay model for stale/unsaved parity.",
+        "The EQ-04 public workspace-authoring extraction and EQ-05 nested schema work must provide the final library owner; do not create a CLI source-inclusion shim."
+      ],
+      "risk": "ordinary",
+      "catalogOrder": 44,
+      "wave01Selected": false,
+      "status": "pending_parent"
+    },
+    {
+      "id": "EQ-05-U04",
+      "areas": [
+        "EQ-05"
+      ],
+      "title": "Cross-surface authority and lifecycle discovery",
+      "objective": "Define one typed capability vocabulary and make semantic/authoring MCP, database/authoring HTTP, LSP, REPL, and CLI discovery truthfully project their supported authority and lifecycle distinctions.",
+      "requirementIds": [
+        "EQ-05-R04"
+      ],
+      "dependsOn": [
+        "EQ-04-U02",
+        "EQ-05-U01"
+      ],
+      "priority": 6,
+      "targetPaths": [
+        "rust/crates/axiograph-authoring/src/capabilities.rs",
+        "rust/crates/axiograph-cli/src/mcp.rs",
+        "rust/crates/axiograph-cli/src/db_server.rs",
+        "rust/crates/axiograph-cli/src/web.rs",
+        "rust/crates/axiograph-cli/src/repl.rs",
+        "rust/crates/axiograph-cli/src/main.rs",
+        "examples/software_authoring/host_integrations/**",
+        "frontend/viz/src/server/read-only-api.json",
+        "docs/reference/SOFTWARE_AUTHORING_TOOLS.md"
+      ],
+      "acceptance": [
+        "All surfaces use the same typed terms for evidence, runtime validation, certificate emission, checker verification, reviewed candidate, accepted state, materialization receipt, read-only execution, and promotion authority.",
+        "Each surface advertises only capabilities it actually supports; adapter-specific absences are explicit rather than normalized to false success.",
+        "Discovery metadata cannot be deserialized into accepted/verified authority and does not imply mutation rights.",
+        "Contract tests compare semantic meaning across surfaces while allowing transport-specific representation."
+      ],
+      "validation": [
+        "Capture actual discovery from CLI, MCP, both HTTP servers, framed LSP, and REPL on the same source state.",
+        "Mechanically compare normalized capability/lifecycle records and test missing/unknown/default fields fail closed.",
+        "Exercise programmatic callbacks so disabled controls cannot issue hidden requests even if discovery is malformed or legacy-shaped.",
+        "Run transport schemas, adapter parity, feature matrix, and trust-boundary compile-fail tests."
+      ],
+      "prerequisites": [
+        "Public authoring service/adapters and closed schema owner.",
+        "Owner review for vocabulary changes that could affect authority claims; do not silently widen trust.",
+        "No external service or credential requirement."
+      ],
+      "risk": "trust-boundary",
+      "catalogOrder": 45,
+      "wave01Selected": false,
+      "status": "pending_parent"
+    },
+    {
+      "id": "AE-09",
+      "areas": [
+        "EQ-07"
+      ],
+      "title": "Complete LSP capability and protocol conformance gate",
+      "objective": "Close the useful-LSP acceptance with real protocol workflows, honest capability advertisement, resource/staleness rejection, and lifecycle-authority assertions.",
+      "requirementIds": [
+        "EQ07-ACC-01"
+      ],
+      "dependsOn": [
+        "AE-03",
+        "AE-05",
+        "AE-06",
+        "AE-07",
+        "AE-08"
+      ],
+      "priority": 9,
+      "targetPaths": [
+        "rust/crates/axiograph-cli/src/authoring_workspace.rs",
+        "rust/crates/axiograph-cli/src/authoring_workspace/diagnostics_tests/lsp_regressions.rs",
+        "examples/software_authoring/host_integrations/axiograph_authoring_lsp_stdio.json",
+        "docs/reference/SOFTWARE_AUTHORING_TOOLS.md",
+        "docs/howto/TESTING.md"
+      ],
+      "acceptance": [
+        "Initialize advertises exactly implemented sync, completion, hover, definition, references, symbols, code actions, tokens, formatting, and rename capabilities.",
+        "Real editor-order sequences cover Unicode ranges, unsaved imports/new files, incremental updates, stale request/edit rejection, close/reopen, aliases, and limits.",
+        "Unsupported requests return protocol errors or empty documented results and remain unadvertised.",
+        "Inspection, code action, edit proposal, review, promotion eligibility, and accepted mutation remain visibly distinct."
+      ],
+      "validation": [
+        "Run a production stdio client harness, not direct handler-only tests, for every advertised method and shutdown lifecycle.",
+        "Run malformed JSON-RPC/frame/queue/resource tests through bounded LSP transport.",
+        "Run focused authoring tests, make verify-w02-compiler, make verify-canonical-spine, workspace locked tests, strict Clippy, and formatting as applicable.",
+        "Record source state, exact commands, nonempty test selectors, skips, and limits; no release gate or publication."
+      ],
+      "prerequisites": [
+        "AE-03 and AE-05 through AE-08 complete and independently reviewed.",
+        "Finish native/LSP diagnostic reads before hash-guarded final validation."
+      ],
+      "risk": "ordinary",
+      "catalogOrder": 46,
+      "wave01Selected": false,
+      "status": "pending_parent"
+    },
+    {
+      "id": "RG-U09",
+      "areas": [
+        "EQ-12",
+        "EQ-10"
+      ],
+      "title": "ANN scale, memory, latency, build, and recall benchmark",
+      "objective": "Add a bounded production-path capacity runner that compares ANN and exact search on the same vectors and reports scale, memory method, index/build cost, latency distributions, and Recall@k on both real labeled data and separately identified synthetic stress data.",
+      "requirementIds": [
+        "EQ-12-R04",
+        "EQ-12-R05",
+        "EQ-10-R03",
+        "EQ-10-R04"
+      ],
+      "dependsOn": [
+        "RG-U01",
+        "RG-U07",
+        "RG-U08"
+      ],
+      "priority": 9,
+      "targetPaths": [
+        "rust/crates/axiograph-retrieval/src/bin/retrieval_bench.rs",
+        "rust/crates/axiograph-retrieval/src/benchmark.rs",
+        "rust/crates/axiograph-retrieval/tests/benchmark_contract.rs",
+        "examples/retrieval_evaluation/benchmarks/",
+        "docs/howto/RELEVANCE_EVALUATION.md",
+        "docs/howto/TESTING.md"
+      ],
+      "acceptance": [
+        "Report includes source/corpus/vector/index/model identities, item count, dimensions, index bytes, ANN parameters, memory-measurement method, build time, p50/p95/p99 latency, result counts, Recall@k versus exact oracle, truncation, and machine/toolchain metadata.",
+        "The real labeled corpus supports quality observations; deterministic generated stress sets exercise larger capacity but are never used as relevance-quality evidence.",
+        "Tiny teaching fixtures are excluded from broad performance/quality claims.",
+        "All item/query/time/output/memory parameters are bounded and invalid values fail closed."
+      ],
+      "validation": [
+        "Run at multiple declared non-tiny scales with ANN and exact search over identical vectors; verify exact oracle selection is explicit.",
+        "Hand-check Recall@k samples and run deterministic-seed repeatability checks for corpus and ranking identity.",
+        "Test invalid bounds, allocation overflow, timeout, output overflow, corrupt index, and zero-query rejection.",
+        "Record raw bounded logs and a compact report; do not use bounded_subprocess.py as an unbounded suite runner."
+      ],
+      "prerequisites": [
+        "RG-U08 receipt-bound open path is reviewed.",
+        "Sufficient local memory/time must be proven before the run; if unavailable, record exact capacity blocker and do not claim a benchmark pass.",
+        "No external service or credential is required."
+      ],
+      "risk": "ordinary",
+      "catalogOrder": 47,
+      "wave01Selected": false,
+      "status": "pending_parent"
+    },
+    {
+      "id": "EQ15-U01",
+      "areas": [
+        "EQ-15"
+      ],
+      "title": "Finite role and refinement checked claim",
+      "objective": "Add exact-source-bound emit/check parity for the selected finite object-membership, dependent-role, and equality/membership-refinement fragment.",
+      "requirementIds": [
+        "EQ15-R01",
+        "EQ15-R04"
+      ],
+      "dependsOn": [
+        "EQ14-U04",
+        "EQ16-U04"
+      ],
+      "priority": 9,
+      "targetPaths": [
+        "rust/crates/axiograph-kernel/src/theory.rs",
+        "rust/crates/axiograph-kernel/src/package.rs",
+        "rust/crates/axiograph-kernel/examples/",
+        "lean/Axiograph/Theory/Finite.lean",
+        "lean/Axiograph/Certificate/Format.lean",
+        "lean/Axiograph/Certificate/Check.lean",
+        "lean/Axiograph/Certificate/Invariants.lean",
+        "lean/Axiograph/VerifyMain.lean",
+        "lean/Axiograph/Theory/FiniteTests.lean",
+        "fixtures/canonical/finite_dependent/",
+        "examples/regulated_shipment/RegulatedShipment.axi",
+        "Makefile",
+        "docs/reference/LEAN_THEORY_EVALUATION.md",
+        "docs/reference/TRUSTED_KERNEL.md",
+        "docs/reference/KERNEL_IR.md",
+        "docs/howto/TESTING.md"
+      ],
+      "acceptance": [
+        "Checked fragment names exact schema/instance/source identity, ordered roles, earlier-role bindings, target carrier values, and equality/membership refinement predicates.",
+        "Lean reconstructs the declarations and finite carriers from exact canonical source rather than trusting Rust `InstanceModelIr`.",
+        "Positive real regulated-shipment emission/check succeeds; altered order, binding, carrier, value, predicate, instance, and source anchor reject.",
+        "Unsupported predicates and relation-valued cases outside the selected fragment remain typed residuals with zero certified coverage."
+      ],
+      "validation": [
+        "Run focused Rust emitter tests and Lean checker/theorem tests.",
+        "Run the production Rust emitter against unchanged regulated-shipment bytes and verify with the approved Lean executable; require all tamper cases to reject.",
+        "Run `make verify-lean-theory`, `make verify-regulated-shipment`, and `make verify-semantics`.",
+        "Audit no new axioms/sorry/unsafe definitions and exact `VerifyMain` import closure."
+      ],
+      "prerequisites": [
+        "Roadmap dependency satisfied: EQ14 and EQ16 units complete.",
+        "Explicit trust-boundary approval before adding or widening a `VerifyMain` certificate family; otherwise keep it external and label it conformance-only.",
+        "Preserve existing accepted `.axi` bytes and semantic IDs; add adversarial fixtures separately.",
+        "One source writer and complete incremental baseline/review."
+      ],
+      "risk": "trust-boundary",
+      "catalogOrder": 48,
+      "wave01Selected": false,
+      "status": "pending_parent"
+    },
+    {
+      "id": "EQ19-U01",
+      "areas": [
+        "EQ-19"
+      ],
+      "title": "Exercise production backend projection and readback in isolated containers",
+      "objective": "Upgrade TypeDB and TerminusDB container coverage from boot smoke to real compiled-snapshot projection, native loading/query, inventory collection, and evidence-only readback checking.",
+      "requirementIds": [
+        "EQ19-R03",
+        "EQ19-A01"
+      ],
+      "dependsOn": [
+        "EQ17-U06"
+      ],
+      "priority": 9,
+      "targetPaths": [
+        "rust/tests/backend_container_tests.rs",
+        "rust/tests/docker/graph_backends.compose.yml",
+        "rust/crates/axiograph-projections/src/",
+        "rust/crates/axiograph-projections/tests/",
+        "rust/crates/axiograph-cli/src/projection.rs",
+        "docs/reference/BACKEND_PROJECTIONS.md",
+        "docs/howto/TESTING.md",
+        "examples/backend_projection/"
+      ],
+      "acceptance": [
+        "Both prioritized backends consume artifacts derived from the same `CompiledKernelSnapshot` and produce real native observations.",
+        "`check_readback_v1` receives adapter provenance and reports matched, missing, drifted, and unexpected records honestly.",
+        "All databases, networks, volumes, and compose project names are isolated and removed unless an explicit keep flag is set.",
+        "Readback remains `EvidenceOnly`; backend-native state cannot mutate accepted AxiStore state or claim semantic equivalence."
+      ],
+      "validation": [
+        "Run non-container projection/adversarial suites first, then `make test-backend-containers` with actual production adapter flows and bounded startup/teardown logs.",
+        "Use fresh temporary AxiStore publication/opening only where a real PathDB image is needed; verify no unrelated stores or services changed.",
+        "Record exact image digests, driver versions, source state, commands, counts, skips, and cleanup; failure to start or pull is blocked/failed, never passed."
+      ],
+      "prerequisites": [
+        "Containers and image pulls must be available; use local isolated services only.",
+        "For any new driver/backend library, inspect installed versions and official documentation and choose maintained tooling; do not hand-roll a protocol client.",
+        "No external account, deployment, credential, or production backend is required."
+      ],
+      "risk": "trust-boundary",
+      "catalogOrder": 49,
+      "wave01Selected": false,
+      "status": "pending_parent"
+    },
+    {
+      "id": "EQ-05-U02",
+      "areas": [
+        "EQ-05"
+      ],
+      "title": "Complete mechanically checked HTTP API description",
+      "objective": "Publish a complete mechanically checked description for the read-only database and authoring HTTP APIs, tied to production routers and serde contracts rather than a descriptive subset.",
+      "requirementIds": [
+        "EQ-05-R02"
+      ],
+      "dependsOn": [
+        "EQ-04-U02",
+        "EQ-05-U01"
+      ],
+      "priority": 10,
+      "targetPaths": [
+        "rust/crates/axiograph-cli/src/db_server.rs",
+        "rust/crates/axiograph-cli/src/web.rs",
+        "rust/crates/axiograph-cli/src/authoring_workspace.rs",
+        "rust/crates/axiograph-cli/tests/db_server_e2e.rs",
+        "frontend/viz/src/server/read-only-api.json",
+        "frontend/viz/src/server/read-only-client.ts",
+        "docs/howto/DB_SERVER.md",
+        "docs/reference/SOFTWARE_AUTHORING_TOOLS.md"
+      ],
+      "acceptance": [
+        "The description covers every supported path/method, request, success/error status, body/schema, limit, and capability for database and authoring servers.",
+        "Router/descriptor drift, undocumented route addition, wrong method/status, and serde/schema mismatch fail tests.",
+        "Read-only and authoring authority distinctions are explicit; no CORS/filesystem/mutation/LLM route is implied.",
+        "Query IR defaults/extras are either represented exactly or rejected consistently; no descriptive-profile caveat remains for claimed coverage."
+      ],
+      "validation": [
+        "Mechanically derive or compare operation inventory from production routers and domain schemas.",
+        "Run real localhost contract tests for all success/error branches, redirects, body limits, missing UI assets, malformed query/authoring input, and unsupported methods.",
+        "Exercise the production TypeScript client and an independent generated/mechanically checked client against genuine temporary receipt-bound images.",
+        "Run security boundary, frontend, workspace, and adapter parity gates."
+      ],
+      "prerequisites": [
+        "EQ-05-U01 closed schemas and EQ-04-U02 adapter ownership.",
+        "Choose maintained OpenAPI/schema tooling only after installed-version and official-doc review.",
+        "No endpoint addition merely to make a descriptor look complete."
+      ],
+      "risk": "trust-boundary",
+      "catalogOrder": 50,
+      "wave01Selected": false,
+      "status": "pending_parent"
+    },
+    {
+      "id": "AE-10",
+      "areas": [
+        "EQ-09"
+      ],
+      "title": "Uniform anchored CQ lifecycle gate",
+      "objective": "Define and integrate one CQ-gate contract across proposal validation, migration/evolution preview, semantic merge, review-branch publication, and protected promotion.",
+      "requirementIds": [
+        "EQ09-REQ-01"
+      ],
+      "dependsOn": [
+        "AE-09"
+      ],
+      "priority": 10,
+      "targetPaths": [
+        "rust/crates/axiograph-query/src/competency_questions.rs",
+        "rust/crates/axiograph-cli/src/authoring_workspace.rs",
+        "rust/crates/axiograph-cli/src/proposals_validate.rs",
+        "rust/crates/axiograph-pathdb/src/migration.rs",
+        "rust/crates/axiograph-cli/src/evolution_preview.rs",
+        "rust/crates/axiograph-cli/src/semantic_merge_lattice.rs",
+        "rust/crates/axiograph-store/src/model.rs",
+        "rust/crates/axiograph-store/src/store.rs"
+      ],
+      "acceptance": [
+        "One typed decision binds repository/base/candidate snapshots, exact CQ suite bytes/identity, evaluation/report digest, lifecycle phase, result counts, unresolved items, policy, and non-claims.",
+        "Every strict transition rejects missing, empty-by-default, stale, duplicate, mismatched, substituted, or unresolved CQ evidence; advisory previews report not_evaluated/blocked honestly.",
+        "Review branches may contain failed candidates as review state but cannot become protected accepted state without the exact passed gate.",
+        "Existing genuine AxiStore four-gate authority and VerifyMain boundaries remain unchanged."
+      ],
+      "validation": [
+        "Add cross-crate production-path tests carrying one CQ suite through proposal, migration preview, review publication, reconciliation, and fresh-temp-store promotion.",
+        "Adversarially substitute source/snapshot/CQ/report/gate digests, use empty/default fields, reorder questions, and cross repositories.",
+        "Run axiograph-query tests, semantic VCS/AxiStore tests, make verify-canonical-spine, make verify-semantics, and verify-regulated-shipment.",
+        "Use only fresh temporary stores through production AxiStore APIs; no unrelated accepted-store mutation."
+      ],
+      "prerequisites": [
+        "Public query/CQ service remains the real owner; no duplicated CLI CQ logic.",
+        "Any change to protected-main gate authority or accepted manifest format requires explicit trust-boundary review before implementation."
+      ],
+      "risk": "trust-boundary",
+      "catalogOrder": 51,
+      "wave01Selected": false,
+      "status": "pending_parent"
+    },
+    {
+      "id": "RG-U10",
+      "areas": [
+        "EQ-13",
+        "EQ-10"
+      ],
+      "title": "Compact typed evidence packets with diversity and contradiction selection",
+      "objective": "Build one bounded EvidencePacketV1 over shared retrieval results, with exact source locators, typed refs, selected and excluded candidates, explicit exclusion reasons, diversity and explicit-contradiction handling, truncation/budget accounting, support/unknown summaries, and immutable evidence-only authority.",
+      "requirementIds": [
+        "EQ-13-R01",
+        "EQ-13-R03",
+        "EQ-13-R05"
+      ],
+      "dependsOn": [
+        "RG-U03",
+        "RG-U05"
+      ],
+      "priority": 10,
+      "targetPaths": [
+        "rust/crates/axiograph-retrieval/src/evidence_packet.rs",
+        "rust/crates/axiograph-retrieval/src/evidence_selection.rs",
+        "rust/crates/axiograph-llm-sync/src/lib.rs",
+        "rust/crates/axiograph-llm-sync/src/grounding.rs",
+        "rust/crates/axiograph-cli/src/embeddings.rs",
+        "rust/crates/axiograph-cli/src/llm.rs",
+        "rust/crates/axiograph-retrieval/tests/evidence_packet.rs",
+        "docs/reference/EMBEDDINGS_AND_EVIDENCE.md",
+        "docs/howto/RELEVANCE_EVALUATION.md"
+      ],
+      "acceptance": [
+        "Every selected item has an exact canonical or document source locator and optional validated typed ref; unresolved locators are unknown/excluded, never invented.",
+        "Packet records candidate totals, selected/excluded counts, per-reason exclusions, byte/token/item budgets, truncation, stale status, component/method identities, and explicit unsupported claims.",
+        "Diversity uses a deterministic documented finite objective. Contradiction handling consumes only explicit typed relations or reviewed evidence annotations; it does not infer contradiction from similarity.",
+        "Contradictory, stale, missing, irrelevant, duplicate, and over-budget fixtures produce honest support/unknown states.",
+        "The DTO has no accepted/certified variant, no accepted-state mutation operation, and no deserialization/default path that can mint accepted-derived authority."
+      ],
+      "validation": [
+        "Adversarial tests cover contradictory pairs, same-source flooding, stale locators, missing text, irrelevant high scores, duplicate ids, tie order, and every budget boundary.",
+        "Run exact citation locator tamper tests from RG-U03.",
+        "Run the real production retrieval-to-packet workflow and compare EQ-10 quality/citation/size tradeoffs to baseline.",
+        "Serialize real positive and negative packets, enforce byte ceilings, and prove similarity cannot trigger proposal promotion or AxiStore mutation."
+      ],
+      "prerequisites": [
+        "RG-U03 exact citation contract and RG-U05 shared rankings are reviewed.",
+        "Trust-boundary review must verify evidence-only types and fail-closed accepted-derived construction.",
+        "No live model call is needed."
+      ],
+      "risk": "trust-boundary",
+      "catalogOrder": 52,
+      "wave01Selected": false,
+      "status": "pending_parent"
+    },
+    {
+      "id": "EQ15-U02",
+      "areas": [
+        "EQ-15"
+      ],
+      "title": "Finite context transport and migration-obligation certificate",
+      "objective": "Certify a narrow canonical migration/transport fragment with explicit source/target anchors, schema morphism, context visibility, and obligation outcomes.",
+      "requirementIds": [
+        "EQ15-R02",
+        "EQ15-R04"
+      ],
+      "dependsOn": [
+        "EQ14-U04",
+        "EQ16-U04"
+      ],
+      "priority": 10,
+      "targetPaths": [
+        "rust/crates/axiograph-kernel/src/theory.rs",
+        "rust/crates/axiograph-kernel/src/package.rs",
+        "rust/crates/axiograph-pathdb/src/migration.rs",
+        "rust/crates/axiograph-pathdb/src/optimizer.rs",
+        "rust/crates/axiograph-pathdb/src/certificate.rs",
+        "rust/crates/axiograph-cli/src/evolution_preview.rs",
+        "lean/Axiograph/Theory/Finite.lean",
+        "lean/Axiograph/Certificate/Format.lean",
+        "lean/Axiograph/Certificate/Check.lean",
+        "lean/Axiograph/Certificate/Invariants.lean",
+        "lean/Axiograph/VerifyMain.lean",
+        "fixtures/canonical/finite_transport/",
+        "examples/regulated_shipment/",
+        "Makefile",
+        "docs/reference/KERNEL_IR.md",
+        "docs/reference/LEAN_THEORY_EVALUATION.md",
+        "docs/reference/TRUSTED_KERNEL.md",
+        "docs/howto/TESTING.md"
+      ],
+      "acceptance": [
+        "Certificate binds source and target exact-byte anchors, schema morphism/object-arrow maps, context axes, selected values, and every in-scope migration obligation outcome.",
+        "Identity transport is theorem-backed; any selected non-identity case requires an explicit declared finite rule and proof/check of visibility preservation. Missing rules remain residual and cannot produce accepted lifecycle state.",
+        "Emit/check parity uses an actual migration/evolution production path, not a test-only replacement or legacy bare-file database path.",
+        "Tampered anchor, object/arrow image, context, obligation partition, value, residual, or result rejects; no functoriality/general DTT/open-world claim is made."
+      ],
+      "validation": [
+        "Run focused canonical migration emitter/checker positives and tamper corpus.",
+        "Run `make verify-lean-e2e-delta-f-v1` as a regression for the old narrow contract while testing the new canonical path separately; do not use legacy fallback as the implementation.",
+        "Run `make verify-regulated-shipment`, `make verify-lean-theory`, and `make verify-semantics`.",
+        "Run exact source-byte and import-closure identity checks plus no-axiom/sorry/unsafe scan."
+      ],
+      "prerequisites": [
+        "Roadmap dependency satisfied: EQ14 and EQ16 complete.",
+        "Owner/trust-boundary approval for any new accepted certificate format or replacement of `delta_f_v1`; do not preserve stale compatibility by default.",
+        "A selected non-identity transport rule must exist in canonical source semantics; do not invent an unchecked fixture-only rule.",
+        "No durable `.axpd` mutation outside fresh temporary AxiStore-backed workflow fixtures."
+      ],
+      "risk": "trust-boundary",
+      "catalogOrder": 53,
+      "wave01Selected": false,
+      "status": "pending_parent"
+    },
+    {
+      "id": "EQ-02-U04",
+      "areas": [
+        "EQ-02",
+        "EQ-19"
+      ],
+      "title": "Real-browser keyboard and accessibility workflow",
+      "objective": "Exercise the production browser UI and actual read-only server through graph rendering, local draft review, finite query, malformed/hostile inputs, and fail-closed promotion controls with layout, keyboard, focus, and accessibility evidence.",
+      "requirementIds": [
+        "EQ-02-R05",
+        "EQ19-A01",
+        "EQ19-R06",
+        "EQ19-R06-N02"
+      ],
+      "dependsOn": [
+        "EQ-02-U02",
+        "EQ-02-U03",
+        "EQ-05-U04"
+      ],
+      "priority": 11,
+      "targetPaths": [
+        "frontend/viz/tests/browser/**/*.ts",
+        "frontend/viz/src/**/*.ts",
+        "rust/crates/axiograph-cli/examples/read_only_client_workflow.rs",
+        "rust/crates/axiograph-cli/tests/support/db_server_fixture.rs",
+        "docs/howto/TESTING.md",
+        "docs/tutorials/VIZ_EXPLORER.md",
+        "frontend/viz/package.json",
+        "frontend/viz/package-lock.json",
+        "frontend/viz/src/",
+        "frontend/viz/tests/",
+        "rust/crates/axiograph-cli/tests/db_server_e2e.rs"
+      ],
+      "acceptance": [
+        "A real browser loads production assets from an authenticated temporary image and renders/query-navigates nonempty data.",
+        "Keyboard-only users can reach, operate, and escape graph/list/detail/review/query controls with visible focus and stable selection.",
+        "Accessibility-tree evidence verifies names, roles, status/error announcements, and disabled promotion semantics; layout/scrolling are checked at supported viewport sizes.",
+        "Hostile labels remain text; malformed/stale/cross-image data rejects; evidence-only state cannot enable accepted mutation.",
+        "No DOM-only mocks are cited as browser acceptance.",
+        "A real browser proves keyboard navigation, focus visibility/order, labels/roles, accessible errors/status, layout/scroll behavior, hostile text rendering, and stale-response handling.",
+        "Read-only server controls remain disabled for mutation and explain the separate CLI/review lifecycle.",
+        "Query IDs never highlight an unrelated graph; highlighting remains absent until atomic image identity binding is genuinely implemented.",
+        "Any future authoring scenario uses a separate validated/reviewed lifecycle and blocks promotion on missing receipt or unresolved obligations."
+      ],
+      "validation": [
+        "Select the repository-approved real browser runner only after checking the lockfile/installed version and official docs; do not assume a tool from memory.",
+        "Capture bounded browser traces/screenshots/accessibility snapshots and actual keyboard sequences against production bundles/server.",
+        "Use fresh temporary AxiStores and genuine receipts; assert no mutation/LLM route is requested.",
+        "Run pinned frontend gate and focused real server/browser command; record source hash, browser version, command, viewport, and cleanup.",
+        "Run pinned frontend install/audit/typecheck/tests/build, real browser scenarios against a genuine temporary receipt-bound server, and accessibility-tree assertions.",
+        "Capture browser/version, viewport, keyboard sequence, network requests, screenshots or trace, accessibility results, source state, and cleanup.",
+        "Run existing production TypeScript client, DB server e2e, hostile-label, malformed-envelope, and no-mutation regressions."
+      ],
+      "prerequisites": [
+        "Completed strict/boundary/sink units and converged capability descriptions.",
+        "Local browser availability; absence blocks this unit rather than permitting DOM mocks.",
+        "No production deployment, credentials, or accepted-store mutation.",
+        "Select browser automation/accessibility tooling only after inspecting the installed lockfile and official docs; do not use DOM mocks as substitute evidence.",
+        "Use fresh temporary stores and local loopback only; no unrelated service or accepted store mutation.",
+        "The full authoring workbench portion remains dependent on EQ08/EQ09 and separate lifecycle review."
+      ],
+      "risk": "trust-boundary",
+      "catalogOrder": 54,
+      "wave01Selected": false,
+      "status": "pending_parent"
+    },
+    {
+      "id": "AE-11",
+      "areas": [
+        "EQ-09"
+      ],
+      "title": "Typed migration, mapping, and theory repair holes",
+      "objective": "Extend the shared typed-hole/refinement model to migration transports, implementation mappings, and all actionable theory obligations.",
+      "requirementIds": [
+        "EQ09-REQ-02"
+      ],
+      "dependsOn": [
+        "AE-10"
+      ],
+      "priority": 11,
+      "targetPaths": [
+        "rust/crates/axiograph-query/src/typed_refinement.rs",
+        "rust/crates/axiograph-pathdb/src/migration.rs",
+        "rust/crates/axiograph-pathdb/src/runtime_theory_checker.rs",
+        "rust/crates/axiograph-cli/src/typed_authoring.rs",
+        "rust/crates/axiograph-cli/src/authoring_workspace.rs",
+        "rust/crates/axiograph-cli/src/behavior_case.rs",
+        "rust/crates/axiograph-cli/src/semantic_claim.rs",
+        "rust/crates/axiograph-software-authoring/src/lib.rs"
+      ],
+      "acceptance": [
+        "Each hole carries typed domain/kind, source and candidate anchors, exact subject/obligation/context, lifecycle, residuals, authority, applicability/preconditions, and bounded refinement candidates.",
+        "Migration holes cover missing object/arrow images and resolver-required transport; mapping holes cite compiled IR and tooling-overlay refs; theory holes never imply Lean certification.",
+        "Prose-only repair advice is accompanied by a typed unsupported or actionable result; unknown/default kinds fail strict decoding/gates.",
+        "Applying a candidate reruns canonical/runtime/CQ checks and cannot advance review or acceptance itself."
+      ],
+      "validation": [
+        "Production tests generate each hole from real canonical migration, software-authoring overlay, and theory fixtures, then apply positive candidates and reject stale/cross-domain/tampered handles.",
+        "Schema validation accepts real reports and rejects empty/default/unknown typed fields.",
+        "Run runtime-theory, migration, software-authoring, compact paging, and canonical-spine suites.",
+        "Document exact unsupported variants and residual behavior; do not claim general transport/DTT completeness."
+      ],
+      "prerequisites": [
+        "AE-10 anchor/gate contract.",
+        "Use existing RuntimeRefinementCandidateV2 owner; do not create parallel repair DTO families."
+      ],
+      "risk": "trust-boundary",
+      "catalogOrder": 55,
+      "wave01Selected": false,
+      "status": "pending_parent"
+    },
+    {
+      "id": "RG-U11",
+      "areas": [
+        "EQ-13"
+      ],
+      "title": "Mechanically scoped claim decomposition and support decisions",
+      "objective": "Add typed finite claim expressions and a support checker for mechanically valid cases only, returning supported, contradicted, unknown, or unsupported with exact cited evidence and explicit scope/non-claims.",
+      "requirementIds": [
+        "EQ-13-R04",
+        "EQ-13-R05"
+      ],
+      "dependsOn": [
+        "RG-U10"
+      ],
+      "priority": 11,
+      "targetPaths": [
+        "rust/crates/axiograph-retrieval/src/claims.rs",
+        "rust/crates/axiograph-retrieval/src/support.rs",
+        "rust/crates/axiograph-retrieval/tests/support_decisions.rs",
+        "rust/crates/axiograph-llm-sync/src/lib.rs",
+        "docs/reference/EMBEDDINGS_AND_EVIDENCE.md",
+        "docs/reference/TRUSTED_KERNEL.md",
+        "docs/howto/RELEVANCE_EVALUATION.md"
+      ],
+      "acceptance": [
+        "Supported input is a bounded typed finite claim AST, including conjunction and explicit atomic source/ref predicates; arbitrary prose and unsupported operators return unknown.",
+        "A support decision cites exact packet item/locator ids and records assumptions, scope, residual claims, contradictions, and non-claims.",
+        "Missing, stale, contradictory, irrelevant, and partial evidence cannot become supported through empty/default fields.",
+        "The checker makes no Lean, entailment, ontology-completeness, or generated-prose truth claim and cannot authorize promotion."
+      ],
+      "validation": [
+        "Truth-table and property tests cover conjunction, duplicate atoms, partial support, explicit contradiction, stale evidence, missing locators, empty claims, and all limits.",
+        "Tamper packet/query/source/model/snapshot identities and require unknown or rejection.",
+        "Run the hand-reviewed answer set from RG-U03 and record support/unknown confusion counts through EQ-10.",
+        "Review names and docs against TRUSTED_KERNEL.md so runtime support is not called certification or proof."
+      ],
+      "prerequisites": [
+        "RG-U10 packet contract is reviewed.",
+        "No Lean addition is required or claimed; if a future requirement seeks theorem-backed entailment, escalate it as a separate formal/trust change.",
+        "No external approval or credential is required."
+      ],
+      "risk": "trust-boundary",
+      "catalogOrder": 56,
+      "wave01Selected": false,
+      "status": "pending_parent"
+    },
+    {
+      "id": "EQ15-U03",
+      "areas": [
+        "EQ-15"
+      ],
+      "title": "Conditional semantic theorem for selected user rewrites",
+      "objective": "Extend anchored user-rule replay with independent finite formation checks and a denotation theorem parameterized by explicit accepted modeling assumptions.",
+      "requirementIds": [
+        "EQ15-R03",
+        "EQ15-R04"
+      ],
+      "dependsOn": [
+        "EQ14-U04",
+        "EQ16-U04"
+      ],
+      "priority": 11,
+      "targetPaths": [
+        "rust/crates/axiograph-dsl/src/schema_v1.rs",
+        "rust/crates/axiograph-kernel/src/package.rs",
+        "rust/crates/axiograph-pathdb/src/certificate.rs",
+        "rust/crates/axiograph-pathdb/examples/emit_rewrite_derivation_cert_v3.rs",
+        "rust/crates/axiograph-pathdb/examples/emit_ontology_rewrite_derivation_cert_v3.rs",
+        "lean/Axiograph/Axi/TypeCheck.lean",
+        "lean/Axiograph/Certificate/Check.lean",
+        "lean/Axiograph/Certificate/PathRewriteSoundness.lean",
+        "lean/Axiograph/Certificate/Invariants.lean",
+        "lean/Axiograph/VerifyMain.lean",
+        "fixtures/verification/rewrite_rules_anchor_v1.axi",
+        "examples/ontology/OntologyRewrites.axi",
+        "fixtures/canonical/finite_rewrite/",
+        "Makefile",
+        "docs/reference/TRUSTED_KERNEL.md",
+        "docs/reference/LEAN_THEORY_EVALUATION.md",
+        "docs/howto/TESTING.md"
+      ],
+      "acceptance": [
+        "Lean independently checks selected rule variables/types/endpoints/orientation/scope axes and resolves the exact source-anchored rule used by each replay step.",
+        "The semantic theorem takes an explicit modeling-assumption environment proving each selected user rule denotationally sound; parser acceptance does not manufacture that premise.",
+        "Replay under valid assumptions preserves endpoints and denotation; absent assumptions yield only syntactic replay status, never theorem-backed classification.",
+        "Real domain `.axi` emit/check positives pass; rule digest/name/orientation/variable/type/scope/position/output and assumption-map tampering reject."
+      ],
+      "validation": [
+        "Run both existing real `rewrite_derivation_v3` e2e Make targets and new adversarial parity cases.",
+        "Build focused Lean theorem tests with no sorry/new axiom/unsafe definition.",
+        "Run `make verify-lean-theory`, `make verify-semantics`, and exact-anchor digest parity.",
+        "Review claim text to ensure arbitrary confluence, termination, equation truth, and ontology closure remain non-claims."
+      ],
+      "prerequisites": [
+        "Roadmap dependency satisfied: EQ14 conditional equation-assumption machinery and EQ16 parser contract complete.",
+        "Formal review of the modeling-assumption type before implementation.",
+        "Trust-boundary approval before changing `rewrite_derivation_v3` product classification or wire format.",
+        "Do not change accepted example bytes unless separately approved; prefer new fixtures for unsupported/tampered cases."
+      ],
+      "risk": "formal",
+      "catalogOrder": 57,
+      "wave01Selected": false,
+      "status": "pending_parent"
+    },
+    {
+      "id": "EQ19-U03",
+      "areas": [
+        "EQ-19"
+      ],
+      "title": "Establish production response and query capacity gates",
+      "objective": "Measure realistic compact/full response behavior and exact/typed query throughput, latency, memory, truncation, and failure bounds on production paths at scales beyond teaching fixtures.",
+      "requirementIds": [
+        "EQ19-R06",
+        "EQ19-R06-N01",
+        "EQ19-R06-N02",
+        "EQ19-A01"
+      ],
+      "dependsOn": [
+        "EQ17-U04",
+        "EQ17-U05",
+        "EQ17-U07"
+      ],
+      "priority": 11,
+      "targetPaths": [
+        "rust/crates/axiograph-cli/src/perf.rs",
+        "rust/crates/axiograph-cli/src/authoring_workspace.rs",
+        "rust/crates/axiograph-cli/src/db_server.rs",
+        "rust/crates/axiograph-query/src/",
+        "rust/crates/axiograph-pathdb/tests/pathdb_tests.rs",
+        "rust/crates/axiograph-cli/tests/",
+        "scripts/",
+        "docs/howto/TESTING.md",
+        "docs/howto/PERFORMANCE_PROFILING.md"
+      ],
+      "acceptance": [
+        "Versioned scenarios cover realistic entity/edge/relation/context/report sizes, exact and approximate query modes, pagination, large nested artifacts, zero-result and worst-case bounded failures.",
+        "Reports record corpus/scenario identity, source state, command, limits, warmup, repetitions, latency distribution, peak-memory method, result counts, truncation, and hardware/tool identity.",
+        "Compact pages retain failure/trust/coverage/omission information and page unions equal full collections where the contract promises it.",
+        "Capacity evidence makes no semantic completeness, browser usability, or universal production claim beyond tested bounds."
+      ],
+      "validation": [
+        "Run release-mode production perf commands plus correctness oracles before and after architecture changes; prohibit hidden exact fallback in approximate labels.",
+        "Exercise N/N+1 input/response/query limits and deterministic repeated runs on final hashes.",
+        "Run full locked correctness suites and applicable strict gates separately; performance success cannot mask functional failure."
+      ],
+      "prerequisites": [
+        "Define representative licensed/synthetic scenario generation and expected resource budget before tuning.",
+        "Do not use `bounded_subprocess.py` as an unbounded suite runner; split commands within the 600-second/8-MiB helper constraints or use an approved bounded harness."
+      ],
+      "risk": "ordinary",
+      "catalogOrder": 58,
+      "wave01Selected": false,
+      "status": "pending_parent"
+    },
+    {
+      "id": "EQ-05-U03",
+      "areas": [
+        "EQ-05"
+      ],
+      "title": "Supported typed client SDK",
+      "objective": "Generate or mechanically check a typed client SDK over the complete shared wire contract, with safe metadata wrappers and no authority-minting constructors.",
+      "requirementIds": [
+        "EQ-05-R03"
+      ],
+      "dependsOn": [
+        "EQ-05-U02"
+      ],
+      "priority": 12,
+      "targetPaths": [
+        "clients/axiograph-typescript/**",
+        "frontend/viz/src/server/read-only-client.ts",
+        "examples/software_authoring/**",
+        "rust/crates/axiograph-authoring/tests/**",
+        "docs/reference/SOFTWARE_AUTHORING_TOOLS.md",
+        "docs/howto/TESTING.md"
+      ],
+      "acceptance": [
+        "The SDK covers read-only database and authoring operations, domain artifacts, nested detail pages, bounded errors, and capability discovery from the actual shared contract.",
+        "Generated metadata types cannot construct Rust accepted/verified typestates or treat image receipts as query/semantic proof.",
+        "A real client workflow compiles finite IR, queries a genuine temporary receipt-bound image, runs compact/detail authoring, handles failures, and never invokes unsupported mutation.",
+        "Contract version/unknown field/status drift fails deterministically."
+      ],
+      "validation": [
+        "Compile/typecheck generated code under pinned tooling and compare it against live localhost production adapters.",
+        "Add compile-time misuse fixtures and runtime malformed/stale/cross-image/error cases.",
+        "Use real canonical/import-aware fixtures and production AxiStore APIs in fresh temporary stores.",
+        "Run SDK generation drift check, frontend gate, HTTP contracts, adapter parity, and no-public-constructor Rust tests."
+      ],
+      "prerequisites": [
+        "Complete mechanically checked API description.",
+        "Select target language/package layout with owner review; do not publish packages or require external accounts in this wave.",
+        "No compatibility layer for stale protocol versions unless an explicit contract requires it."
+      ],
+      "risk": "trust-boundary",
+      "catalogOrder": 59,
+      "wave01Selected": false,
+      "status": "pending_parent"
+    },
+    {
+      "id": "AE-12",
+      "areas": [
+        "EQ-08"
+      ],
+      "title": "Guided workbench session and typed presentation contract",
+      "objective": "Expose a separately explicit authoring workbench session over the real reusable authoring service, with guided typed edit/review actions and explicit expert full artifacts.",
+      "requirementIds": [
+        "EQ08-REQ-01",
+        "EQ08-REQ-02",
+        "EQ08-REQ-04",
+        "EQ08-REQ-05"
+      ],
+      "dependsOn": [
+        "AE-09",
+        "AE-10",
+        "AE-11",
+        "EQ-04-U02",
+        "EQ-05-U03"
+      ],
+      "priority": 12,
+      "targetPaths": [
+        "rust/crates/axiograph-cli/src/authoring_workspace.rs",
+        "rust/crates/axiograph-cli/src/authoring_workspace/projection.rs",
+        "rust/crates/axiograph-cli/src/db_server.rs",
+        "frontend/viz/src/server/read-only-client.ts",
+        "frontend/viz/src/app.ts",
+        "frontend/viz/src/core/draft.ts",
+        "frontend/viz/src/tabs/review.ts",
+        "frontend/viz/src/tabs/add.ts",
+        "frontend/viz/tests/rendering.test.mjs",
+        "examples/software_authoring/authoring_workspace_request.json"
+      ],
+      "acceptance": [
+        "Workbench authoring uses its own validated/reviewed lifecycle endpoint/session and never adds mutation to read-only DB routes.",
+        "Guided controls edit canonical/olog inputs, select CQs and typed repairs, render inferred types/holes/residuals/trust/deltas, and keep failure/blocker aggregates visible.",
+        "Summary/standard is default; expert full artifact is explicit and byte-identical to the canonical report for the same request.",
+        "Session state binds exact base/candidate closure and request identity; AI/generated prose remains evidence-only and cannot authorize actions."
+      ],
+      "validation": [
+        "Exercise production authoring HTTP/service requests from the real frontend client for valid, failed-CQ, residual, stale, malformed, and paged reports.",
+        "Validate all wire input before UI state changes and reject unknown fields/versions/oversized replies.",
+        "Run frontend typecheck/unit/build gates with exact pinned Node/npm environment and Rust adapter/client integration tests; default Rust tests must not require frontend tools.",
+        "Keep existing read-only DB route denial tests passing."
+      ],
+      "prerequisites": [
+        "EQ-04 must extract the full workspace/olog/evolution service into a public library; EQ-05 must provide truthful nested authoring schemas/typed client. Do not include private CLI source or launch the CLI as a facade.",
+        "Select any new browser/client library from installed versions and official documentation; avoid unrelated lock churn.",
+        "AE-09 through AE-11."
+      ],
+      "risk": "trust-boundary",
+      "catalogOrder": 60,
+      "wave01Selected": false,
+      "status": "pending_parent"
+    },
+    {
+      "id": "RG-U12",
+      "areas": [
+        "EQ-13",
+        "EQ-10"
+      ],
+      "title": "Offline reranker evaluation before backend selection",
+      "objective": "Evaluate bounded reranking candidates through the shared production evaluation and evidence-packet path before selecting any maintained model/backend; record either a justified selection proposal or an explicit no-selection result.",
+      "requirementIds": [
+        "EQ-13-R02",
+        "EQ-10-R03",
+        "EQ-10-R04"
+      ],
+      "dependsOn": [
+        "RG-U06",
+        "RG-U10",
+        "RG-U11"
+      ],
+      "priority": 12,
+      "targetPaths": [
+        "rust/crates/axiograph-retrieval/src/rerank.rs",
+        "rust/crates/axiograph-retrieval/src/evaluation.rs",
+        "rust/crates/axiograph-retrieval/tests/rerank_eval.rs",
+        "examples/retrieval_evaluation/rerank/",
+        "docs/howto/RELEVANCE_EVALUATION.md",
+        "docs/reference/EMBEDDINGS_AND_EVIDENCE.md"
+      ],
+      "acceptance": [
+        "Candidate inputs, model/backend/version/digest/license, features, limits, latency, memory, and score method are explicit; no candidate is selected from memory or vendor claims.",
+        "Evaluation compares no-rerank and candidate rerank outputs on frozen qrels, citations, unsupported answers, contradiction/diversity cohorts, latency, and packet size.",
+        "A weak, unavailable, or license-incompatible candidate yields no-selection, not fabricated success.",
+        "Reranker scores and generated text remain evidence-only and cannot alter support decisions without exact cited evidence."
+      ],
+      "validation": [
+        "Run deterministic offline candidates over the complete non-tiny corpus and adversarial contradictory/stale/missing/irrelevant cohorts.",
+        "Test duplicate/tie/zero-result/mixed-scale behavior, malformed outputs, timeout, output overflow, and model identity mismatch.",
+        "If evaluating a local public model artifact, pin its exact digest and license and use bounded offline inference; record hardware/runtime.",
+        "Run EQ-10 comparison and production packet workflow; no live-provider request is part of the default validation."
+      ],
+      "prerequisites": [
+        "RG-U06 baseline/candidate regression gate and RG-U10/RG-U11 evidence contracts are reviewed.",
+        "Selection of or calls to a live provider require separate owner approval and configured test credentials; without approval, perform only safe offline candidates and record no live-provider result.",
+        "Downloading or redistributing a restricted model artifact requires explicit license/owner approval; never log credentials."
+      ],
+      "risk": "external-approval",
+      "catalogOrder": 61,
+      "wave01Selected": false,
+      "status": "pending_parent"
+    },
+    {
+      "id": "EQ15-U04",
+      "areas": [
+        "EQ-15"
+      ],
+      "title": "Mechanically checked finite-fragment and trust-dependency matrix",
+      "objective": "Integrate all three finite extensions into one exact coverage/residual/import-dependency report and real workflow gate without overstating DTT or closure.",
+      "requirementIds": [
+        "EQ15-R04"
+      ],
+      "dependsOn": [
+        "EQ15-U01",
+        "EQ15-U02",
+        "EQ15-U03"
+      ],
+      "priority": 12,
+      "targetPaths": [
+        "docs/reference/LEAN_THEORY_EVALUATION.md",
+        "docs/reference/TRUSTED_KERNEL.md",
+        "docs/reference/KERNEL_IR.md",
+        "docs/reference/RUNTIME_THEORY_CHECKER.md",
+        "docs/reference/CERTIFICATES.md",
+        "docs/howto/FORMAL_VERIFICATION.md",
+        "docs/howto/TESTING.md",
+        "scripts/check_verify_main_import_closure.py",
+        "scripts/check_formal_claim_matrix.py",
+        "Makefile",
+        "examples/regulated_shipment/run_regulated_shipment_workflow.sh"
+      ],
+      "acceptance": [
+        "One matrix row per extension records exact syntax, finite semantics, bounds, assumptions, anchor/import shape, residual/rejection classes, emitter/checker/theorem symbols, trusted import status, and tamper/e2e fixture.",
+        "Machine checks reject missing symbols, stale certificate names, undocumented residual classes, unaccounted trusted imports, and contradictory theorem/replay/runtime classifications.",
+        "Regulated-shipment workflow exercises genuine production emit/check paths and remains fail-closed on missing receipt or residual obligations.",
+        "Docs retain explicit exclusions for general DTT, arbitrary confluence/termination, arbitrary non-identity transport, open-world completeness, ontology closure, and data-level relation reversibility."
+      ],
+      "validation": [
+        "Run claim-matrix and `VerifyMain` import-closure checks.",
+        "Run `make verify-lean-theory`, `make verify-regulated-shipment`, `make verify-semantics`, book/link checks, and applicable locked Rust tests.",
+        "Run native/LSP diagnostics before builds and Pi Lens session diagnostics before final hash-guarded validation.",
+        "Disclose that clean-commit release gate remains pending parent authorization; do not forge it on uncommitted source."
+      ],
+      "prerequisites": [
+        "EQ15-U01/U02/U03 individually reviewed with frozen source, dependencies, helpers, incremental and release-to-current diffs, and bounded logs.",
+        "No unresolved formal or trust-boundary review finding.",
+        "Parent acceptance is required before any `[x]`, commit, or stronger public claim; no release/publication/deploy action."
+      ],
+      "risk": "formal",
+      "catalogOrder": 62,
+      "wave01Selected": false,
+      "status": "pending_parent"
+    },
+    {
+      "id": "EQ-05-U05",
+      "areas": [
+        "EQ-03",
+        "EQ-04",
+        "EQ-05"
+      ],
+      "title": "Narrow identity-bound discovery and detail operations",
+      "objective": "Expose focused source, capability, diagnostic, query/CQ, trust, evolution, and artifact-detail operations over the public service so clients need not invoke the broad workspace operation for every drilldown.",
+      "requirementIds": [
+        "EQ-05-R05",
+        "EQ-03-R03B"
+      ],
+      "dependsOn": [
+        "EQ-03-U02",
+        "EQ-04-U02",
+        "EQ-05-U04"
+      ],
+      "priority": 13,
+      "targetPaths": [
+        "rust/crates/axiograph-authoring/src/**/*.rs",
+        "rust/crates/axiograph-cli/src/mcp.rs",
+        "rust/crates/axiograph-cli/src/web.rs",
+        "rust/crates/axiograph-cli/src/main.rs",
+        "rust/crates/axiograph-cli/src/repl.rs",
+        "examples/software_authoring/compact_authoring_client.py",
+        "docs/reference/SOFTWARE_AUTHORING_TOOLS.md"
+      ],
+      "acceptance": [
+        "Focused operations have closed typed inputs/outputs, deterministic limits, and exact source/request/closure-bound handles.",
+        "Narrow operations return the same canonical items, failures, trust, totals, and identities as the corresponding broad/full report slice.",
+        "Stale, cross-workspace, changed-buffer/import/baseline/CQ/query, malformed, and out-of-range handles reject.",
+        "Operations are read-only adapters over the public service and cannot promote, mint receipts, or bypass ordinary path/resource/compiler gates.",
+        "Capability discovery makes supported focused operations unambiguous and does not advertise unsupported ones."
+      ],
+      "validation": [
+        "Compare every narrow operation with canonical full-report projections on software-authoring, regulated-shipment, import-aware, invalid, and large nested fixtures.",
+        "Run actual CLI/MCP/HTTP/LSP/REPL request sequences, including stale edits and unsupported methods.",
+        "Measure request/response bytes and latency before/after; report fixture scope without universal capacity claims.",
+        "Run schema/SDK drift checks, adapter parity, canonical/semantic/rejection gates, and real-browser use where UI consumes the operation."
+      ],
+      "prerequisites": [
+        "Nested detail contract, public adapter owner, and converged capability vocabulary.",
+        "No report-only helper may be labeled the complete service.",
+        "Escalate any proposed operation that would alter accepted state or checker authority."
+      ],
+      "risk": "trust-boundary",
+      "catalogOrder": 63,
+      "wave01Selected": false,
+      "status": "pending_parent"
+    },
+    {
+      "id": "AE-13",
+      "areas": [
+        "EQ-08",
+        "EQ-09"
+      ],
+      "title": "Stable identity lineage from workbench edit to accepted snapshot",
+      "objective": "Carry and verify repository, snapshot, schema, context, lifecycle, stable-ref, payload, CQ, and review identities through edit, diff, review, merge, promotion, and reopened state.",
+      "requirementIds": [
+        "EQ08-REQ-03",
+        "EQ09-REQ-03"
+      ],
+      "dependsOn": [
+        "AE-10",
+        "AE-12"
+      ],
+      "priority": 13,
+      "targetPaths": [
+        "rust/crates/axiograph-kernel/src/identity.rs",
+        "rust/crates/axiograph-pathdb/src/runtime_handle.rs",
+        "rust/crates/axiograph-pathdb/src/lifecycle.rs",
+        "rust/crates/axiograph-cli/src/authoring_workspace.rs",
+        "rust/crates/axiograph-store/src/model.rs",
+        "rust/crates/axiograph-store/src/store.rs",
+        "frontend/viz/src/core/status.ts",
+        "frontend/viz/src/core/draft.ts",
+        "frontend/viz/src/tabs/review.ts"
+      ],
+      "acceptance": [
+        "Typed public/library handles carry all required anchors and states; boundary strings parse into strict identity kinds but cannot construct privileged typestates.",
+        "Every workbench page/edit/repair/CQ/delta/review request rejects stale or cross-repository/schema/context/lifecycle anchors.",
+        "Semantic VCS payload fingerprints detect changed meaning under stable-looking refs; successful fresh-temp-store promotion and reopen reproduce exact reviewed lineage.",
+        "UI graph/query highlighting is allowed only when image/source/query identity is atomically bound; unrelated IDs cannot select an unrelated graph."
+      ],
+      "validation": [
+        "Compile-fail/public API tests prove Accepted/CertificateEmitted/LeanVerified and receipt states cannot be minted through Deserialize, Default, public fields, or unchecked constructors.",
+        "End-to-end temp-store tests trace exact IDs from canonical bytes through candidate/reconciliation/commit/manifest/promotion/materialization/reopen.",
+        "Tamper every anchor kind, payload fingerprint, generation, report digest, and graph/image identity and require fail-closed behavior.",
+        "Run lifecycle/query typestate, semantic VCS, materialization, canonical-spine, and regulated-shipment gates."
+      ],
+      "prerequisites": [
+        "AE-10 and AE-12.",
+        "Any new public constructor or authority transition receives explicit trust-boundary review."
+      ],
+      "risk": "trust-boundary",
+      "catalogOrder": 64,
+      "wave01Selected": false,
+      "status": "pending_parent"
+    },
+    {
+      "id": "RG-U13",
+      "areas": [
+        "EQ-10",
+        "EQ-11",
+        "EQ-12",
+        "EQ-13",
+        "EQ-18",
+        "EQ-19"
+      ],
+      "title": "Retrieval and grounding integrated acceptance evidence",
+      "objective": "Integrate the reviewed retrieval units into one bounded real workflow and durable documentation record, proving production-path use, exact oracle separation, receipt-bound ANN opening, compact evidence/support behavior, and preserved authority without claiming production quality or ontology completeness.",
+      "requirementIds": [
+        "EQ-10-R01",
+        "EQ-10-R02",
+        "EQ-10-R03",
+        "EQ-10-R04",
+        "EQ-10-R05",
+        "EQ-11-R01",
+        "EQ-11-R02",
+        "EQ-11-R03",
+        "EQ-11-R04",
+        "EQ-11-R05",
+        "EQ-12-R01",
+        "EQ-12-R02",
+        "EQ-12-R03",
+        "EQ-12-R04",
+        "EQ-12-R05",
+        "EQ-13-R01",
+        "EQ-13-R02",
+        "EQ-13-R03",
+        "EQ-13-R04",
+        "EQ-13-R05",
+        "EQ18-R05",
+        "EQ18-R06",
+        "EQ19-A01",
+        "EQ19-R06",
+        "EQ19-R06-N02"
+      ],
+      "dependsOn": [
+        "RG-U09",
+        "RG-U12"
+      ],
+      "priority": 13,
+      "targetPaths": [
+        "Makefile",
+        "docs/howto/TESTING.md",
+        "docs/howto/RELEVANCE_EVALUATION.md",
+        "docs/reference/EMBEDDINGS_AND_EVIDENCE.md",
+        "docs/reference/SECURITY_BOUNDARIES.md",
+        "docs/reference/TRUSTED_KERNEL.md",
+        "docs/README.md",
+        "docs/SUMMARY.md",
+        "examples/retrieval_evaluation/",
+        "rust/crates/axiograph-cli/src/llm.rs",
+        "rust/crates/axiograph-cli/src/embeddings.rs",
+        "rust/crates/axiograph-pathdb/src/text_index.rs",
+        "rust/crates/axiograph-llm-sync/src/grounding.rs",
+        "examples/",
+        "scripts/",
+        "docs/tutorials/",
+        "docs/tutorials/README.md"
+      ],
+      "acceptance": [
+        "One documented offline workflow builds/opens a genuine temporary AxiStore materialization through production APIs, builds the bound sidecar/ANN receipt, retrieves through production services, emits a compact packet, checks finite claims, and runs the complete relevance/citation/ANN comparisons.",
+        "Reports preserve exact source state, corpus/model/index/snapshot/query identities, limits, result counts, truncation, failures, trust class, coverage, latency, memory method, and next actions.",
+        "Negative workflow variants reject stale/corrupt/cross-snapshot index, wrong query/model/text identity, contradictory/missing evidence, hidden exact fallback, and attempted promotion.",
+        "Documentation clearly separates regression evidence, capacity observations, authenticated source provenance, runtime support, and Lean-certified claims.",
+        "No further roadmap marker becomes checked before parent acceptance.",
+        "A deterministic offline production-path command reports Recall@k, Precision@k, MRR, nDCG, latency, memory, corpus/index/model identities, limits, and result counts.",
+        "Scale exceeds tiny teaching fixtures; exact oracle comparisons are explicit and never hidden as an ANN fallback.",
+        "Ablations cover lexical, vector, graph, and fusion paths with ties, duplicates, zero results, contradictions, stale snapshots, and mixed score scales.",
+        "The indexed tutorial runs the same command and labels all retrieval/model output as evidence only."
+      ],
+      "validation": [
+        "Run all affected package tests, locked workspace-scoped tests, strict Clippy, fmt, no-unsafe/no-panic, security, canonical-spine, regulated-shipment, and bounded retrieval gates as applicable to the final source state.",
+        "Do not run or forge the clean-source release gate on uncommitted work; disclose the clean-commit gate as pending parent authorization.",
+        "Complete source/native diagnostics before final hash-guarded validation; freeze exact source/dependency/helper text, complete incremental and release-to-current new-file-aware diffs, bounded logs, and navigation.",
+        "Independent reviewer verifies every requirement and area acceptance clause and records pending_parent, not accepted.",
+        "Hand-check metric edge cases and labeled samples, then run deterministic repeated production retrieval with ablations and exact oracle.",
+        "Record before-change baseline and after-change comparison; do not select BM25/fusion/ANN/reranker based solely on tiny fixtures.",
+        "Run relevant full workspace/security/feature gates and rendered documentation checks on final bytes."
+      ],
+      "prerequisites": [
+        "RG-U01 through RG-U12 implemented and reviewed; any approved reranker selection must have its approval receipt.",
+        "Use the prepared exact tool environment; do not reinstall or reconstruct PATH.",
+        "No commit, push, tag movement, release, deploy, external account change, or unrelated accepted-store mutation.",
+        "EQ10 reproducible relevance evaluation must be implemented and independently reviewed before this unit can claim completion.",
+        "Any ANN/ranker/backend selection requires maintained-tool research against installed versions and official docs.",
+        "Use public licensed or reviewed versioned data; no live paid model calls are needed."
+      ],
+      "risk": "trust-boundary",
+      "catalogOrder": 65,
+      "wave01Selected": false,
+      "status": "pending_parent"
+    },
+    {
+      "id": "AE-14",
+      "areas": [
+        "EQ-08",
+        "EQ-09"
+      ],
+      "title": "Explicit reviewed workbench promotion boundary",
+      "objective": "Connect a workbench promotion request to a separately authorized, repository-bound AxiStore review/promotion service without weakening protected-main gates or read-only routes.",
+      "requirementIds": [
+        "EQ08-REQ-01",
+        "EQ08-REQ-03",
+        "EQ09-REQ-01",
+        "EQ09-REQ-03"
+      ],
+      "dependsOn": [
+        "AE-10",
+        "AE-13"
+      ],
+      "priority": 14,
+      "targetPaths": [
+        "rust/crates/axiograph-cli/src/authoring_workspace.rs",
+        "rust/crates/axiograph-store/src/model.rs",
+        "rust/crates/axiograph-store/src/store.rs",
+        "rust/crates/axiograph-cli/src/main.rs",
+        "frontend/viz/src/tabs/review.ts",
+        "frontend/viz/src/core/status.ts",
+        "docs/reference/SEMANTIC_VCS.md",
+        "docs/reference/SECURITY_BOUNDARIES.md"
+      ],
+      "acceptance": [
+        "Request path is separate from db serve and from read-only inspect/MCP/LSP; it requires configured repository/write authority, expected generation, Reviewed candidate, exact four gate reports, and trusted checker receipt.",
+        "Missing/malformed/substituted receipt, residual theory obligation, failed/omitted CQ, stale generation, wrong repository/snapshot, or unsupported scope blocks before mutation.",
+        "No UI metadata, image receipt, generated test, model evidence, or runtime-only report can mint accepted state.",
+        "Positive tests use fresh temporary stores and production AxiStore APIs; no auto-commit, automatic promotion, tag movement, deployment, or unrelated store mutation."
+      ],
+      "validation": [
+        "Run production HTTP/service request with missing receipt and residual obligation and prove unchanged store generation/ref map/audit tail.",
+        "With separately approved test authority, run one positive fresh-temp-store reviewed promotion and reopen; verify exact manifest/gate/lineage binding.",
+        "Run peer pinning, body/frame/resource, CSRF/origin/auth policy, concurrency CAS, restart, and tamper tests appropriate to the selected local service boundary.",
+        "Rerun verify-axi-store, verify-canonical-spine, verify-semantics, and regulated-shipment; do not run or claim a clean-source release gate on uncommitted work."
+      ],
+      "prerequisites": [
+        "Explicit owner approval is required before adding or enabling any browser-accessible accepted-state write authority, auth policy, or production endpoint.",
+        "AE-10 and AE-13.",
+        "No external account/scope/protection/signing changes or credentials are part of this unit."
+      ],
+      "risk": "external-approval",
+      "catalogOrder": 66,
+      "wave01Selected": false,
+      "status": "pending_parent"
+    },
+    {
+      "id": "EQ19-U05",
+      "areas": [
+        "EQ-19"
+      ],
+      "title": "Run bounded live model-provider integrations after owner approval",
+      "objective": "Exercise positive production provider adapters with configured test credentials and tightly bounded requests, preserving credential secrecy and evidence-only output.",
+      "requirementIds": [
+        "EQ19-R04",
+        "EQ19-A01"
+      ],
+      "dependsOn": [
+        "EQ17-U01",
+        "EQ17-U02"
+      ],
+      "priority": 14,
+      "targetPaths": [
+        "rust/crates/axiograph-cli/src/llm.rs",
+        "rust/crates/axiograph-llm-sync/src/",
+        "rust/crates/axiograph-cli/tests/",
+        "scripts/",
+        "docs/howto/LLM_QUERY_INTEGRATION.md",
+        "docs/howto/TESTING.md"
+      ],
+      "acceptance": [
+        "At least one explicit bounded request per approved supported live provider traverses the production adapter and validates typed response/report behavior.",
+        "Requests have hard timeout, message/token/output/tool-step/cost bounds and cannot mutate accepted state or publish artifacts.",
+        "Logs and reports redact keys, authorization headers, sensitive response content, and account identifiers.",
+        "Missing approval, credentials, quota, network, or provider availability is recorded as blocked/skipped, never passed."
+      ],
+      "validation": [
+        "Run offline mock/security/disabled-provider suites first, then only the separately approved live command with redacted bounded logs.",
+        "Verify output remains evidence-plane, malformed/oversized/error responses fail closed, and no unrelated store/service changes occur.",
+        "Record exact source, provider model/version where returned safely, command shape without secrets, bounds, result status, and cleanup."
+      ],
+      "prerequisites": [
+        "Separate owner approval for live-provider access.",
+        "Configured test credentials supplied through approved secret handling; never request or print credentials.",
+        "No paid/live call is permitted as safe preparatory work; all architecture and offline tests should complete first."
+      ],
+      "risk": "external-approval",
+      "catalogOrder": 67,
+      "wave01Selected": false,
+      "status": "pending_parent"
+    },
+    {
+      "id": "AE-15",
+      "areas": [
+        "EQ-08"
+      ],
+      "title": "Real browser ontology-engineer acceptance scenario",
+      "objective": "Prove the complete guided workbench flow in a real browser with layout, keyboard, accessibility, canonical/CQ/repair/diff behavior, and fail-closed promotion.",
+      "requirementIds": [
+        "EQ08-ACC-01"
+      ],
+      "dependsOn": [
+        "AE-12",
+        "AE-13",
+        "AE-14"
+      ],
+      "priority": 15,
+      "targetPaths": [
+        "frontend/viz/package.json",
+        "frontend/viz/package-lock.json",
+        "frontend/viz/tests/browser",
+        "frontend/viz/src/app.ts",
+        "frontend/viz/src/tabs/review.ts",
+        "examples/regulated_shipment/RegulatedShipment.axi",
+        "examples/regulated_shipment/regulated_shipment.cq",
+        "examples/software_authoring",
+        "docs/howto/TESTING.md"
+      ],
+      "acceptance": [
+        "A real browser opens a canonical example, makes a typed edit, sees a failed CQ, applies a production typed repair, reviews exact semantic diff/provenance, and requests promotion.",
+        "Missing receipt and unresolved required obligation visibly block; store generation/ref/audit state remains unchanged in those cases.",
+        "Keyboard-only navigation, focus order/visibility, labels/roles/names, live validation updates, layout at supported viewports, and expert-view opt-in are captured from the real accessibility/layout engine.",
+        "No DOM mocks, fabricated receipt, mocked successful backend, paid/live model, or production deployment substitutes for evidence."
+      ],
+      "validation": [
+        "Select and pin a maintained browser harness only after installed-version and official-doc review; use the exact Node 26.8.1/npm 11.19.0 environment without PATH reconstruction.",
+        "Run against actual local authoring and fresh temporary AxiStore services with production frontend assets; capture browser trace/screenshots/accessibility snapshot and bounded server logs.",
+        "Run negative stale-source, missing-receipt, residual, malformed payload, keyboard, and narrow/wide layout cases.",
+        "Also run frontend install/audit/typechecks/tests/debug and production builds, then the explicit browser command; browser evidence remains separate from default Rust tests."
+      ],
+      "prerequisites": [
+        "AE-12 through AE-14.",
+        "Owner approval for AE-14 write boundary; if approval is absent, the negative blocked-promotion scenario can be completed but positive accepted mutation must remain explicitly blocked, not faked.",
+        "Reuse the prepared pinned tool environment from build/engineering-quality/release-roadmap/complete-kani-with-verified-path-20260908T044738Z."
+      ],
+      "risk": "external-approval",
+      "catalogOrder": 68,
+      "wave01Selected": false,
+      "status": "pending_parent"
+    },
+    {
+      "id": "EQ18-U04",
+      "areas": [
+        "EQ-18"
+      ],
+      "title": "Complete relevance and workbench tutorials when features ship",
+      "objective": "Add the remaining runnable relevance-evaluation and workbench tutorials only after their production workflows satisfy the corresponding engineering requirements.",
+      "requirementIds": [
+        "EQ18-R05",
+        "EQ18-R06",
+        "EQ18-A01"
+      ],
+      "dependsOn": [
+        "EQ-02-U04",
+        "RG-U13",
+        "AE-15"
+      ],
+      "priority": 13,
+      "targetPaths": [
+        "docs/tutorials/README.md",
+        "docs/tutorials/VIZ_EXPLORER.md",
+        "docs/tutorials/",
+        "docs/README.md",
+        "docs/SUMMARY.md",
+        "docs/howto/TESTING.md"
+      ],
+      "acceptance": [
+        "The relevance tutorial runs the reviewed deterministic evaluation command and explains corpus/model/index identity and evidence-only scope.",
+        "The workbench tutorial uses a real browser and a separately explicit validated/reviewed lifecycle; it does not resurrect unsupported DB mutation or automatic commits.",
+        "Both tutorials state required prerequisites, expected outputs, failure/blocker behavior, cleanup, and exact trust/non-claims.",
+        "All tutorial and evidence pages are discoverable in the curated book and section indexes."
+      ],
+      "validation": [
+        "Execute the exact tutorial sequences end-to-end on temporary state with nonempty assertions.",
+        "Run browser/accessibility and retrieval-evaluation gates referenced by the tutorials, then book graph/rendered link checks.",
+        "Independent documentation/trust review confirms no unsupported theorem, authority, or completeness claim."
+      ],
+      "prerequisites": [
+        "EQ19-U02 and EQ19-U04 complete.",
+        "The authoring workbench flow additionally depends on EQ08/EQ09 reviewed lifecycle implementation; until then document it as unavailable, not simulated."
+      ],
+      "risk": "trust-boundary",
+      "catalogOrder": 69,
+      "wave01Selected": false,
+      "status": "pending_parent"
+    },
+    {
+      "id": "AE-16",
+      "areas": [
+        "EQ-09"
+      ],
+      "title": "Cross-surface lifecycle truth and strict-gate conformance",
+      "objective": "Close uniform lifecycle review acceptance by proving evidence, generated tests, runtime checks, finite checking, emitted certificates, and verified receipts remain distinct across every public surface and strict transition.",
+      "requirementIds": [
+        "EQ09-REQ-04",
+        "EQ09-ACC-01"
+      ],
+      "dependsOn": [
+        "AE-10",
+        "AE-11",
+        "AE-13",
+        "AE-14",
+        "AE-15"
+      ],
+      "priority": 16,
+      "targetPaths": [
+        "rust/crates/axiograph-query/src/query_ir.rs",
+        "rust/crates/axiograph-query/src/verifier_bridge.rs",
+        "rust/crates/axiograph-cli/src/authoring_workspace.rs",
+        "rust/crates/axiograph-cli/src/behavior_case.rs",
+        "rust/crates/axiograph-cli/src/semantic_claim.rs",
+        "rust/crates/axiograph-software-authoring/src/lib.rs",
+        "rust/crates/axiograph-store/src/model.rs",
+        "rust/crates/axiograph-store/src/store.rs",
+        "frontend/viz/src/tabs/review.ts",
+        "frontend/viz/src/core/status.ts",
+        "rust/crates/axiograph-cli/tests/public_query_service_parity.rs",
+        "docs/reference/SOFTWARE_AUTHORING_TOOLS.md",
+        "docs/reference/RUST_LIFECYCLE_TYPES.md"
+      ],
+      "acceptance": [
+        "Library, CLI, MCP, HTTP, LSP, UI, review branch, merge, and promotion report the same anchored lifecycle classification and explicit non-claims.",
+        "Generated/executed tests and coverage remain implementation evidence and cannot satisfy CQ, finite-check, trust, or verified-receipt gates.",
+        "Deserialize/default/empty/unknown fields, emitted-but-unverified certificates, image receipts, mismatched verified receipts, and unsupported scope all fail strict gates.",
+        "Positive verified states require actual configured checker acceptance and exact source/query/answer/certificate binding; no new axiom, unsafe constructor, or tautological substitute."
+      ],
+      "validation": [
+        "Build a cross-surface matrix from one canonical fixture and compare normalized authority/gate/identity fields from real production adapters.",
+        "Adversarially test empty/default, unknown versions, evidence relabeling, generated-test success, runtime-only success, certificate emission without verification, receipt substitution, and unsupported fragment status.",
+        "Run process-free query/CQ tests, public adapter parity, software-authoring/continuous coverage, AxiStore, canonical-spine, semantics, regulated-shipment, frontend/browser, locked workspace, strict Clippy, formatting, and native/LSP diagnostics as applicable.",
+        "Finish all live source/diagnostic reads before final frozen hash validation; record clean-commit release gate as pending parent authorization rather than committing or forging it."
+      ],
+      "prerequisites": [
+        "AE-10 through AE-15.",
+        "Actual trusted-checker positive tests use existing configured offline checker paths; no live provider credentials or external account changes.",
+        "No additional roadmap [x], commit, push, release, deploy, or accepted-store mutation before parent review/authorization."
+      ],
+      "risk": "trust-boundary",
+      "catalogOrder": 70,
+      "wave01Selected": false,
+      "status": "pending_parent"
+    }
+  ]
+}

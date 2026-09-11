@@ -10,6 +10,153 @@ fn compact(
         _ => Err(anyhow!("expected compact response")),
     }
 }
+fn nested_request(collection: AuthoringNestedCollectionV1) -> AuthoringWorkspaceRequestV1 {
+    let mut request = request();
+    request.presentation.nested = Some(AuthoringNestedPageRequestV1 {
+        collection,
+        limit: 2,
+        byte_limit: MAX_NESTED_BYTE_LIMIT,
+        cursor: None,
+    });
+    request
+}
+
+fn canonical_nested_collection(
+    full: &AuthoringWorkspaceReportV1,
+    collection: AuthoringNestedCollectionV1,
+) -> Result<Vec<Value>> {
+    use AuthoringNestedCollectionV1::*;
+    let mut values = Vec::new();
+    match collection {
+        ValidationFiniteResiduals => {
+            if let Some(gate) = &full.validation.finite_theory_gate {
+                values.extend(
+                    gate.residual_obligations
+                        .iter()
+                        .map(serde_json::to_value)
+                        .collect::<std::result::Result<Vec<_>, _>>()?,
+                );
+            }
+        }
+        RuntimeJudgments
+        | RuntimeAdmissibilityChecks
+        | RuntimeClosureSteps
+        | RuntimeAssumptionDiagnostics => {
+            if let Some(module) = &full.validation.runtime_theory {
+                for report in &module.reports {
+                    let source = match collection {
+                        RuntimeJudgments => serde_json::to_value(&report.judgments)?,
+                        RuntimeAdmissibilityChecks => {
+                            serde_json::to_value(&report.admissibility_checks)?
+                        }
+                        RuntimeClosureSteps => {
+                            serde_json::to_value(&report.admissibility_scan.steps)?
+                        }
+                        RuntimeAssumptionDiagnostics => {
+                            serde_json::to_value(&report.assumption_diagnostics)?
+                        }
+                        _ => return Err(anyhow!("test runtime collection mismatch")),
+                    };
+                    values.extend(source.as_array().expect("array").iter().cloned());
+                }
+            }
+        }
+        DependentContexts | DependentResiduals => {
+            for refinement in &full.dependent_refinements {
+                let source = if collection == DependentContexts {
+                    serde_json::to_value(&refinement.contexts)?
+                } else {
+                    serde_json::to_value(&refinement.residual_obligations)?
+                };
+                values.extend(source.as_array().expect("array").iter().cloned());
+            }
+        }
+        PreparedInferredTypes | PreparedKernelRefs | PreparedRefinementHandles => {
+            if let Some(prepared) = &full.prepared_query {
+                match collection {
+                    PreparedInferredTypes => values.extend(prepared.inferred_types.iter().map(|(variable, inferred_types)| json!({"variable":variable,"inferred_types":inferred_types}))),
+                    PreparedKernelRefs => values.extend(serde_json::to_value(&prepared.kernel_refs)?.as_array().expect("array").iter().cloned()),
+                    PreparedRefinementHandles => values.extend(serde_json::to_value(&prepared.refinement_handles)?.as_array().expect("array").iter().cloned()),
+                    _ => return Err(anyhow!("test prepared collection mismatch")),
+                }
+            }
+        }
+        ExplanationPlan
+        | ExplanationTypedHoles
+        | ExplanationSuggestions
+        | ExplanationRefinementCandidates
+        | ExplanationSemanticClaims
+        | ExplanationTrustGaps => {
+            if let Some(explanation) = &full.query_explanation {
+                let source = match collection {
+                    ExplanationPlan => serde_json::to_value(&explanation.plan)?,
+                    ExplanationTypedHoles => {
+                        serde_json::to_value(&explanation.exploration.typed_holes)?
+                    }
+                    ExplanationSuggestions => {
+                        serde_json::to_value(&explanation.exploration.exploration_suggestions)?
+                    }
+                    ExplanationRefinementCandidates => {
+                        serde_json::to_value(&explanation.exploration.refinement_candidates)?
+                    }
+                    ExplanationSemanticClaims => {
+                        serde_json::to_value(&explanation.exploration.semantic_claims)?
+                    }
+                    ExplanationTrustGaps => {
+                        serde_json::to_value(&explanation.exploration.trust_gaps)?
+                    }
+                    _ => return Err(anyhow!("test explanation collection mismatch")),
+                };
+                values.extend(source.as_array().expect("array").iter().cloned());
+            }
+        }
+        CompetencyQuestions | CompetencyUnresolved => {
+            if let Some(competency) = &full.competency_questions {
+                let source = if collection == CompetencyQuestions {
+                    serde_json::to_value(&competency.questions)?
+                } else {
+                    serde_json::to_value(&competency.unresolved_question_names)?
+                };
+                values.extend(source.as_array().expect("array").iter().cloned());
+            }
+        }
+        CompetencyEvaluations
+        | CompetencyPreparedKernelRefs
+        | CompetencyPreparedRefinementHandles
+        | CompetencyRefinementCandidates => {
+            if let Some(evaluation) = full
+                .competency_questions
+                .as_ref()
+                .and_then(|competency| competency.evaluation.as_ref())
+            {
+                for question in &evaluation.questions {
+                    let source = match collection {
+                        CompetencyEvaluations => serde_json::to_value(vec![question])?,
+                        CompetencyPreparedKernelRefs => serde_json::to_value(
+                            question
+                                .prepared_query
+                                .as_ref()
+                                .map_or(&[][..], |prepared| prepared.kernel_refs.as_slice()),
+                        )?,
+                        CompetencyPreparedRefinementHandles => serde_json::to_value(
+                            question
+                                .prepared_query
+                                .as_ref()
+                                .map_or(&[][..], |prepared| prepared.refinement_handles.as_slice()),
+                        )?,
+                        CompetencyRefinementCandidates => {
+                            serde_json::to_value(&question.refinement_candidates)?
+                        }
+                        _ => return Err(anyhow!("test competency evaluation collection mismatch")),
+                    };
+                    values.extend(source.as_array().expect("array").iter().cloned());
+                }
+            }
+        }
+    }
+    Ok(values)
+}
+
 fn page_request() -> AuthoringWorkspaceRequestV1 {
     let mut r = request();
     r.presentation.sections = Some(vec![AuthoringSectionV1::StableRuntimeRefs]);
@@ -114,6 +261,160 @@ fn authoring_workspace_page_unions_match_every_full_collection() -> Result<()> {
         serde_json::to_value(service.execute_response(r)?)?,
         serde_json::to_value(full)?
     );
+    Ok(())
+}
+
+#[test]
+fn nested_page_unions_losslessly_match_canonical_full_collections() -> Result<()> {
+    let (_temp, service) = write_workspace()?;
+    let full = service.execute(request())?;
+    let validator = jsonschema::validator_for(&response_schema())?;
+    for &collection in NESTED_COLLECTIONS {
+        let expected = canonical_nested_collection(&full, collection)?;
+        let mut request = nested_request(collection);
+        request.presentation.nested.as_mut().unwrap().limit = 1;
+        let mut actual: Vec<Value> = Vec::new();
+        loop {
+            let response = compact(&service, request.clone())?;
+            assert_eq!(response.source, full.source);
+            assert_eq!(response.promotion, full.promotion);
+            assert_eq!(response.trust, full.trust);
+            assert!(validator.is_valid(&serde_json::to_value(&response)?));
+            let page = response.nested_page.expect("requested nested page");
+            assert_eq!(page.collection, collection);
+            assert_eq!(page.total, expected.len());
+            assert_eq!(page.offset, actual.len());
+            assert_eq!(page.returned + page.omitted, page.total);
+            assert!(page.returned <= page.entry_limit);
+            assert!(page.returned_bytes <= page.byte_limit);
+            for item in &page.items {
+                let bytes = item.canonical_item_json.as_bytes();
+                assert_eq!(item.canonical_item_bytes, bytes.len());
+                assert_eq!(item.canonical_item_sha256, digest(bytes));
+                assert_eq!(item.ordinal, actual.len());
+                actual.push(serde_json::from_str(&item.canonical_item_json)?);
+            }
+            request.presentation.nested.as_mut().unwrap().cursor = page.next_cursor;
+            if request
+                .presentation
+                .nested
+                .as_ref()
+                .unwrap()
+                .cursor
+                .is_none()
+            {
+                break;
+            }
+        }
+        assert_eq!(actual, expected, "{collection:?}");
+    }
+    Ok(())
+}
+
+#[test]
+fn nested_pages_enforce_n_n_plus_one_byte_entry_and_large_item_bounds() -> Result<()> {
+    let (_temp, service) = write_workspace()?;
+    let full = service.execute(request())?;
+    let collection = AuthoringNestedCollectionV1::PreparedKernelRefs;
+    let expected = canonical_nested_collection(&full, collection)?;
+    assert!(expected.len() > 2);
+
+    let mut request = nested_request(collection);
+    request.presentation.nested.as_mut().unwrap().limit = 2;
+    let two = compact(&service, request.clone())?.nested_page.unwrap();
+    assert_eq!(two.returned, 2);
+    assert!(two.next_cursor.is_some());
+    request.presentation.nested.as_mut().unwrap().limit = expected.len();
+    let all = compact(&service, request.clone())?.nested_page.unwrap();
+    assert_eq!(all.returned, expected.len());
+    assert!(all.next_cursor.is_none());
+
+    let item_bytes = serde_json::to_vec(&nested_collection_items(&full, collection)?[0])?.len();
+    request.presentation.nested.as_mut().unwrap().limit = 1;
+    request.presentation.nested.as_mut().unwrap().byte_limit = item_bytes - 1;
+    assert!(service.execute_response(request.clone()).is_err());
+    request.presentation.nested.as_mut().unwrap().byte_limit = item_bytes;
+    let exact = compact(&service, request)?.nested_page.unwrap();
+    assert_eq!((exact.returned, exact.returned_bytes), (1, item_bytes));
+
+    let mut items = Vec::new();
+    let large = "x".repeat(MAX_NESTED_ITEM_BYTES);
+    assert!(push_nested_item(&mut items, collection, "a".repeat(64), &large).is_err());
+    Ok(())
+}
+
+#[test]
+fn nested_pages_cover_empty_singleton_and_fail_closed_inputs() -> Result<()> {
+    let (temp, service) = write_workspace()?;
+    let empty = compact(
+        &service,
+        nested_request(AuthoringNestedCollectionV1::CompetencyUnresolved),
+    )?
+    .nested_page
+    .unwrap();
+    assert_eq!((empty.total, empty.returned, empty.omitted), (0, 0, 0));
+    assert!(!empty.truncated);
+
+    let mut singleton_report = service.execute(request())?;
+    singleton_report
+        .prepared_query
+        .as_mut()
+        .expect("prepared query")
+        .kernel_refs
+        .truncate(1);
+    let singleton = nested_collection_items(
+        &singleton_report,
+        AuthoringNestedCollectionV1::PreparedKernelRefs,
+    )?;
+    assert_eq!(singleton.len(), 1);
+
+    for nested in [
+        json!({"collection":"prepared_kernel_refs","limit":0}),
+        json!({"collection":"prepared_kernel_refs","limit":101}),
+        json!({"collection":"prepared_kernel_refs","byte_limit":0}),
+        json!({"collection":"prepared_kernel_refs","byte_limit":MAX_NESTED_BYTE_LIMIT + 1}),
+        json!({"collection":"unknown"}),
+        json!({"collection":"prepared_kernel_refs","unexpected":true}),
+    ] {
+        let mut value = serde_json::to_value(request())?;
+        value["presentation"] = json!({"detail":"summary","nested":nested});
+        match serde_json::from_value::<AuthoringWorkspaceRequestV1>(value) {
+            Err(_) => (),
+            Ok(request) => assert!(service.execute_response(request).is_err()),
+        }
+    }
+
+    let mut request = nested_request(AuthoringNestedCollectionV1::PreparedKernelRefs);
+    let first = compact(&service, request.clone())?.nested_page.unwrap();
+    request.presentation.nested.as_mut().unwrap().cursor = first.next_cursor;
+    let token = request
+        .presentation
+        .nested
+        .as_ref()
+        .unwrap()
+        .cursor
+        .clone()
+        .unwrap();
+    for malformed in [
+        "x".to_string(),
+        token.replace(NESTED_CURSOR_VERSION, "authoring-nested-page-v2"),
+        "x".repeat(MAX_CURSOR_BYTES + 1),
+    ] {
+        request.presentation.nested.as_mut().unwrap().cursor = Some(malformed);
+        assert!(service.execute_response(request.clone()).is_err());
+    }
+    request.presentation.nested.as_mut().unwrap().cursor = Some(token);
+    let source = temp.path().join("domain.axi");
+    let original = std::fs::read_to_string(&source)?;
+    std::fs::write(&source, format!("{original}\n"))?;
+    assert!(service.execute_response(request.clone()).is_err());
+    std::fs::write(&source, original)?;
+    let (_other, other_service) = write_workspace()?;
+    assert!(other_service.execute_response(request).is_err());
+
+    let mut failed = nested_request(AuthoringNestedCollectionV1::RuntimeJudgments);
+    failed.axi_text = Some("invalid axi".into());
+    assert!(service.execute_response(failed).is_err());
     Ok(())
 }
 
@@ -468,6 +769,60 @@ fn authoring_workspace_summary_cursors_bind_first_detail_request() -> Result<()>
     let path = temp.path().join("domain.axi");
     std::fs::write(&path, format!("{}\n", std::fs::read_to_string(&path)?))?;
     assert!(service.execute_response(r).is_err());
+    Ok(())
+}
+
+#[test]
+fn nested_pages_have_cli_mcp_http_and_lsp_service_parity() -> Result<()> {
+    let (_temp, service) = write_workspace()?;
+    let request = nested_request(AuthoringNestedCollectionV1::PreparedKernelRefs);
+    let expected = serde_json::to_value(service.execute_response(request.clone())?)?;
+    let validator = jsonschema::validator_for(&response_schema())?;
+    assert!(validator.is_valid(&expected));
+    for pointer in [
+        "/nested_page/returned_bytes",
+        "/nested_page/items/0/canonical_item_bytes",
+        "/nested_page/items/0/item_identity",
+    ] {
+        let mut malformed = expected.clone();
+        *malformed.pointer_mut(pointer).expect("nested schema field") = json!(false);
+        assert!(!validator.is_valid(&malformed), "{pointer}");
+    }
+    let value = serde_json::to_value(&request)?;
+    let mcp = execute_mcp_payload(
+        &service,
+        serde_json::from_value(
+            json!({"name":AUTHORING_WORKSPACE_TOOL_NAME,"arguments":value.clone()}),
+        )?,
+    );
+    assert_eq!(serde_json::to_value(mcp)?["structuredContent"], expected);
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let http = execute_http_payload(&service, &serde_json::to_vec(&request)?);
+    assert_eq!(http.status(), StatusCode::OK);
+    let bytes = runtime.block_on(http.into_body().collect())?.to_bytes();
+    assert_eq!(serde_json::from_slice::<Value>(&bytes)?, expected);
+
+    let mut state = AuthoringWorkspaceLspState {
+        service: service.clone(),
+        default_axi_path: None,
+        documents: BTreeMap::new(),
+        document_images_incomplete: false,
+        publications: BTreeMap::new(),
+    };
+    let Message::Response(response) = handle_lsp_request(
+        &mut state,
+        LspRequest::new(
+            1.into(),
+            "workspace/executeCommand".into(),
+            json!({"command":AUTHORING_WORKSPACE_LSP_COMMAND,"arguments":[value]}),
+        ),
+    ) else {
+        panic!("LSP response")
+    };
+    assert_eq!(response.response_result.expect("LSP result"), expected);
     Ok(())
 }
 

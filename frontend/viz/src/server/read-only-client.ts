@@ -14,9 +14,12 @@ export interface QueryResponse {
 export type Transport = (path: string, init?: RequestInit) => Promise<Response>;
 
 function fail(message: string): never { throw new Error(`Read-only API: ${message}`); }
+function isJsonObject(value: unknown): value is JsonObject {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
 export function object(value: unknown): JsonObject {
-  if (!value || typeof value !== "object" || Array.isArray(value)) fail("expected object");
-  return value as JsonObject;
+  if (!isJsonObject(value)) fail("expected object");
+  return value;
 }
 function keys(value: JsonObject, required: string[], optional: string[] = []) {
   const present = new Set(Object.keys(value));
@@ -56,14 +59,15 @@ export function validateStatus(value: unknown): Status {
 function validateTrust(value: unknown): JsonObject {
   const v = object(value);
   keys(v, ["trust_class", "soundness", "coverage", "scope", "claim_scope", "completeness_claim", "ontology_closure_claim"], ["reasons", "notes", "certifiable_disjuncts", "execution_only_disjuncts", "semantic_coverage", "semantic_claims", "gaps"]);
-  const expected = {
+  const expected: Record<string, readonly [string, string]> = {
     certifiable: ["certificate_available_but_not_emitted", "full_query"],
     execution_only: ["runtime_only_no_certificate_claim", "runtime_only"],
     mixed: ["runtime_only_no_certificate_claim", "mixed_union_of_branches"],
   };
   const classification = text(v.trust_class);
-  if (!Object.keys(expected).includes(classification)) fail("unknown trust class");
-  const [soundness, coverage] = expected[classification as keyof typeof expected];
+  const expectation = expected[classification];
+  if (!expectation) fail("unknown trust class");
+  const [soundness, coverage] = expectation;
   if (v.soundness !== soundness || v.coverage !== coverage || v.claim_scope !== "finite_query_denotation_within_exact_accepted_module" || v.completeness_claim !== "not_claimed" || v.ontology_closure_claim !== "not_claimed") fail("unsupported trust claims");
   const scope = object(v.scope); keys(scope, ["anchor", "context"]);
   if (scope.anchor !== "snapshot_scoped" || !["unscoped", "single_context", "multi_context"].includes(text(scope.context))) fail("unknown trust scope");
@@ -75,10 +79,13 @@ function validateTrust(value: unknown): JsonObject {
     const counts = ["in_scope_claims", "runtime_visible_claims", "answer_relevant_claims", "review_only_claims", "unsupported_claims"];
     keys(c, ["coverage_scope", ...counts]); text(c.coverage_scope); counts.forEach(k => integer(c[k]));
   }
-  for (const [field, required, optional] of [
+  const reportCollections: Array<
+    [string, readonly string[], readonly string[]]
+  > = [
     ["semantic_claims", ["subject", "kind", "runtime_support", "certification", "status"], []],
     ["gaps", ["code", "detail"], ["subject"]],
-  ] as const) {
+  ];
+  for (const [field, required, optional] of reportCollections) {
     if (v[field] === undefined) continue;
     if (!Array.isArray(v[field])) fail(`invalid ${field}`);
     for (const entry of v[field]) { const e = object(entry); keys(e, [...required], [...optional]); Object.values(e).forEach(text); }
@@ -119,7 +126,12 @@ export async function readBoundedJson(response: Response, maximum = api.limits.r
   finally { reader.releaseLock(); }
   const bytes = new Uint8Array(size); let offset = 0;
   for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
-  const value: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+  let value: unknown;
+  try {
+    value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+  } catch (error) {
+    fail(`invalid UTF-8 JSON response: ${String(error)}`);
+  }
   const pending: [unknown, number][] = [[value, 0]]; let entries = 0;
   while (pending.length) {
     const next = pending.pop(); if (!next) break;
@@ -135,7 +147,13 @@ export async function readBoundedJson(response: Response, maximum = api.limits.r
 // names, paths and typing are validated/elaborated ONLY by the Rust compiler.
 export function serializeFiniteQuery(source: string): string {
   if (new TextEncoder().encode(source).length > api.limits.request_bytes) fail("oversized query input");
-  const query = object(JSON.parse(source));
+  let decoded: unknown;
+  try {
+    decoded = JSON.parse(source);
+  } catch (error) {
+    fail(`invalid query JSON: ${String(error)}`);
+  }
+  const query = object(decoded);
   if (query.version !== 1) fail("query requires explicit version 1");
   const body = JSON.stringify({ query });
   if (new TextEncoder().encode(body).length > api.limits.request_bytes) fail("oversized query request");

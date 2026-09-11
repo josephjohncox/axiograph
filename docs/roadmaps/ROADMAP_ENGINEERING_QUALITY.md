@@ -4,7 +4,9 @@ This is the execution tracker for the
 [baseline audit at 70c568b](../reference/ENGINEERING_AUDIT_70C568B.md).
 It covers every finding and recommendation from that assessment. The
 [agent backlog](ROADMAP_AGENT_BACKLOG.md) links here rather than duplicating its
-status. Existing domain roadmaps still define broader product goals.
+status. Existing domain roadmaps still define broader product goals. The
+[complete execution plan](ENGINEERING_QUALITY_EXECUTION_PLAN.md) maps each original
+requirement and acceptance clause to the dependency-ordered implementation units.
 
 ## Execution rules
 
@@ -335,6 +337,10 @@ line counts alone do not establish better architecture.
 
 - [x] Correct the stale category-IR/VerifyMain status in `TYPE_THEORY_DESIGN.md`.
 - [ ] Correct ANN comments and provider-specific score descriptions.
+  - EQ18-U01 now has a local implementation pending parent review. The V2 tool
+    response separates token, embedding, and fusion methods, rejects legacy
+    ambiguity, and keeps evidence-only authority. Parent acceptance, independent
+    source/evidence review, and roadmap closure remain pending.
 - [ ] Reconcile completed versus planned entries across the relevant roadmaps.
 - [ ] Label design targets, baseline audits, runtime checks, and formal results.
 - [ ] Add runnable tutorials for compact authoring, diagnostics, embedding clients,
@@ -359,7 +365,9 @@ rewritten to make the initial findings disappear.
 - [ ] Run live backend projection/readback tests when containers are available.
 - [ ] Run model-provider integration tests only with configured test credentials
   and explicit bounded requests. Do not expose credentials in reports.
-- [ ] Run the complete release gate when its pinned tools are available.
+- [x] Run the complete release gate when its pinned tools are available.
+  Parent acceptance pins the released result in the
+  [v20260908.0.0 baseline](../reference/RELEASE_BASELINE_V20260908.md).
 - [~] Add realistic usability, response-size, query, and retrieval capacity checks.
   - [x] Recheck real localhost compact client full/page parity and fixture payload
     ceilings, plus process-free query/CQ embedding, after service extraction.
@@ -389,6 +397,14 @@ unavailable dependencies, infrastructure failures, and unresolved review finding
 Source: `70c568b`, clean `main`. See the audit for commands and observations.
 The typecheck failure, report-size measurements, and source anchors are baseline
 evidence, not current completion claims.
+
+### Parent-accepted released baseline
+
+The parent accepted [v20260908.0.0](../reference/RELEASE_BASELINE_V20260908.md)
+at commit `a2d9c80f8e5acc1a1ef6b106f9cf97bb2c0c30df` and tree
+`084782076e71ca0e938436d29deed31592b30d28`.
+This acceptance closes only the EQ-19 complete pinned release-gate item.
+It does not close the broader roadmap or replace earlier historical evidence.
 
 ### Remediation
 

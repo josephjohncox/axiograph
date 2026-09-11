@@ -2,7 +2,8 @@
 
 Roadmaps are concrete TODO trackers derived from the book and design notes.
 
-- [Engineering quality implementation](ROADMAP_ENGINEERING_QUALITY.md) — audit remediation, acceptance checks, and evidence.
+- [Engineering quality implementation](ROADMAP_ENGINEERING_QUALITY.md) — audit remediation, acceptance checks, and evidence. Its released baseline is [v20260908.0.0](../reference/RELEASE_BASELINE_V20260908.md).
+- [Engineering quality execution plan](ENGINEERING_QUALITY_EXECUTION_PLAN.md) — complete EQ-01 through EQ-19 requirement coverage, dependency order, and wave schedule.
 - `docs/roadmaps/ROADMAP_AGENT_BACKLOG.md`
 - `docs/roadmaps/ROADMAP_PRODUCTION_READINESS.md`
 - `docs/roadmaps/ROADMAP_ONTOLOGY_ENGINEERING.md`

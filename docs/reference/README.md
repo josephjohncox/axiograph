@@ -26,6 +26,7 @@ for engine tests.
 ## Reference files
 
 - [Engineering audit at 70c568b](ENGINEERING_AUDIT_70C568B.md) — baseline usability, correctness, theory, retrieval, API, and code findings. Current work is tracked in the [engineering-quality roadmap](../roadmaps/ROADMAP_ENGINEERING_QUALITY.md).
+- [Released baseline v20260908.0.0](RELEASE_BASELINE_V20260908.md) — parent-accepted release identity, publication evidence, and scope.
 - `docs/reference/CERTIFICATES.md` — active certificate families and Lean checker validation.
 - `docs/reference/TRUSTED_KERNEL.md` — current trusted boundary and non-claims.
 - `docs/reference/SECURITY_BOUNDARIES.md` — bounded files, processes, networks, parsers, servers, stores, and privileged mutation.

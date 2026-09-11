@@ -1,6 +1,17 @@
-// @ts-nocheck
+import type { GraphNode, GraphPayload, VizUiState } from "../types";
 
-export function initRunFilter(ctx) {
+interface RunFilterContext {
+  graph: GraphPayload;
+  ui: VizUiState;
+  runFilterEl: HTMLSelectElement;
+  runOnlyEl: HTMLInputElement;
+  runClearBtn: HTMLButtonElement;
+  runIdForNode: (node: GraphNode) => string;
+  selectNode: (id: number, shiftKey: boolean) => void;
+  rerender: () => void;
+}
+
+export function initRunFilter(ctx: RunFilterContext) {
   const {
     graph,
     ui,
@@ -12,10 +23,10 @@ export function initRunFilter(ctx) {
     rerender,
   } = ctx;
 
-  function setActiveRun(runId) {
+  function setActiveRun(runId: string | null): void {
     ui.activeRunId = runId || null;
     if (!ui.activeRunId) {
-      ui.highlightIds = new Set();
+      ui.highlightIds = new Set<number>();
     } else {
       const nodes = ui.runMap.get(ui.activeRunId) || [];
       ui.highlightIds = new Set(nodes);
@@ -27,12 +38,13 @@ export function initRunFilter(ctx) {
   function rebuildRunFilter() {
     if (!runFilterEl) return;
     runFilterEl.innerHTML = "";
-    ui.runMap = new Map();
+    ui.runMap = new Map<string, number[]>();
     for (const n of (graph.nodes || [])) {
       const rid = runIdForNode(n);
       if (!rid) continue;
-      if (!ui.runMap.has(rid)) ui.runMap.set(rid, []);
-      ui.runMap.get(rid).push(n.id);
+      const nodes = ui.runMap.get(rid) ?? [];
+      nodes.push(n.id);
+      ui.runMap.set(rid, nodes);
     }
     const runs = Array.from(ui.runMap.keys());
     if (!runs.length) {

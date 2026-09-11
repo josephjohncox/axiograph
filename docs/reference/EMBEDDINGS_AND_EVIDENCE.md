@@ -198,6 +198,61 @@ Agent-facing retrieval reports should always include:
 - suggested typed queries,
 - suggested proposal or refinement handles.
 
+### Semantic search response V2
+
+`tool_semantic_search` returns `axiograph_semantic_search_response_v2`. It does
+not use an ANN index. It builds normalized 128-component token-hash vectors and
+exhaustively scores the snapshot-local entity and `DocChunk` rows. If a
+snapshot-scoped Ollama or OpenAI embedding file is available, the provider API
+supplies only the query vector. Axiograph normalizes that vector and exhaustively
+computes pairwise cosine scores against the stored normalized vectors.
+
+Each hit has a provider-neutral `scores` object:
+
+- `token`: an optional `normalized_token_hash_dot_exhaustive_v1` observation;
+- `embedding`: an optional
+  `normalized_embedding_cosine_exhaustive_v1` observation with separate
+  `source.backend` and `source.model` identity;
+- `fusion`: `max_available_fusion_v1`, the maximum available token or embedding
+  value.
+
+Token-hash and model-embedding scores are not calibrated. The maximum is a
+simple ranking heuristic, not a probability. Axiograph retains every computed
+component score until after fusion and applies the requested result limit only
+to the fused ranking. A component is `null` only when that method did not score
+the hit, for example when a `DocChunk` has an embedding row but no token text.
+It is not assigned a zero or dropped merely because the hit was outside a
+component-specific candidate window.
+
+V2 intentionally removes the unversioned `similarity`,
+`similarity_token_hash`, and `similarity_ollama` fields. Repository inventory
+found no first-party parser or versioned external wire contract for those
+fields. Position-specific singleton method types reject a token, embedding, or
+fusion method in the wrong score field. The top-level method descriptors are
+also closed, and `methods.ann_used` must be `false`. The V2 decoder therefore
+rejects old versions, contradictory or unknown methods, legacy score fields,
+and false ANN claims instead of guessing their meaning.
+
+Token-hash query vectors must have a finite, non-zero norm before Axiograph can
+run semantic search. Indexed text that produces no token vector is absent from
+the token component; a nonempty query that produces no token vector fails
+closed. Neither case is serialized as a zero
+`normalized_token_hash_dot_exhaustive_v1` observation.
+
+Stored embedding vectors and provider query vectors must have finite, non-zero
+norms before Axiograph can emit a
+`normalized_embedding_cosine_exhaustive_v1` observation. Resolved row fields are
+not publicly mutable, and the scoring path still rechecks both vector norms and
+computes the cosine denominator immediately before serialization. Zero-norm
+vectors fail closed; they are not relabeled as cosine score zero.
+
+The provider contracts reviewed for this behavior are the official
+[Ollama embed API](https://docs.ollama.com/api/embed) and
+[OpenAI create embeddings API](https://developers.openai.com/api/reference/resources/embeddings/methods/create).
+The installed HTTP client is `reqwest 0.13.4` from the locked Rust dependency
+set. Neither provider response is treated as a relevance score. Score method,
+scan strategy, fusion, and evidence authority are Axiograph fields.
+
 `axiograph-llm-sync::GroundingContext` makes the evidence authority limit
 machine-readable. Its `GroundingProvenanceV1` is always version 1 with plane
 `evidence`; the enum intentionally has no accepted/certified variant. Context

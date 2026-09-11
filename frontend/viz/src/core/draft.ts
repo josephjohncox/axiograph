@@ -1,10 +1,54 @@
-// @ts-nocheck
-
 import { UNSUPPORTED } from "../server/read-only-client";
 import { element, muted } from "../render/dom";
 import { selectDraft } from "./draft-selection";
+import {
+  isDraftOverlay,
+  isRecord,
+  type DraftOverlay,
+  type DraftProposal,
+  type VizUiState,
+} from "../types";
 
-export function initDraft(ctx) {
+interface DraftContext {
+  ui: VizUiState;
+  reviewFilterEl: HTMLInputElement;
+  reviewSelectAllBtn: HTMLButtonElement;
+  reviewSelectNoneBtn: HTMLButtonElement;
+  reviewClearBtn: HTMLButtonElement;
+  reviewMessageEl: HTMLInputElement;
+  reviewAdminTokenEl: HTMLInputElement;
+  reviewCommitBtn: HTMLButtonElement;
+  reviewDraftAxiBtn: HTMLButtonElement;
+  reviewPromoteAxiBtn: HTMLButtonElement;
+  reviewListEl: HTMLElement;
+  reviewAxiTextEl: HTMLTextAreaElement;
+  addAxiTextEl: HTMLTextAreaElement;
+  addMessageEl: HTMLInputElement;
+  addAdminTokenEl: HTMLInputElement;
+  setReviewStatus: (...content: Array<Node | string>) => void;
+  setAddOutput: (value: unknown) => void;
+  setActiveTab: (name: string) => void;
+  setReviewValidation: (value: unknown) => void;
+  setReviewOverlayRaw: (value: unknown) => void;
+  setReviewCommitOutput: (value: unknown) => void;
+  setReviewPromoteOutput: (value: unknown) => void;
+  setAddPromoteOutput: (value: unknown) => void;
+  setAddCommitOutput: (value: unknown) => void;
+  setAddPromoteStatus: (message: string) => void;
+  setAddStatus: (message: string) => void;
+  setDraftOverlay?: (overlay: DraftOverlay, options?: { notePrefix?: string }) => boolean;
+  openDocChunk?: (chunkId: string) => void;
+  commitGeneratedOverlay?: () => Promise<void>;
+  draftAxiFromGeneratedOverlay?: () => Promise<void>;
+  promoteDraftAxiText?: () => Promise<void>;
+}
+
+type ReviewActionName =
+  | "commitGeneratedOverlay"
+  | "draftAxiFromGeneratedOverlay"
+  | "promoteDraftAxiText";
+
+export function initDraft(ctx: DraftContext) {
   const {
     ui,
     reviewFilterEl,
@@ -17,11 +61,7 @@ export function initDraft(ctx) {
     reviewDraftAxiBtn,
     reviewPromoteAxiBtn,
     reviewListEl,
-    reviewValidationEl,
     reviewAxiTextEl,
-    reviewCommitOutputEl,
-    reviewPromoteOutputEl,
-    reviewOverlayRawEl,
     addAxiTextEl,
     addMessageEl,
     addAdminTokenEl,
@@ -36,7 +76,6 @@ export function initDraft(ctx) {
     setAddCommitOutput,
     setAddPromoteStatus,
     setAddStatus,
-    isServerMode,
   } = ctx;
   function draftOverlayStorageKey() {
     // Retain existing local draft keys for inspection only. Legacy cached
@@ -52,7 +91,9 @@ export function initDraft(ctx) {
         localStorage.getItem("axiograph_server_accepted_snapshot_id") || ""
       ).trim();
       if (accepted) key = accepted;
-    } catch (_e) {}
+    } catch {
+      key = "";
+    }
     if (!key) {
       const params = new URLSearchParams(window.location.search || "");
       key = (params.get("snapshot") || "").trim();
@@ -67,18 +108,16 @@ export function initDraft(ctx) {
     return draftOverlayKey;
   }
 
-  function setDraftOverlayKey(next) {
+  function setDraftOverlayKey(next: string): void {
     draftOverlayKey = next;
   }
 
-  function loadDraftOverlayForKey(key) {
+  function loadDraftOverlayForKey(key: string): DraftOverlay | null {
     try {
       const raw = localStorage.getItem(key) || "";
       if (!raw.trim()) return null;
-      const v = JSON.parse(raw);
-      if (!v || typeof v !== "object") return null;
-      if (!v.proposals_json) return null;
-      return v;
+      const parsed: unknown = JSON.parse(raw);
+      return isDraftOverlay(parsed) ? parsed : null;
     } catch (_e) {
       return null;
     }
@@ -86,35 +125,37 @@ export function initDraft(ctx) {
 
   function saveDraftOverlay() {
     try {
-      if (!ui.draftOverlay) {
+      if (ui.draft.kind === "empty") {
         localStorage.removeItem(draftOverlayKey);
         return;
       }
-      localStorage.setItem(draftOverlayKey, JSON.stringify(ui.draftOverlay));
-    } catch (_e) {}
+      localStorage.setItem(draftOverlayKey, JSON.stringify(ui.draft.overlay));
+    } catch {
+      return;
+    }
   }
 
   function clearDraftOverlay() {
-    ui.draftOverlay = null;
-    ui.draftSelected = new Set();
+    ui.draft = { kind: "empty", reviewActionStatus: "" };
     saveDraftOverlay();
     setReviewCommitOutput(null);
     setReviewPromoteOutput(null);
     renderDraftOverlayReview();
   }
 
-  function setDraftOverlay(overlay, opts) {
-    const r = overlay || null;
-    if (!r || !r.proposals_json) return false;
-
-    ui.draftOverlay = r;
-    const props =
-      r.proposals_json && Array.isArray(r.proposals_json.proposals)
-        ? r.proposals_json.proposals
-        : [];
-    ui.draftSelected = new Set(
-      props.map((p) => String((p && p.proposal_id) || "")).filter(Boolean),
-    );
+  function setDraftOverlay(
+    overlay: unknown,
+    opts?: { notePrefix?: string },
+  ): boolean {
+    if (!isDraftOverlay(overlay)) return false;
+    const r = overlay;
+    const props = r.proposals_json.proposals;
+    ui.draft = {
+      kind: "loaded",
+      overlay: r,
+      selected: new Set(props.map((proposal) => proposal.proposal_id)),
+      reviewActionStatus: "",
+    };
 
     saveDraftOverlay();
     renderDraftOverlayReview();
@@ -145,9 +186,9 @@ export function initDraft(ctx) {
   }
 
   // Installed on appCtx with the draft API before initLlmTab captures it.
-  function prefillAddFromToolLoop(outcome) {
-    if (!outcome) return false;
-    function useOverlay(overlay, notePrefix) {
+  function prefillAddFromToolLoop(outcome: unknown): boolean {
+    if (!isRecord(outcome)) return false;
+    function useOverlay(overlay: DraftOverlay, notePrefix: string): boolean {
       try {
         if (typeof ctx.setDraftOverlay !== "function") {
           throw new Error(
@@ -165,15 +206,17 @@ export function initDraft(ctx) {
         return false;
       }
     }
-    const artifact = outcome.artifacts?.generated_overlay;
-    if (artifact?.proposals_json)
+    const artifacts = isRecord(outcome.artifacts) ? outcome.artifacts : null;
+    const artifact = artifacts?.generated_overlay;
+    if (isDraftOverlay(artifact))
       return useOverlay(artifact, "generated from LLM");
     // Preserve the existing transcript fallback and latest-result precedence.
     const steps = Array.isArray(outcome.steps) ? outcome.steps : [];
     for (let i = steps.length - 1; i >= 0; i--) {
       const step = steps[i];
       if (
-        !step ||
+        !isRecord(step) ||
+        typeof step.tool !== "string" ||
         ![
           "propose_relation_proposals",
           "propose_relations_proposals",
@@ -182,14 +225,15 @@ export function initDraft(ctx) {
         ].includes(step.tool)
       )
         continue;
-      if (step.result?.proposals_json)
+      if (isDraftOverlay(step.result))
         return useOverlay(step.result, "generated from LLM (fallback)");
     }
     return false;
   }
 
   function currentDraftFiltered() {
-    return selectDraft(ui.draftOverlay, ui.draftSelected || new Set());
+    if (ui.draft.kind === "empty") return null;
+    return selectDraft(ui.draft.overlay, ui.draft.selected);
   }
 
   function renderDraftOverlayReview() {
@@ -197,8 +241,8 @@ export function initDraft(ctx) {
 
     reviewListEl.replaceChildren();
 
-    const r = ui.draftOverlay;
-    if (!r || !r.proposals_json) {
+    const state = ui.draft;
+    if (state.kind === "empty") {
       setReviewStatus(
         element("span", { className: "muted" }, "(no draft overlay)"),
       );
@@ -223,11 +267,9 @@ export function initDraft(ctx) {
       return;
     }
 
-    const props =
-      r.proposals_json && Array.isArray(r.proposals_json.proposals)
-        ? r.proposals_json.proposals
-        : [];
-    const selected = ui.draftSelected || new Set();
+    const r = state.overlay;
+    const props = r.proposals_json.proposals;
+    const selected = state.selected;
 
     const ok = r.validation && r.validation.ok === true;
     const bad = r.validation && r.validation.ok === false;
@@ -237,8 +279,8 @@ export function initDraft(ctx) {
         { className: ok ? "chip ok" : bad ? "chip bad" : "chip" },
         ok ? "validated" : bad ? "invalid" : "unvalidated",
       );
-      const action = ui.reviewActionStatus
-        ? element("span", { className: "muted" }, `— ${ui.reviewActionStatus}`)
+      const action = state.reviewActionStatus
+        ? element("span", { className: "muted" }, `— ${state.reviewActionStatus}`)
         : "";
       setReviewStatus(
         `${selected.size}/${props.length} selected `,
@@ -258,7 +300,7 @@ export function initDraft(ctx) {
         ? String(reviewFilterEl.value).trim().toLowerCase()
         : "";
 
-    function proposalLine(p) {
+    function proposalLine(p: DraftProposal): string {
       const kind = String((p && p.kind) || "");
       const conf = p && p.confidence != null ? Number(p.confidence) : null;
       const confText =
@@ -277,9 +319,9 @@ export function initDraft(ctx) {
       return `${kind || "Proposal"}${confText}`;
     }
 
-    function proposalMatches(p) {
+    function proposalMatches(p: DraftProposal): boolean {
       if (!filter) return true;
-      const parts = [];
+      const parts: string[] = [];
       for (const k of [
         "kind",
         "proposal_id",
@@ -294,7 +336,7 @@ export function initDraft(ctx) {
       ]) {
         if (p && p[k] != null) parts.push(String(p[k]));
       }
-      const evs = Array.isArray(p && p.evidence) ? p.evidence : [];
+      const evs = p.evidence ?? [];
       for (const ev of evs.slice(0, 4)) {
         if (ev && ev.chunk_id) parts.push(String(ev.chunk_id));
         if (ev && ev.locator) parts.push(String(ev.locator));
@@ -333,7 +375,6 @@ export function initDraft(ctx) {
         if (!pid) return;
         if (cb.checked) selected.add(pid);
         else selected.delete(pid);
-        ui.draftSelected = selected;
         setSelectionStatus();
       });
 
@@ -346,7 +387,7 @@ export function initDraft(ctx) {
 
       const sub = document.createElement("div");
       sub.className = "sub";
-      const evs = Array.isArray(p && p.evidence) ? p.evidence : [];
+      const evs = p.evidence ?? [];
       const evCount = evs.length;
       sub.textContent = `proposal_id=${pid || "?"}${evCount ? ` evidence=${evCount}` : ""}`;
 
@@ -418,24 +459,25 @@ export function initDraft(ctx) {
     }
   }
 
-  function setReviewActionStatus(msg) {
-    ui.reviewActionStatus = msg || "";
+  function setReviewActionStatus(msg: string): void {
+    ui.draft.reviewActionStatus = msg || "";
     renderDraftOverlayReview();
   }
 
   // Restore any persisted draft overlay (durable across reload).
-  ui.draftOverlay = loadDraftOverlayForKey(draftOverlayKey);
-  if (
-    ui.draftOverlay &&
-    ui.draftOverlay.proposals_json &&
-    Array.isArray(ui.draftOverlay.proposals_json.proposals)
-  ) {
-    ui.draftSelected = new Set(
-      ui.draftOverlay.proposals_json.proposals
-        .map((p) => String((p && p.proposal_id) || ""))
-        .filter(Boolean),
-    );
-  }
+  const storedOverlay = loadDraftOverlayForKey(draftOverlayKey);
+  ui.draft = storedOverlay
+    ? {
+        kind: "loaded",
+        overlay: storedOverlay,
+        selected: new Set(
+          storedOverlay.proposals_json.proposals.map(
+            (proposal) => proposal.proposal_id,
+          ),
+        ),
+        reviewActionStatus: "",
+      }
+    : { kind: "empty", reviewActionStatus: "" };
   renderDraftOverlayReview();
 
   for (const control of [addAdminTokenEl, reviewAdminTokenEl]) {
@@ -447,7 +489,9 @@ export function initDraft(ctx) {
       const v = localStorage.getItem("axiograph_commit_message") || "";
       if (addMessageEl && !addMessageEl.value) addMessageEl.value = v;
       if (reviewMessageEl && !reviewMessageEl.value) reviewMessageEl.value = v;
-    } catch (_e) {}
+    } catch {
+      return;
+    }
   }
 
   function saveCommitMessage() {
@@ -462,7 +506,9 @@ export function initDraft(ctx) {
       if (addMessageEl && addMessageEl.value !== v) addMessageEl.value = v;
       if (reviewMessageEl && reviewMessageEl.value !== v)
         reviewMessageEl.value = v;
-    } catch (_e) {}
+    } catch {
+      return;
+    }
   }
 
   loadCommitMessage();
@@ -474,33 +520,28 @@ export function initDraft(ctx) {
     reviewFilterEl.addEventListener("input", renderDraftOverlayReview);
   if (reviewSelectAllBtn)
     reviewSelectAllBtn.addEventListener("click", () => {
-      if (
-        !ui.draftOverlay ||
-        !ui.draftOverlay.proposals_json ||
-        !Array.isArray(ui.draftOverlay.proposals_json.proposals)
-      )
-        return;
-      ui.draftSelected = new Set(
-        ui.draftOverlay.proposals_json.proposals
-          .map((p) => String((p && p.proposal_id) || ""))
-          .filter(Boolean),
+      if (ui.draft.kind === "empty") return;
+      ui.draft.selected = new Set(
+        ui.draft.overlay.proposals_json.proposals.map(
+          (proposal) => proposal.proposal_id,
+        ),
       );
       renderDraftOverlayReview();
     });
   if (reviewSelectNoneBtn)
     reviewSelectNoneBtn.addEventListener("click", () => {
-      ui.draftSelected = new Set();
+      if (ui.draft.kind === "loaded") ui.draft.selected = new Set<string>();
       renderDraftOverlayReview();
     });
   if (reviewClearBtn)
     reviewClearBtn.addEventListener("click", clearDraftOverlay);
   // appCtx is populated by initAddTab after initDraft; resolve on user action.
-  function reviewAction(name) {
+  function reviewAction(name: ReviewActionName): () => void {
     return () => {
       if (typeof ctx[name] !== "function") {
         const message =
           "Review action unavailable; reload the visualization and try again.";
-        ui.reviewActionStatus = message;
+        ui.draft.reviewActionStatus = message;
         setReviewStatus(message);
         return;
       }

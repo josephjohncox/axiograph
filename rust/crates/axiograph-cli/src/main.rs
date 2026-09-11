@@ -414,6 +414,18 @@ enum AuthoringCommands {
         /// Follow-up consistency cursor; requires exactly one section.
         #[arg(long)]
         cursor: Option<String>,
+        /// Select one collection nested inside validation, query, theory, refinement, or CQ artifacts.
+        #[arg(long, value_enum)]
+        nested_collection: Option<crate::authoring_workspace::AuthoringNestedCollectionV1>,
+        /// Nested page entry bound, 1 through 100.
+        #[arg(long, requires = "nested_collection")]
+        nested_limit: Option<usize>,
+        /// Nested page serialized-item byte bound, 1 through 1048576.
+        #[arg(long, requires = "nested_collection")]
+        nested_byte_limit: Option<usize>,
+        /// Identity-bound nested follow-up cursor.
+        #[arg(long, requires = "nested_collection")]
+        nested_cursor: Option<String>,
         /// Output JSON path. Defaults to stdout.
         #[arg(short, long)]
         out: Option<PathBuf>,
@@ -3753,6 +3765,10 @@ fn cmd_authoring(command: AuthoringCommands) -> Result<()> {
             section,
             page_limit,
             cursor,
+            nested_collection,
+            nested_limit,
+            nested_byte_limit,
+            nested_cursor,
             out,
         } => {
             let service = crate::authoring_workspace::AuthoringWorkspaceService::new(&workspace)?;
@@ -3768,6 +3784,15 @@ fn cmd_authoring(command: AuthoringCommands) -> Result<()> {
             }
             if cursor.is_some() {
                 request.presentation.cursor = cursor;
+            }
+            if let Some(collection) = nested_collection {
+                request.presentation.nested =
+                    Some(crate::authoring_workspace::AuthoringNestedPageRequestV1 {
+                        collection,
+                        limit: nested_limit.unwrap_or(20),
+                        byte_limit: nested_byte_limit.unwrap_or(256 * 1024),
+                        cursor: nested_cursor,
+                    });
             }
             let report = service.execute_response(request)?;
             write_json_output(&report, out.as_ref())
@@ -7996,6 +8021,38 @@ theory PlantTransport on Plant:
                 assert_eq!(cursor.as_deref(), Some("example-token"));
             }
             _ => panic!("workspace command"),
+        }
+        let nested = Cli::try_parse_from(base.into_iter().chain([
+            "--nested-collection",
+            "runtime_closure_steps",
+            "--nested-limit",
+            "7",
+            "--nested-byte-limit",
+            "262144",
+            "--nested-cursor",
+            "nested-token",
+        ]))
+        .expect("nested presentation switches");
+        match nested.command {
+            Commands::Authoring {
+                command:
+                    AuthoringCommands::Workspace {
+                        nested_collection,
+                        nested_limit,
+                        nested_byte_limit,
+                        nested_cursor,
+                        ..
+                    },
+            } => {
+                assert_eq!(
+                    nested_collection,
+                    Some(crate::authoring_workspace::AuthoringNestedCollectionV1::RuntimeClosureSteps)
+                );
+                assert_eq!(nested_limit, Some(7));
+                assert_eq!(nested_byte_limit, Some(262_144));
+                assert_eq!(nested_cursor.as_deref(), Some("nested-token"));
+            }
+            _ => panic!("workspace nested command"),
         }
         for flags in [
             ["--detail", "unknown"],

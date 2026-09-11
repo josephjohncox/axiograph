@@ -19,6 +19,11 @@ Top-level script roles:
 | `db_server_llm_viz_demo.sh` | Local LLM/viz sandbox over accepted-plane state plus synthetic evidence overlays. |
 | `approximate_tacit_query_demo.sh` | Synthetic approximate-query/confidence-filter debug demo. |
 | `predictive_proposal_demo.sh` | Predictive-proposal adapter and planning/eval runner over a small ontology. |
+| `check_no_unsafe.py` | Filesystem-complete first-party Rust scan with exact-EOF bounded directory reads, declared-byte precharge, and two byte-pinned external cache exceptions. |
+| `no_unsafe_external_cache_manifest_v1.json` | Closed semantic Kani distribution inventory for the no-unsafe ownership rule; JSON whitespace and object-member order are insignificant. |
+| `generate_no_unsafe_external_cache_manifest.py` | Bounded offline archive verifier and descriptor-confined exclusive evidence-file generator. Supported global PAX values persist. A local path overrides the global path for one ordinary member. Unsupported semantic and sparse PAX keys fail closed. |
+| `no_unsafe_row_cases_v1.json` | Closed assignments for all 81 normative no-unsafe regression rows and their required execution levels. |
+| `run_no_unsafe_row_evidence.py` | Executes every assignment separately for its row and records commands, allowed environments, exits, output, subtests, and actual passing assertion calls. It rejects stored observations that do not match execution. |
 | `perf_*.sh` | Release-mode performance runners over synthetic derived PathDB workloads. |
 | `*_demo.sh` | Operational or research integration demos; check the script header before treating one as a teaching flow. |
 

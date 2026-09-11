@@ -1,0 +1,165 @@
+---
+# Immutable action SHAs make selected `uses` lines exceed 80 columns.
+# yamllint disable rule:line-length
+# GitHub Actions requires the literal `on` key.
+# yamllint disable rule:truthy
+
+name: No-unsafe capability fixtures
+
+on:
+  push:
+    branches:
+      - "ci/no-unsafe-capability-tests-*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: "no-unsafe-capabilities-${{ github.ref }}"
+  cancel-in-progress: false
+
+jobs:
+  capability-fixtures:
+    name: Real device and mount (${{ matrix.arch }})
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    env:
+      FIXTURE_NAME: >-
+        axiograph-no-unsafe-capability-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.arch }}
+      ARCHIVE_NAME: kani-0.67.0-aarch64-unknown-linux-gnu.tar.gz
+      EVIDENCE_DIR_NAME: no-unsafe-capability-evidence-${{ matrix.arch }}
+      UPLOAD_DIR_NAME: no-unsafe-capability-upload-${{ matrix.arch }}
+    steps:
+      - name: Check out exact source without credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        with:
+          persist-credentials: false
+
+      - name: Initialize evidence retention before fallible bootstrap
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          EVIDENCE_DIR="$RUNNER_TEMP/$EVIDENCE_DIR_NAME"
+          test "$(id -u)" -ne 0
+          test ! -e "$EVIDENCE_DIR"
+          mkdir "$EVIDENCE_DIR"
+          printf 'evidence_initialized_before_bootstrap=true\n' > "$EVIDENCE_DIR/prepare.log"
+
+      # The action implementation is the same immutable commit used by the
+      # existing CI/release workflows. The requested toolchain is explicit.
+      - name: Install the repository Rust metadata toolchain
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: 1.98.0
+
+      - name: Download and prepare bounded regular fixture inputs
+        timeout-minutes: 8
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          FIXTURE_ROOT="$RUNNER_TEMP/$FIXTURE_NAME"
+          ARCHIVE_DOWNLOAD="$RUNNER_TEMP/$ARCHIVE_NAME"
+          EVIDENCE_DIR="$RUNNER_TEMP/$EVIDENCE_DIR_NAME"
+          test "$(id -u)" -ne 0
+          test -d "$EVIDENCE_DIR"
+          test ! -L "$EVIDENCE_DIR"
+          test "$(stat -c %u "$EVIDENCE_DIR")" = "$(id -u)"
+          test "$(stat -c %a "$EVIDENCE_DIR")" = 700
+          exec > >(tee "$EVIDENCE_DIR/prepare.log") 2>&1
+          test ! -e "$FIXTURE_ROOT"
+          test ! -e "$ARCHIVE_DOWNLOAD"
+          archive_part="${ARCHIVE_DOWNLOAD}.part"
+          test ! -e "$archive_part"
+          curl --proto '=https' --tlsv1.2 --fail --location \
+            --retry 3 --retry-all-errors \
+            --max-filesize 137826806 \
+            --output "$archive_part" \
+            "https://github.com/model-checking/kani/releases/download/kani-0.67.0/kani-0.67.0-aarch64-unknown-linux-gnu.tar.gz"
+          test "$(stat -c %s "$archive_part")" = 137826806
+          echo "974128f44dd43618a06d21e5fe6d9ff67188de5986fe0bc57b534b0e4639efb9  $archive_part" |
+            sha256sum --check --strict
+          mv "$archive_part" "$ARCHIVE_DOWNLOAD"
+          python3 scripts/tests/run_hosted_no_unsafe_capability_tests.py prepare \
+            --fixture-root "$FIXTURE_ROOT" \
+            --archive "$ARCHIVE_DOWNLOAD"
+
+      - name: Create only the owned device and bind-mount fixtures
+        timeout-minutes: 2
+        shell: bash
+        run: |
+          set -euo pipefail
+          FIXTURE_ROOT="$RUNNER_TEMP/$FIXTURE_NAME"
+          EVIDENCE_DIR="$RUNNER_TEMP/$EVIDENCE_DIR_NAME"
+          test "$(id -u)" -ne 0
+          sudo -- python3 scripts/tests/run_hosted_no_unsafe_capability_tests.py \
+            setup-privileged --fixture-root "$FIXTURE_ROOT" \
+            2>&1 | tee "$EVIDENCE_DIR/setup.log"
+
+      - name: Run copied production CLIs as the ordinary runner user
+        timeout-minutes: 12
+        shell: bash
+        run: |
+          set -euo pipefail
+          FIXTURE_ROOT="$RUNNER_TEMP/$FIXTURE_NAME"
+          EVIDENCE_DIR="$RUNNER_TEMP/$EVIDENCE_DIR_NAME"
+          test "$(id -u)" -ne 0
+          python3 scripts/tests/run_hosted_no_unsafe_capability_tests.py verify-and-run \
+            --fixture-root "$FIXTURE_ROOT" \
+            --report "$EVIDENCE_DIR/capability.json" \
+            2>&1 | tee "$EVIDENCE_DIR/run.log"
+
+      - name: Remove only recorded and currently matching privileged fixtures
+        if: always()
+        timeout-minutes: 2
+        shell: bash
+        run: |
+          set +e
+          FIXTURE_ROOT="$RUNNER_TEMP/$FIXTURE_NAME"
+          EVIDENCE_DIR="$RUNNER_TEMP/$EVIDENCE_DIR_NAME"
+          CLEANUP_LOG="$EVIDENCE_DIR/cleanup.log"
+          CLEANUP_REPORT="$EVIDENCE_DIR/cleanup.json"
+          test "$(id -u)" -ne 0
+          sudo -- python3 scripts/tests/run_hosted_no_unsafe_capability_tests.py \
+            cleanup-privileged --fixture-root "$FIXTURE_ROOT" \
+            2>&1 | tee "$CLEANUP_LOG"
+          cleanup_exit="${PIPESTATUS[0]}"
+          python3 scripts/tests/run_hosted_no_unsafe_capability_tests.py record-cleanup \
+            --log "$CLEANUP_LOG" \
+            --exit-code "$cleanup_exit" \
+            --report "$CLEANUP_REPORT"
+          record_exit="$?"
+          if test "$cleanup_exit" -ne 0 || test "$record_exit" -ne 0; then
+            exit 1
+          fi
+
+      - name: Validate upload safety and retain bounded partial evidence
+        id: validate_evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          EVIDENCE_DIR="$RUNNER_TEMP/$EVIDENCE_DIR_NAME"
+          UPLOAD_DIR="$RUNNER_TEMP/$UPLOAD_DIR_NAME"
+          test "$(id -u)" -ne 0
+          python3 scripts/tests/run_hosted_no_unsafe_capability_tests.py collect-evidence \
+            --source-dir "$EVIDENCE_DIR" \
+            --output-dir "$UPLOAD_DIR"
+
+      - name: Upload bounded capability evidence
+        if: ${{ always() && steps.validate_evidence.outcome == 'success' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v6
+        with:
+          name: no-unsafe-capability-${{ matrix.arch }}
+          path: ${{ runner.temp }}/${{ env.UPLOAD_DIR_NAME }}/
+          if-no-files-found: error
+          retention-days: 7

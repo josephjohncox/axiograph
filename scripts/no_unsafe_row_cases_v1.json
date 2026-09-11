@@ -1,0 +1,1288 @@
+{
+  "rows": [
+    {
+      "id": "BASE-01",
+      "required_evidence": "exit 1; exact 54, 27/home",
+      "required_level": "CLI",
+      "runners": [
+        {
+          "level": "CLI",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.ExecutedRowCaseTests.test_base01_frozen_original_cli_exact_red"
+        }
+      ],
+      "stimulus": "frozen original scanner/live unchanged tree"
+    },
+    {
+      "id": "BASE-02",
+      "required_evidence": "two homes/56 external Rust; compiler forbid command unchanged",
+      "required_level": "CLI+Make",
+      "runners": [
+        {
+          "level": "CLI",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.ScannerCliTests.test_live_relative_and_absolute_invocation_are_green"
+        },
+        {
+          "level": "Make",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.ExecutedRowCaseTests.test_base02_make_recipe_retains_compiler_forbid"
+        }
+      ],
+      "stimulus": "corrected live tree"
+    },
+    {
+      "id": "ROOT-01",
+      "required_evidence": "same bound root and classification",
+      "required_level": "CLI",
+      "runners": [
+        {
+          "level": "CLI",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.ScannerCliTests.test_live_relative_and_absolute_invocation_are_green"
+        }
+      ],
+      "stimulus": "relative invocation at root and absolute invocation outside root"
+    },
+    {
+      "id": "ROOT-02",
+      "required_evidence": "`E_ROOT_BINDING`; zero exemptions",
+      "required_level": "CLI",
+      "runners": [
+        {
+          "level": "CLI",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.RootCorrectionTests.test_linked_and_malformed_invocation_names_fail_closed"
+        }
+      ],
+      "stimulus": "linked/nonregular/malformed invocation name or ancestor"
+    },
+    {
+      "id": "ROOT-03",
+      "required_evidence": "exact `E_ROOT_BINDING` at each observed window",
+      "required_level": "direct-real",
+      "runners": [
+        {
+          "level": "direct-real",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.RootBindingTests.test_second_name_observation_detects_replacement"
+        },
+        {
+          "level": "direct-real",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.RootCorrectionTests.test_scripts_parent_mutation_before_s1_is_root_binding_failure"
+        },
+        {
+          "level": "direct-real",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.RootCorrectionTests.test_scripts_parent_mutation_after_replay_is_caught_by_final_held_s1"
+        }
+      ],
+      "stimulus": "replace final invocation name before second open; touch/replace parent before S1"
+    },
+    {
+      "id": "ROOT-04",
+      "required_evidence": "runtime only `REAL_FILE_OPS`; no loaded-source identity comparison or retained launcher",
+      "required_level": "direct+inspection",
+      "runners": [
+        {
+          "level": "direct",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.RootCorrectionTests.test_runtime_operation_seams_are_not_cli_authority"
+        },
+        {
+          "level": "inspection",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.RootCorrectionTests.test_runtime_operation_seams_are_not_cli_authority"
+        }
+      ],
+      "stimulus": "inspect production helper/main boundary"
+    },
+    {
+      "id": "ROOT-05",
+      "required_evidence": "stable success or `E_ROOT_BINDING`; no claim about pre-observation interval",
+      "required_level": "CLI smoke",
+      "runners": [
+        {
+          "level": "smoke",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.ExecutedRowCaseTests.test_root_replacement_cli_smoke"
+        }
+      ],
+      "stimulus": "uncontrolled invocation-name replacement"
+    },
+    {
+      "id": "TYPE-01",
+      "required_evidence": "immediate complete identity equality; unsupported fails closed",
+      "required_level": "direct-real",
+      "runners": [
+        {
+          "level": "direct-real",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.TypeFirstTests.test_held_root_portal_has_exact_identity"
+        }
+      ],
+      "stimulus": "upgrade held `/` O_PATH directory through controlled fd portal"
+    },
+    {
+      "id": "TYPE-02",
+      "required_evidence": "family `*_NONREGULAR` before data open; recorded portal-data-open count zero",
+      "required_level": "direct-real",
+      "runners": [
+        {
+          "level": "direct-real",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.TypeFirstTests.test_real_fifo_socket_and_device_are_never_data_opened"
+        }
+      ],
+      "stimulus": "production helper on real FIFO, Unix socket, `/dev/null`"
+    },
+    {
+      "id": "TYPE-03",
+      "required_evidence": "exact selected-family `*_OPEN` / `*_METADATA` / `*_DATA_OPEN` / `*_RACE` / `*_CLOSE`",
+      "required_level": "direct",
+      "runners": [
+        {
+          "level": "direct",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.TypeFirstOperationTests.test_regular_reader_operation_causes_are_exact"
+        }
+      ],
+      "stimulus": "metadata-open/fstat/data-upgrade/identity/close failures"
+    },
+    {
+      "id": "TYPE-04",
+      "required_evidence": "finite `E_SOURCE_NONREGULAR`; zero data open; zero exemption",
+      "required_level": "CLI",
+      "runners": [
+        {
+          "level": "CLI",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.IsolatedScannerTests.test_candidate_symlink_and_ordinary_fifo_fail_without_hang"
+        },
+        {
+          "level": "direct-real",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.TypeFirstTests.test_real_fifo_socket_and_device_are_never_data_opened"
+        }
+      ],
+      "stimulus": "ordinary ignored/untracked FIFO/socket `.rs`"
+    },
+    {
+      "id": "TYPE-05",
+      "required_evidence": "finite `E_FS_NONREGULAR` + whole-home denial; zero data open",
+      "required_level": "CLI",
+      "runners": [
+        {
+          "level": "CLI",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.IsolatedScannerTests.test_candidate_fifo_and_socket_are_nonregular_without_data_open"
+        },
+        {
+          "level": "direct-real",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.TypeFirstTests.test_real_fifo_socket_and_device_are_never_data_opened"
+        },
+        {
+          "level": "direct-real",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.TypeFirstTests.test_candidate_device_entry_is_nonregular_before_data_open"
+        }
+      ],
+      "stimulus": "candidate FIFO/socket/device entry below limits"
+    },
+    {
+      "id": "TYPE-06",
+      "required_evidence": "metadata rejection/race before replacement data open",
+      "required_level": "direct-real",
+      "runners": [
+        {
+          "level": "direct-real",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.ExecutedRowCaseTests.test_special_replacements_at_final_observations"
+        }
+      ],
+      "stimulus": "special replacement at final check/archive/output observation"
+    },
+    {
+      "id": "TYPE-07",
+      "required_evidence": "only REAL ops; portal path uses held decimal fd only; no pathname data fallback",
+      "required_level": "direct+inspection",
+      "runners": [
+        {
+          "level": "direct",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.RootCorrectionTests.test_runtime_operation_seams_are_not_cli_authority"
+        },
+        {
+          "level": "inspection",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.RootCorrectionTests.test_runtime_operation_seams_are_not_cli_authority"
+        }
+      ],
+      "stimulus": "main/CLI/env and descriptor portal interface"
+    },
+    {
+      "id": "TYPE-08",
+      "required_evidence": "scanner `E_FS_UNSUPPORTED`; generator `E_REGEN_FS_UNSUPPORTED`",
+      "required_level": "direct",
+      "runners": [
+        {
+          "level": "direct",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.CorrectionRegressionTests.test_required_primitive_unavailability_has_family_specific_cause"
+        },
+        {
+          "level": "direct-real",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.CorrectionRegressionTests.test_real_primitive_preflight_probes_every_production_flag_and_resolve_bit"
+        }
+      ],
+      "stimulus": "O_PATH/proc-fd/O_NONBLOCK semantics unavailable"
+    },
+    {
+      "id": "OWN-01",
+      "required_evidence": "exact cache cause; whole-home denial; changed/extra Rust lexical",
+      "required_level": "CLI",
+      "runners": [
+        {
+          "level": "CLI",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.IsolatedScannerTests.test_one_byte_tamper_is_hash_denial_and_lexical_evidence"
+        },
+        {
+          "level": "CLI",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.IsolatedScannerTests.test_same_size_tamper_and_missing_file_are_denied"
+        },
+        {
+          "level": "CLI",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.IsolatedScannerTests.test_extra_rust_and_nonrust_files_deny_home_and_rust_is_scanned"
+        }
+      ],
+      "stimulus": "tamper/extra/missing candidate file"
+    },
+    {
+      "id": "OWN-02",
+      "required_evidence": "`E_UNSAFE`",
+      "required_level": "CLI",
+      "runners": [
+        {
+          "level": "CLI",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.IsolatedScannerTests.test_ordinary_untracked_cfg_disabled_and_invalid_utf8_are_scanned"
+        }
+      ],
+      "stimulus": "ignored/untracked/unattached/cfg-disabled unsafe"
+    },
+    {
+      "id": "OWN-03",
+      "required_evidence": "`E_CACHE_EXTRA` + `E_UNSAFE` below limits",
+      "required_level": "CLI",
+      "runners": [
+        {
+          "level": "CLI",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.IsolatedScannerTests.test_extra_under_all_prune_names_is_not_hidden"
+        }
+      ],
+      "stimulus": "unsafe below all six candidate prune-collision names"
+    },
+    {
+      "id": "OWN-04",
+      "required_evidence": "N complete; N+1 zero exemption + incomplete coverage",
+      "required_level": "CLI",
+      "runners": [
+        {
+          "level": "CLI",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.IsolatedScannerTests.test_exact_untracked_home_is_ownership_exempt"
+        },
+        {
+          "level": "CLI",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.IsolatedScannerTests.test_candidate_directory_n_plus_one_marks_coverage_incomplete"
+        },
+        {
+          "level": "direct",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.CorrectionRegressionTests.test_directory_budget_derivation_covers_dot_records_exact_names_and_eof"
+        },
+        {
+          "level": "CLI",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.IsolatedScannerTests.test_all_repository_and_candidate_ceilings_cli_n_and_n_plus_one"
+        }
+      ],
+      "stimulus": "candidate/repository N/N+1 ceilings"
+    },
+    {
+      "id": "GIT-01",
+      "required_evidence": "bound real repository/ownership",
+      "required_level": "CLI",
+      "runners": [
+        {
+          "level": "CLI",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.ScannerCliTests.test_live_relative_and_absolute_invocation_are_green"
+        }
+      ],
+      "stimulus": "outside cwd and all decoy ambient Git/config variables"
+    },
+    {
+      "id": "GIT-02",
+      "required_evidence": "exact accept or binding/config cause",
+      "required_level": "CLI",
+      "runners": [
+        {
+          "level": "CLI",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.ExecutedRowCaseTests.test_git_cli_binding_config_malformed_outputs"
+        }
+      ],
+      "stimulus": "exact binding/config output plus malformed status/LF/NUL"
+    },
+    {
+      "id": "GIT-03",
+      "required_evidence": "`E_GIT_RACE`; zero exemptions",
+      "required_level": "CLI",
+      "runners": [
+        {
+          "level": "CLI",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.ExecutedRowCaseTests.test_git_cli_head_and_tree_changes_are_races"
+        }
+      ],
+      "stimulus": "C0/C1/C2 or T0/T1 changes"
+    },
+    {
+      "id": "GIT-04",
+      "required_evidence": "`E_GIT_RACE`; zero exemptions",
+      "required_level": "CLI",
+      "runners": [
+        {
+          "level": "CLI",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.ExecutedRowCaseTests.test_git_cli_real_index_mutation_is_a_race"
+        }
+      ],
+      "stimulus": "real index mutation/replacement among I0..I4 or X0/X1 change"
+    },
+    {
+      "id": "GIT-05",
+      "required_evidence": "whole-home `E_TRACKED_OVERRIDE`",
+      "required_level": "CLI",
+      "runners": [
+        {
+          "level": "CLI",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.IsolatedScannerTests.test_tracked_candidate_file_forces_first_party"
+        },
+        {
+          "level": "CLI",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.IsolatedScannerTests.test_blob_and_gitlink_candidate_ancestors_force_first_party"
+        }
+      ],
+      "stimulus": "tracked/staged file, blob ancestor, HEAD/index gitlink"
+    },
+    {
+      "id": "GIT-06",
+      "required_evidence": "all I0..I4 stable/equal and ownership succeeds",
+      "required_level": "CLI",
+      "runners": [
+        {
+          "level": "CLI",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.ScannerCliTests.test_live_relative_and_absolute_invocation_are_green"
+        }
+      ],
+      "stimulus": "real regular default index"
+    },
+    {
+      "id": "GIT-07",
+      "required_evidence": "exact `E_GIT_INDEX_*`; specials never data-opened",
+      "required_level": "direct+real",
+      "runners": [
+        {
+          "level": "direct-real",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.ExecutedRowCaseTests.test_git_index_all_operation_causes_and_specials"
+        }
+      ],
+      "stimulus": "index OPEN/METADATA/LINK/NONREGULAR/DATA_OPEN/SIZE/READ/SHORT_READ/RACE/CLOSE plus FIFO/socket/device"
+    },
+    {
+      "id": "GIT-08",
+      "required_evidence": "seam non-authoritative; real CLI remains",
+      "required_level": "direct+CLI",
+      "runners": [
+        {
+          "level": "direct",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.RootCorrectionTests.test_runtime_operation_seams_are_not_cli_authority"
+        },
+        {
+          "level": "CLI",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.ScannerCliTests.test_live_relative_and_absolute_invocation_are_green"
+        }
+      ],
+      "stimulus": "private FileOps inaccessible through main/CLI/env"
+    },
+    {
+      "id": "CARGO-01",
+      "required_evidence": "512 accepted; 513 Cargo count error below metadata cap",
+      "required_level": "CLI",
+      "runners": [
+        {
+          "level": "CLI",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.IsolatedScannerTests.test_root_plus_511_manifests_accepts_and_next_manifest_rejects"
+        }
+      ],
+      "stimulus": "root+511 versus root+512 package manifests"
+    },
+    {
+      "id": "CARGO-02",
+      "required_evidence": "exact Cargo-specific cause; specials never data-opened; never generic FS",
+      "required_level": "direct+real",
+      "runners": [
+        {
+          "level": "direct-real",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.ExecutedRowCaseTests.test_cargo_manifest_all_operation_causes_and_specials"
+        }
+      ],
+      "stimulus": "OPEN/METADATA/LINK/NONREGULAR/DATA_OPEN/size/aggregate/read/short/race/close/UTF8/TOML plus FIFO/socket/device"
+    },
+    {
+      "id": "CARGO-03",
+      "required_evidence": "`E_CARGO_MANIFEST_RACE`; parser consumed only original buffer",
+      "required_level": "direct-real",
+      "runners": [
+        {
+          "level": "direct-real",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.ScannerExactRaceTests.test_real_cargo_final_name_and_parent_windows_are_races"
+        },
+        {
+          "level": "direct-real",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.ScannerExactRaceTests.test_cargo_replacement_before_actual_aggregate_authorization_reads_zero_bytes"
+        }
+      ],
+      "stimulus": "replace final name before final reopen; replace/touch parent before M1"
+    },
+    {
+      "id": "CARGO-04",
+      "required_evidence": "type-first data read, metadata-only final name observation, forbid inheritance retained",
+      "required_level": "CLI",
+      "runners": [
+        {
+          "level": "CLI",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.IsolatedScannerTests.test_exact_untracked_home_is_ownership_exempt"
+        },
+        {
+          "level": "CLI",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.IsolatedScannerTests.test_cargo_package_root_around_candidate_forces_workspace_override"
+        },
+        {
+          "level": "CLI",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.IsolatedScannerTests.test_cargo_target_source_below_candidate_forces_workspace_override"
+        }
+      ],
+      "stimulus": "real stable manifests/lint/workspace ownership"
+    },
+    {
+      "id": "CARGO-05",
+      "required_evidence": "stable success or exact Cargo failure; no specified-window claim",
+      "required_level": "CLI smoke",
+      "runners": [
+        {
+          "level": "smoke",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.ExecutedRowCaseTests.test_cargo_replacement_cli_smoke"
+        },
+        {
+          "level": "smoke",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.ExecutedRowCaseTests.test_cargo_member_replacement_cli_smoke"
+        }
+      ],
+      "stimulus": "uncontrolled root/member replacement"
+    },
+    {
+      "id": "SOURCE-UTF8-01",
+      "required_evidence": "all raw bytes charged; U+FFFD text scanned; no UTF-8 error/skip",
+      "required_level": "CLI",
+      "runners": [
+        {
+          "level": "CLI",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.IsolatedScannerTests.test_ordinary_untracked_cfg_disabled_and_invalid_utf8_are_scanned"
+        }
+      ],
+      "stimulus": "invalid UTF-8 around no unsafe token"
+    },
+    {
+      "id": "SOURCE-UTF8-02",
+      "required_evidence": "`E_UNSAFE`; exact resulting line; no UTF-8 error",
+      "required_level": "CLI",
+      "runners": [
+        {
+          "level": "CLI",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.IsolatedScannerTests.test_ordinary_untracked_cfg_disabled_and_invalid_utf8_are_scanned"
+        }
+      ],
+      "stimulus": "invalid UTF-8 before/after ASCII unsafe"
+    },
+    {
+      "id": "CHECK-01",
+      "required_evidence": "semantic compare succeeds with real syscalls",
+      "required_level": "CLI",
+      "runners": [
+        {
+          "level": "CLI",
+          "official_archive": true,
+          "selector": "scripts.tests.test_no_unsafe_policy.OfficialGeneratorCliTests.test_official_archive_real_cli_matches_pinned_manifest"
+        }
+      ],
+      "stimulus": "exact regular checked manifest"
+    },
+    {
+      "id": "CHECK-02",
+      "required_evidence": "respectively `E_REGEN_ARGS`; `E_REGEN_PATH` before filesystem access",
+      "required_level": "CLI",
+      "runners": [
+        {
+          "level": "CLI",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.GeneratorPreflightTests.test_argument_and_fixed_path_errors_precede_archive_reads"
+        }
+      ],
+      "stimulus": "missing/repeated/positional/unknown option; bad grammar/fixed location"
+    },
+    {
+      "id": "CHECK-03",
+      "required_evidence": "`E_REGEN_CONFINEMENT`, never `E_REGEN_CHECK_OPEN` / `E_REGEN_CHECK_LINK` / `E_REGEN_CHECK_RACE`",
+      "required_level": "CLI",
+      "runners": [
+        {
+          "level": "CLI",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.ExecutedRowCaseTests.test_generator_cli_confinement_and_identity_failures"
+        },
+        {
+          "level": "direct-real",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.CorrectionRegressionTests.test_parent_mount_escape_errno_maps_to_generator_confinement"
+        }
+      ],
+      "stimulus": "valid fixed path with parent link/non-directory/mount/escape"
+    },
+    {
+      "id": "CHECK-04",
+      "required_evidence": "exact `E_REGEN_CHECK_*`; specials never data-opened",
+      "required_level": "CLI+direct-real",
+      "runners": [
+        {
+          "level": "CLI",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.ExecutedRowCaseTests.test_generator_cli_confinement_and_identity_failures"
+        },
+        {
+          "level": "direct-real",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.GeneratorInputOutputTests.test_check_and_archive_specials_are_classified_before_data_open"
+        },
+        {
+          "level": "direct-real",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.ExecutedRowCaseTests.test_checked_manifest_all_operation_causes"
+        }
+      ],
+      "stimulus": "initial OPEN/METADATA/LINK/NONREGULAR/DATA_OPEN/size plus FIFO/socket/device"
+    },
+    {
+      "id": "CHECK-05",
+      "required_evidence": "respectively `E_REGEN_CHECK_READ` / `E_REGEN_CHECK_SHORT_READ` / `E_REGEN_CHECK_RACE`",
+      "required_level": "direct",
+      "runners": [
+        {
+          "level": "direct",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.ExecutedRowCaseTests.test_checked_manifest_all_operation_causes"
+        }
+      ],
+      "stimulus": "read syscall error; unchanged-tuple early EOF; extra/tuple change"
+    },
+    {
+      "id": "CHECK-06",
+      "required_evidence": "`E_REGEN_CHECK_CLOSE` primary or retained secondary",
+      "required_level": "direct",
+      "runners": [
+        {
+          "level": "direct",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.CorrectionRegressionTests.test_checked_manifest_original_and_observation_closes_are_specific"
+        }
+      ],
+      "stimulus": "original or observation close alone/after primary"
+    },
+    {
+      "id": "CHECK-07",
+      "required_evidence": "exact UTF8/JSON/SCHEMA cause",
+      "required_level": "direct",
+      "runners": [
+        {
+          "level": "direct",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.GeneratorPreflightTests.test_checked_manifest_json_utf8_and_schema_causes"
+        }
+      ],
+      "stimulus": "invalid UTF-8/JSON/duplicate/schema"
+    },
+    {
+      "id": "CHECK-08",
+      "required_evidence": "`E_REGEN_CHECK_RACE`; original buffer only",
+      "required_level": "direct-real",
+      "runners": [
+        {
+          "level": "direct-real",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.DirectRealRaceTests.test_checked_manifest_replacements_hit_both_exact_windows"
+        }
+      ],
+      "stimulus": "replacement between original buffered read and final metadata reopen"
+    },
+    {
+      "id": "CHECK-09",
+      "required_evidence": "parent-time/identity change; `E_REGEN_CHECK_RACE`",
+      "required_level": "direct-real",
+      "runners": [
+        {
+          "level": "direct-real",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.DirectRealRaceTests.test_checked_manifest_replacements_hit_both_exact_windows"
+        }
+      ],
+      "stimulus": "replacement after final metadata reopen before D1"
+    },
+    {
+      "id": "CHECK-10",
+      "required_evidence": "no runtime read bypass/pathname data fallback; real integration retained",
+      "required_level": "direct+CLI",
+      "runners": [
+        {
+          "level": "direct",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.RootCorrectionTests.test_runtime_operation_seams_are_not_cli_authority"
+        },
+        {
+          "level": "CLI",
+          "official_archive": true,
+          "selector": "scripts.tests.test_no_unsafe_policy.OfficialGeneratorCliTests.test_official_archive_real_cli_matches_pinned_manifest"
+        }
+      ],
+      "stimulus": "inspect private FileOps/main/portal and run real stable CLI"
+    },
+    {
+      "id": "CHECK-11",
+      "required_evidence": "N accepted; N+1 `E_REGEN_CHECK_SIZE`",
+      "required_level": "direct",
+      "runners": [
+        {
+          "level": "direct",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.GeneratorInputOutputTests.test_checked_manifest_n_and_n_plus_one_sizes"
+        }
+      ],
+      "stimulus": "N/N+1 input size"
+    },
+    {
+      "id": "CHECK-12",
+      "required_evidence": "no `E_REGEN_CHECK_PATH`; four disjoint categories exact",
+      "required_level": "static+CLI",
+      "runners": [
+        {
+          "level": "static",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.ExecutedRowCaseTests.test_static_checked_cause_partition"
+        },
+        {
+          "level": "CLI",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.GeneratorPreflightTests.test_argument_and_fixed_path_errors_precede_archive_reads"
+        },
+        {
+          "level": "CLI",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.ExecutedRowCaseTests.test_checked_cli_four_disjoint_precedence_categories"
+        }
+      ],
+      "stimulus": "cause-set/precedence fixtures"
+    },
+    {
+      "id": "CHECK-13",
+      "required_evidence": "stable success or applicable exact failure; no interval claim",
+      "required_level": "CLI smoke",
+      "runners": [
+        {
+          "level": "smoke",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.ExecutedRowCaseTests.test_checked_manifest_replacement_cli_smoke"
+        }
+      ],
+      "stimulus": "uncontrolled checked-manifest replacement"
+    },
+    {
+      "id": "REGEN-00",
+      "required_evidence": "stable binding or exact `E_REGEN_ROOT_BINDING`; no loaded-code claim",
+      "required_level": "CLI+direct-real",
+      "runners": [
+        {
+          "level": "CLI",
+          "official_archive": true,
+          "selector": "scripts.tests.test_no_unsafe_policy.OfficialGeneratorCliTests.test_official_archive_real_cli_matches_pinned_manifest"
+        },
+        {
+          "level": "direct-real",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.ExecutedRowCaseTests.test_generator_root_binding_direct_real"
+        }
+      ],
+      "stimulus": "generator relative/absolute invocation; final-name/parent replacement"
+    },
+    {
+      "id": "REGEN-01",
+      "required_evidence": "deterministic 10-directory/32-file output",
+      "required_level": "CLI",
+      "runners": [
+        {
+          "level": "CLI",
+          "official_archive": true,
+          "selector": "scripts.tests.test_no_unsafe_policy.OfficialGeneratorCliTests.test_official_archive_real_cli_matches_pinned_manifest"
+        }
+      ],
+      "stimulus": "exact archive/check/output"
+    },
+    {
+      "id": "REGEN-02",
+      "required_evidence": "identity fails before parser/create",
+      "required_level": "CLI",
+      "runners": [
+        {
+          "level": "CLI",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.GeneratorPreflightTests.test_argument_and_fixed_path_errors_precede_archive_reads"
+        },
+        {
+          "level": "CLI",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.ExecutedRowCaseTests.test_generator_cli_confinement_and_identity_failures"
+        }
+      ],
+      "stimulus": "wrong archive name/size/hash/tamper"
+    },
+    {
+      "id": "REGEN-03",
+      "required_evidence": "respectively `E_REGEN_PATH`; `E_REGEN_CONFINEMENT`; `E_REGEN_CONFINEMENT` after fixed-name not-found",
+      "required_level": "CLI",
+      "runners": [
+        {
+          "level": "CLI",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.ExecutedRowCaseTests.test_generator_cli_confinement_and_identity_failures"
+        },
+        {
+          "level": "CLI",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.ExecutedRowCaseTests.test_generator_cli_output_race_and_precedence"
+        },
+        {
+          "level": "direct-real",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.CorrectionRegressionTests.test_parent_mount_escape_errno_maps_to_generator_confinement"
+        },
+        {
+          "level": "CLI",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.GeneratorPreflightTests.test_argument_and_fixed_path_errors_precede_archive_reads"
+        }
+      ],
+      "stimulus": "bad argument path; parent link/mount; different preexisting parent entry"
+    },
+    {
+      "id": "REGEN-04",
+      "required_evidence": "`E_REGEN_RACE` + `E_REGEN_RESIDUE`",
+      "required_level": "CLI",
+      "runners": [
+        {
+          "level": "CLI",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.ExecutedRowCaseTests.test_generator_cli_output_race_and_precedence"
+        }
+      ],
+      "stimulus": "first final-name check mismatch"
+    },
+    {
+      "id": "REGEN-05",
+      "required_evidence": "metadata fstat differs from F; race + residue; special not data-opened",
+      "required_level": "direct-real",
+      "runners": [
+        {
+          "level": "direct-real",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.DirectRealRaceTests.test_output_replacements_at_three_exact_windows_are_residue_races"
+        },
+        {
+          "level": "direct-real",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.ExecutedRowCaseTests.test_special_replacements_at_final_observations"
+        }
+      ],
+      "stimulus": "replacement before second final metadata open"
+    },
+    {
+      "id": "REGEN-06",
+      "required_evidence": "parent P0/P1 change; race + residue; replacement untouched",
+      "required_level": "direct-real",
+      "runners": [
+        {
+          "level": "direct-real",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.DirectRealRaceTests.test_output_replacements_at_three_exact_windows_are_residue_races"
+        }
+      ],
+      "stimulus": "replacement immediately after second final metadata open before portal/read"
+    },
+    {
+      "id": "REGEN-07",
+      "required_evidence": "parent change; race + residue; no deletion",
+      "required_level": "direct-real",
+      "runners": [
+        {
+          "level": "direct-real",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.DirectRealRaceTests.test_output_replacements_at_three_exact_windows_are_residue_races"
+        }
+      ],
+      "stimulus": "replacement after descriptor read before P1"
+    },
+    {
+      "id": "REGEN-08",
+      "required_evidence": "no unlink exists; replacement untouched; residue retained",
+      "required_level": "direct-real",
+      "runners": [
+        {
+          "level": "direct-real",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.DirectRealRaceTests.test_output_replacements_at_three_exact_windows_are_residue_races"
+        },
+        {
+          "level": "direct",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.OutputOperationTests.test_output_implementation_has_no_deletion_primitive"
+        }
+      ],
+      "stimulus": "replacement in former check-to-unlink window"
+    },
+    {
+      "id": "REGEN-09",
+      "required_evidence": "primary cause + residue; zero unlink/rename operations possible",
+      "required_level": "direct",
+      "runners": [
+        {
+          "level": "direct",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.OutputOperationTests.test_write_and_fsync_failures_leave_residue"
+        },
+        {
+          "level": "direct",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.OutputOperationTests.test_parent_fsync_and_close_failures_leave_residue"
+        },
+        {
+          "level": "direct",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.OutputOperationTests.test_output_implementation_has_no_deletion_primitive"
+        }
+      ],
+      "stimulus": "output helper post-create failure"
+    },
+    {
+      "id": "REGEN-10",
+      "required_evidence": "success linearizes at metadata-open syscall, not read completion",
+      "required_level": "CLI",
+      "runners": [
+        {
+          "level": "CLI",
+          "official_archive": true,
+          "selector": "scripts.tests.test_no_unsafe_policy.OfficialGeneratorCliTests.test_official_archive_real_cli_matches_pinned_manifest"
+        }
+      ],
+      "stimulus": "stable second final metadata open/portal/read and P0==P1"
+    },
+    {
+      "id": "REGEN-11",
+      "required_evidence": "success or contract-defined failure; no deletion and no specified-window claim",
+      "required_level": "CLI smoke",
+      "runners": [
+        {
+          "level": "smoke",
+          "official_archive": true,
+          "selector": "scripts.tests.test_no_unsafe_policy.ExecutedRowCaseTests.test_generator_output_replacement_cli_smoke"
+        }
+      ],
+      "stimulus": "uncontrolled output replacement"
+    },
+    {
+      "id": "REGEN-12",
+      "required_evidence": "only `E_REGEN_OUTPUT_EXISTS`; probe precedes parent emptiness; no data open",
+      "required_level": "CLI",
+      "runners": [
+        {
+          "level": "CLI",
+          "official_archive": true,
+          "selector": "scripts.tests.test_no_unsafe_policy.ExecutedRowCaseTests.test_generator_cli_output_race_and_precedence"
+        }
+      ],
+      "stimulus": "stable fixed output exists as regular/link/FIFO/socket"
+    },
+    {
+      "id": "REGEN-13",
+      "required_evidence": "fixed-name probe wins: only `E_REGEN_OUTPUT_EXISTS`",
+      "required_level": "CLI",
+      "runners": [
+        {
+          "level": "CLI",
+          "official_archive": true,
+          "selector": "scripts.tests.test_no_unsafe_policy.ExecutedRowCaseTests.test_generator_cli_output_race_and_precedence"
+        }
+      ],
+      "stimulus": "fixed output plus another entry"
+    },
+    {
+      "id": "REGEN-14",
+      "required_evidence": "respectively `E_REGEN_OUTPUT_PROBE` / `E_REGEN_OUTPUT_EXISTS` / `E_REGEN_OUTPUT_CREATE`",
+      "required_level": "direct+CLI",
+      "runners": [
+        {
+          "level": "direct",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.OutputOperationTests.test_probe_and_create_failures_are_disjoint"
+        },
+        {
+          "level": "CLI",
+          "official_archive": true,
+          "selector": "scripts.tests.test_no_unsafe_policy.ExecutedRowCaseTests.test_generator_cli_output_race_and_precedence"
+        }
+      ],
+      "stimulus": "fixed probe failure; create EEXIST; other create failure"
+    },
+    {
+      "id": "ARCHIVE-01",
+      "required_evidence": "identity before parser/create; stable success",
+      "required_level": "CLI",
+      "runners": [
+        {
+          "level": "CLI",
+          "official_archive": true,
+          "selector": "scripts.tests.test_no_unsafe_policy.OfficialGeneratorCliTests.test_official_archive_real_cli_matches_pinned_manifest"
+        }
+      ],
+      "stimulus": "official fixed archive through real syscalls"
+    },
+    {
+      "id": "ARCHIVE-02",
+      "required_evidence": "exact `E_REGEN_ARCHIVE_*`; specials never data-opened",
+      "required_level": "direct+real",
+      "runners": [
+        {
+          "level": "direct-real",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.ArchiveOperationTests.test_archive_total_operation_causes"
+        },
+        {
+          "level": "direct-real",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.GeneratorInputOutputTests.test_check_and_archive_specials_are_classified_before_data_open"
+        }
+      ],
+      "stimulus": "initial OPEN/METADATA/LINK/NONREGULAR/DATA_OPEN/SIZE plus FIFO/socket/device"
+    },
+    {
+      "id": "ARCHIVE-03",
+      "required_evidence": "respectively `E_REGEN_ARCHIVE_IDENTITY_READ` / `E_REGEN_ARCHIVE_IDENTITY_SHORT_READ` / `E_REGEN_ARCHIVE_HASH`",
+      "required_level": "direct",
+      "runners": [
+        {
+          "level": "direct",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.ArchiveOperationTests.test_archive_total_operation_causes"
+        }
+      ],
+      "stimulus": "identity read/unchanged-metadata short read/hash"
+    },
+    {
+      "id": "ARCHIVE-04",
+      "required_evidence": "`E_REGEN_ARCHIVE_SEEK`; parser not entered",
+      "required_level": "direct",
+      "runners": [
+        {
+          "level": "direct",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.ArchiveOperationTests.test_archive_total_operation_causes"
+        }
+      ],
+      "stimulus": "seek failure/wrong offset"
+    },
+    {
+      "id": "ARCHIVE-05",
+      "required_evidence": "`E_REGEN_ARCHIVE_PARSER_READ` / `E_REGEN_ARCHIVE_PARSER_SHORT_READ`, not gzip/tar",
+      "required_level": "direct",
+      "runners": [
+        {
+          "level": "direct",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.ArchiveOperationTests.test_archive_total_operation_causes"
+        }
+      ],
+      "stimulus": "parser read syscall/unchanged-metadata short read"
+    },
+    {
+      "id": "ARCHIVE-06",
+      "required_evidence": "`E_REGEN_ARCHIVE_RACE` at exact observation",
+      "required_level": "direct-real",
+      "runners": [
+        {
+          "level": "direct-real",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.ArchiveExactRaceTests.test_archive_final_name_and_parent_windows_are_real_races"
+        }
+      ],
+      "stimulus": "post-parser tuple, final-name, or B0/B1 replacement"
+    },
+    {
+      "id": "ARCHIVE-07",
+      "required_evidence": "`E_REGEN_ARCHIVE_CLOSE` primary or retained secondary; primary ordering exact",
+      "required_level": "direct",
+      "runners": [
+        {
+          "level": "direct",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.CorrectionRegressionTests.test_archive_original_and_observation_closes_are_specific"
+        },
+        {
+          "level": "direct",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.CorrectionRegressionTests.test_archive_observation_race_keeps_observation_close_cause"
+        }
+      ],
+      "stimulus": "metadata/data/final-observation close alone or after earlier primary"
+    },
+    {
+      "id": "ARCHIVE-08",
+      "required_evidence": "exact compressed/decompressed limit cause",
+      "required_level": "direct",
+      "runners": [
+        {
+          "level": "direct",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.CorrectionRegressionTests.test_archive_all_limits_accept_n_and_reject_n_plus_one"
+        }
+      ],
+      "stimulus": "compressed and total-decompressed N/N+1"
+    },
+    {
+      "id": "ARCHIVE-09",
+      "required_evidence": "every produced byte charged; counter never resets",
+      "required_level": "direct",
+      "runners": [
+        {
+          "level": "direct",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.CorrectionRegressionTests.test_archive_total_stream_charges_framing_extensions_and_concatenation"
+        },
+        {
+          "level": "direct",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.ExecutedRowCaseTests.test_persistent_global_pax_path_and_local_override"
+        }
+      ],
+      "stimulus": "header/padding/extensions/end/concatenated/trailing output"
+    },
+    {
+      "id": "ARCHIVE-10",
+      "required_evidence": "exact branch cause",
+      "required_level": "direct",
+      "runners": [
+        {
+          "level": "direct",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.CorrectionRegressionTests.test_archive_all_limits_accept_n_and_reject_n_plus_one"
+        }
+      ],
+      "stimulus": "payload/count/member/path N/N+1"
+    },
+    {
+      "id": "ARCHIVE-11",
+      "required_evidence": "exact stable parser cause",
+      "required_level": "direct",
+      "runners": [
+        {
+          "level": "direct",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.CorrectionRegressionTests.test_archive_exhaustive_path_kind_and_terminal_causes"
+        },
+        {
+          "level": "direct",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.ArchiveParserTests.test_pax_semantic_overrides_and_sparse_records_fail_closed"
+        },
+        {
+          "level": "direct",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.ArchiveParserTests.test_member_count_duplicate_and_special_causes"
+        },
+        {
+          "level": "direct",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.ArchiveParserTests.test_malformed_checksum_truncation_and_nonzero_padding_reject"
+        }
+      ],
+      "stimulus": "duplicate/path/link/special/malformed/short/inventory"
+    },
+    {
+      "id": "ARCHIVE-12",
+      "required_evidence": "stable success or exact confinement/archive race; no interval claim",
+      "required_level": "CLI smoke",
+      "runners": [
+        {
+          "level": "smoke",
+          "official_archive": true,
+          "selector": "scripts.tests.test_no_unsafe_policy.ExecutedRowCaseTests.test_archive_replacement_cli_smoke"
+        }
+      ],
+      "stimulus": "uncontrolled archive-name/parent replacement"
+    },
+    {
+      "id": "IO-01",
+      "required_evidence": "exact success/SHORT_WRITE/WRITE",
+      "required_level": "direct",
+      "runners": [
+        {
+          "level": "direct",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.OutputOperationTests.test_partial_and_interrupted_writes_finish_successfully"
+        },
+        {
+          "level": "direct",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.OutputOperationTests.test_write_and_fsync_failures_leave_residue"
+        }
+      ],
+      "stimulus": "partial/EINTR/zero/error writes"
+    },
+    {
+      "id": "IO-02",
+      "required_evidence": "`E_REGEN_FSYNC` + residue after create",
+      "required_level": "direct",
+      "runners": [
+        {
+          "level": "direct",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.OutputOperationTests.test_write_and_fsync_failures_leave_residue"
+        },
+        {
+          "level": "direct",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.OutputOperationTests.test_parent_fsync_and_close_failures_leave_residue"
+        }
+      ],
+      "stimulus": "file or parent fsync error"
+    },
+    {
+      "id": "IO-03",
+      "required_evidence": "`E_REGEN_CLOSE` + residue",
+      "required_level": "direct",
+      "runners": [
+        {
+          "level": "direct",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.OutputOperationTests.test_parent_fsync_and_close_failures_leave_residue"
+        },
+        {
+          "level": "direct",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.CorrectionRegressionTests.test_output_verification_close_is_specific_and_retains_residue"
+        }
+      ],
+      "stimulus": "created/verification close error"
+    },
+    {
+      "id": "IO-04",
+      "required_evidence": "`E_REGEN_RACE` + residue",
+      "required_level": "direct-real",
+      "runners": [
+        {
+          "level": "direct-real",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.DirectRealRaceTests.test_output_replacements_at_three_exact_windows_are_residue_races"
+        }
+      ],
+      "stimulus": "final metadata-open replacement plus parent-time change"
+    },
+    {
+      "id": "IO-05",
+      "required_evidence": "no unlink/unlinkat/rename operation exists",
+      "required_level": "direct",
+      "runners": [
+        {
+          "level": "direct",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.OutputOperationTests.test_output_implementation_has_no_deletion_primitive"
+        }
+      ],
+      "stimulus": "inspect REAL_IO_OPS interface"
+    },
+    {
+      "id": "IO-06",
+      "required_evidence": "real syscall integration retained",
+      "required_level": "CLI",
+      "runners": [
+        {
+          "level": "CLI",
+          "official_archive": true,
+          "selector": "scripts.tests.test_no_unsafe_policy.OfficialGeneratorCliTests.test_official_archive_real_cli_matches_pinned_manifest"
+        }
+      ],
+      "stimulus": "real write/fsync/close/type-first final-observation success"
+    },
+    {
+      "id": "IO-10",
+      "required_evidence": "no deletion primitive/call exists; replacement remains; residue reported",
+      "required_level": "direct-real",
+      "runners": [
+        {
+          "level": "direct-real",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.DirectRealRaceTests.test_output_replacements_at_three_exact_windows_are_residue_races"
+        },
+        {
+          "level": "direct",
+          "official_archive": false,
+          "selector": "scripts.tests.test_no_unsafe_policy.OutputOperationTests.test_output_implementation_has_no_deletion_primitive"
+        }
+      ],
+      "stimulus": "install replacement in former identity-check-to-unlink window"
+    }
+  ],
+  "schema": "axiograph-no-unsafe-executed-row-cases-v1"
+}

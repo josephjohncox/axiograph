@@ -44,5 +44,9 @@ vector-free advisory fixtures for the embedding/evidence schemas:
 - `embedding_sidecar_manifest_example.json`
 - `embedding_evidence_overlay_example.json`
 
-Those fixtures are documentation/test inputs. They are not accepted ontology
-state and do not satisfy promotion gates without normal typed review.
+Those fixtures are documentation/test inputs. The overlay's demo observation
+names pairwise cosine explicitly; it is not an ANN result or a provider-defined
+confidence. Runtime `semantic_search` results use the separate versioned V2
+`token`, `embedding`, and `fusion` score fields described in the reference.
+None of these artifacts is accepted ontology state or satisfies promotion gates
+without normal typed review.

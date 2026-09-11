@@ -1,21 +1,31 @@
-// @ts-nocheck
+import { isRecord, type VizUiState } from "../types";
 
-export function initSelection(ctx) {
-  let selectedId = null;
+interface SelectionContext {
+  nodesEl: HTMLElement;
+  ui: VizUiState;
+  shortestPathEdgeIdxs?: (startId: number, endId: number) => number[];
+  updatePathStatus?: () => void;
+  renderDetail?: (id: number) => void;
+  renderGraph?: (id: number) => void;
+  fetchDescribeEntity?: (id: number) => void;
+}
+
+export function initSelection(ctx: SelectionContext) {
+  let selectedId: number | null = null;
 
   function selectedIdRef() {
     return selectedId;
   }
 
-  function syncSelectedClass(id) {
+  function syncSelectedClass(id: number): void {
     const nodesEl = ctx.nodesEl;
     if (!nodesEl) return;
-    for (const el of nodesEl.querySelectorAll(".node")) {
+    for (const el of nodesEl.querySelectorAll<HTMLElement>(".node")) {
       el.classList.toggle("selected", el.dataset.id === String(id));
     }
   }
 
-  function selectNode(id, shiftKey) {
+  function selectNode(id: number, shiftKey: boolean): void {
     selectedId = id;
     syncSelectedClass(id);
     if (shiftKey) {
@@ -38,25 +48,24 @@ export function initSelection(ctx) {
     if (ctx.fetchDescribeEntity) ctx.fetchDescribeEntity(id);
   }
 
-  function clearHighlights() {
-    ctx.ui.highlightIds = new Set();
+  function clearHighlights(): void {
+    ctx.ui.highlightIds = new Set<number>();
   }
 
-  function highlightFromQueryResponse(resp) {
-    const ids = new Set();
-    const rows = (resp && Array.isArray(resp.rows)) ? resp.rows : [];
+  function highlightFromQueryResponse(resp: unknown): void {
+    const ids = new Set<number>();
+    const rows = isRecord(resp) && Array.isArray(resp.rows) ? resp.rows : [];
     for (const row of rows) {
-      if (!row || typeof row !== "object") continue;
-      for (const k of Object.keys(row)) {
-        const v = row[k];
-        if (v && typeof v.id === "number") ids.add(v.id);
+      if (!isRecord(row)) continue;
+      for (const value of Object.values(row)) {
+        if (isRecord(value) && typeof value.id === "number") ids.add(value.id);
       }
     }
     ctx.ui.highlightIds = ids;
   }
 
-  function highlightFromToolLoop(outcome) {
-    if (!outcome || typeof outcome !== "object") return;
+  function highlightFromToolLoop(outcome: unknown): void {
+    if (!isRecord(outcome)) return;
     if (outcome.query_result) {
       highlightFromQueryResponse(outcome.query_result);
       return;

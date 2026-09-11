@@ -481,6 +481,46 @@ function overlay(count = 2) {
     validation: { ok: true },
   };
 }
+function malformedOverlays() {
+  return [
+    {
+      proposals_json: { proposals: [{ evidence: [] }] },
+    },
+    {
+      proposals_json: {
+        proposals: [{ proposal_id: "", evidence: [] }],
+      },
+    },
+    {
+      proposals_json: {
+        proposals: [
+          { proposal_id: "p0", evidence: [] },
+          { proposal_id: "p0", evidence: [] },
+        ],
+      },
+    },
+    {
+      proposals_json: { proposals: [{ proposal_id: "p0" }] },
+    },
+    {
+      proposals_json: {
+        proposals: [{ proposal_id: "p0", evidence: null }],
+      },
+    },
+    {
+      proposals_json: {
+        proposals: [{ proposal_id: "p0", evidence: [{}] }],
+      },
+    },
+    {
+      proposals_json: {
+        proposals: [
+          { proposal_id: "p0", evidence: [{ chunk_id: "" }] },
+        ],
+      },
+    },
+  ];
+}
 function freeze(value) {
   if (value && typeof value === "object") {
     Object.freeze(value);
@@ -490,7 +530,7 @@ function freeze(value) {
 }
 function reviewContext() {
   const ctx = {
-    ui: { draftSelected: new Set() },
+    ui: { draft: { kind: "empty", reviewActionStatus: "" } },
     isServerMode: () => true,
     setActiveTab: (tab) => ctx.tabs.push(tab),
     tabs: [],
@@ -554,11 +594,11 @@ test("production status and draft review render rich literal text, filter/select
   await ctx.reviewSelectNoneBtn.fire("click");
   assert.equal(ctx.currentDraftFiltered().proposals_json.proposals.length, 0);
   await ctx.reviewSelectAllBtn.fire("click");
-  assert.equal(ctx.ui.draftSelected.size, 2);
+  assert.equal(ctx.ui.draft.selected.size, 2);
   ctx.reviewFilterEl.value = "absent";
   await ctx.reviewFilterEl.fire("input");
   assert.ok(ctx.reviewListEl.textContent.includes("No proposals match"));
-  assert.equal(ctx.ui.draftSelected.size, 2);
+  assert.equal(ctx.ui.draft.selected.size, 2);
   ctx.reviewFilterEl.value = "";
   ctx.setDraftOverlay(overlay(251));
   assert.equal(tagged(ctx.reviewListEl, "input").length, 250);
@@ -592,8 +632,8 @@ test("production tool-loop prefill uses the initialized draft callback without a
     true,
   );
   assert.equal(setOverlay.mock.calls.length, 1);
-  assert.equal(ctx.ui.draftOverlay, draft);
-  assert.equal(ctx.ui.draftSelected.size, 2);
+  assert.equal(ctx.ui.draft.overlay, draft);
+  assert.equal(ctx.ui.draft.selected.size, 2);
   assert.deepEqual(ctx.tabs, ["review"]);
   assert.equal(ctx.reviewCommitOutputEl.textContent, "");
   assert.equal(ctx.reviewPromoteOutputEl.textContent, "");
@@ -607,7 +647,7 @@ test("production tool-loop prefill uses the initialized draft callback without a
     }),
     true,
   );
-  assert.equal(ctx.ui.draftOverlay, latest);
+  assert.equal(ctx.ui.draft.overlay, latest);
   assert.equal(setOverlay.mock.calls.length, 2);
   assert.equal(ctx.prefillAddFromToolLoop(null), false);
   assert.equal(
@@ -632,6 +672,36 @@ test("production tool-loop prefill uses the initialized draft callback without a
     false,
   );
   assert.match(ctx.reviewStatusEl.textContent, /fixture failure/);
+});
+
+test("persisted and tool-loop malformed drafts never enter loaded state", (t) => {
+  const stored = environment(t);
+  const storageKey = "axiograph_draft_overlay_v1:fixture.invalid:fixture";
+  for (const malformed of malformedOverlays()) {
+    stored.set(storageKey, JSON.stringify(malformed));
+    const persisted = reviewContext();
+    assert.equal(persisted.ui.draft.kind, "empty");
+    assert.equal(persisted.currentDraftFiltered(), null);
+
+    const toolLoop = reviewContext();
+    const setOverlay = t.mock.method(toolLoop, "setDraftOverlay");
+    assert.equal(
+      toolLoop.prefillAddFromToolLoop({
+        artifacts: { generated_overlay: malformed },
+      }),
+      false,
+    );
+    assert.equal(
+      toolLoop.prefillAddFromToolLoop({
+        steps: [{ tool: "predictive_proposal", result: malformed }],
+      }),
+      false,
+    );
+    assert.equal(setOverlay.mock.calls.length, 0);
+    assert.equal(toolLoop.ui.draft.kind, "empty");
+    assert.equal(toolLoop.setDraftOverlay(malformed), false);
+    assert.equal(toolLoop.ui.draft.kind, "empty");
+  }
 });
 
 function llmAskContext(t) {
@@ -679,7 +749,7 @@ test("production LLM callbacks and keyboard cannot call unsupported endpoints or
   await ctx.llmAskBtn.fire("click");
   await ctx.llmQuestionEl.fire("keydown", { key: "Enter" });
   assert.match(ctx.llmStatusEl.textContent, /Unavailable.*read-only/);
-  assert.equal(ctx.ui.draftOverlay, draft);
+  assert.equal(ctx.ui.draft.overlay, draft);
   assert.deepEqual([...ctx.ui.highlightIds], [99]);
   assert.deepEqual(ctx.continuation, []);
 });
@@ -748,7 +818,7 @@ test("real draft-before-add wiring preserves selection and blocks unsupported mu
   const ctx = reviewContext();
   Object.assign(ctx, initAddTab(ctx));
   ctx.setDraftOverlay(freeze(overlay()));
-  ctx.ui.draftSelected = new Set(["p1"]);
+  ctx.ui.draft.selected = new Set(["p1"]);
   const calls = [];
   t.mock.method(globalThis, "fetch", async (url, options) => {
     calls.push([url, options?.body ? JSON.parse(options.body) : null]);
@@ -762,7 +832,7 @@ test("real draft-before-add wiring preserves selection and blocks unsupported mu
             : {},
     };
   });
-  const original = JSON.stringify(ctx.ui.draftOverlay);
+  const original = JSON.stringify(ctx.ui.draft.overlay);
   await ctx.reviewCommitBtn.fire("click");
   assert.deepEqual(
     calls.map((c) => c[0]),
@@ -788,8 +858,8 @@ test("real draft-before-add wiring preserves selection and blocks unsupported mu
   );
   assert.match(ctx.reviewStatusEl.textContent, /promote blocked.*read-only/);
   // Neither status/role metadata nor the selected draft enables HTTP actions.
-  assert.equal(JSON.stringify(ctx.ui.draftOverlay), original);
-  assert.deepEqual([...ctx.ui.draftSelected], ["p1"]);
+  assert.equal(JSON.stringify(ctx.ui.draft.overlay), original);
+  assert.deepEqual([...ctx.ui.draft.selected], ["p1"]);
 });
 
 test("V2, legacy roles, malformed and unavailable status never enable an admin POST", async (t) => {
@@ -867,7 +937,7 @@ test("V2, legacy roles, malformed and unavailable status never enable an admin P
       before,
     );
     assert.equal(ctx.reviewAxiTextEl.value, "retain canonical draft");
-    assert.equal(ctx.ui.draftSelected.size, 2);
+    assert.equal(ctx.ui.draft.selected.size, 2);
   }
   calls.length = 0;
   const offline = reviewContext();
@@ -908,7 +978,12 @@ test("missing handlers and selector errors are actionable, with zero requests or
     before,
   );
   Object.assign(ctx, initAddTab(ctx));
-  ctx.ui.draftOverlay = { proposals_json: { proposals: [null] } };
+  ctx.ui.draft = {
+    kind: "loaded",
+    overlay: { proposals_json: { proposals: [null] } },
+    selected: new Set(),
+    reviewActionStatus: "",
+  };
   ctx.reviewAxiTextEl.value = "keep draft";
   ctx.addAxiTextEl.value = "keep add";
   await ctx.reviewCommitBtn.fire("click");

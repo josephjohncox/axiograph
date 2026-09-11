@@ -4,7 +4,7 @@
     "lib": ["ES2020", "DOM"],
     "module": "ESNext",
     "moduleResolution": "Bundler",
-    "strict": false,
+    "strict": true,
     "skipLibCheck": true,
     "useDefineForClassFields": true,
     "noEmit": true

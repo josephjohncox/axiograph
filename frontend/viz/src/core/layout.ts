@@ -1,4 +1,15 @@
-export function initLayoutControls(ctx) {
+import type { VizUiState } from "../types";
+
+interface LayoutContext {
+  ui: VizUiState;
+  rerender: () => void;
+  layoutAlgoEl: HTMLSelectElement;
+  layoutCenterEl: HTMLSelectElement;
+  layoutRefreshBtn: HTMLButtonElement;
+  labelDensityEl: HTMLSelectElement;
+}
+
+export function initLayoutControls(ctx: LayoutContext): void {
   const { ui, rerender, layoutAlgoEl, layoutCenterEl, layoutRefreshBtn, labelDensityEl } = ctx;
   function loadLayoutPrefs() {
     try {
@@ -6,7 +17,10 @@ export function initLayoutControls(ctx) {
       const c = localStorage.getItem("axiograph_viz_layout_center");
       if (a) ui.layoutAlgo = a;
       if (c) ui.layoutCenter = c;
-    } catch (_e) {}
+    } catch {
+      ui.layoutAlgo = "radial";
+      ui.layoutCenter = "focus";
+    }
     if (layoutAlgoEl) layoutAlgoEl.value = ui.layoutAlgo || "radial";
     if (layoutCenterEl) layoutCenterEl.value = ui.layoutCenter || "focus";
   }
@@ -15,7 +29,9 @@ export function initLayoutControls(ctx) {
     try {
       localStorage.setItem("axiograph_viz_layout_algo", ui.layoutAlgo || "radial");
       localStorage.setItem("axiograph_viz_layout_center", ui.layoutCenter || "focus");
-    } catch (_e) {}
+    } catch {
+      return;
+    }
   }
 
   loadLayoutPrefs();
@@ -61,9 +77,19 @@ export function initLayoutControls(ctx) {
     try {
       const v = localStorage.getItem("axiograph_viz_label_density");
       if (v) labelDensityEl.value = v;
-    } catch (_e) {}
+    } catch {
+      labelDensityEl.value = "smart";
+    }
     labelDensityEl.addEventListener("change", () => {
-      try { localStorage.setItem("axiograph_viz_label_density", String(labelDensityEl.value || "")); } catch (_e) {}
+      try {
+        localStorage.setItem(
+          "axiograph_viz_label_density",
+          String(labelDensityEl.value || ""),
+        );
+      } catch {
+        rerender();
+        return;
+      }
       rerender();
     });
   }

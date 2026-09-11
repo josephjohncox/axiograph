@@ -121,6 +121,54 @@ This returns candidate ontology refs, likely relations/paths/CQs, ambiguity
 notes, and suggested next queries. It is deliberately weak: it cannot satisfy
 promotion gates or enforced software coverage.
 
+## Interpret Semantic Search Scores
+
+The `semantic_search` tool response is versioned as
+`axiograph_semantic_search_response_v2`. Read the nested fields by method, not
+as one provider confidence:
+
+```json
+{
+  "version": "axiograph_semantic_search_response_v2",
+  "authority": "evidence_only",
+  "scores": {
+    "fusion": {"value": 0.82, "method": "max_available_fusion_v1"},
+    "token": {"value": 0.41, "method": "normalized_token_hash_dot_exhaustive_v1"},
+    "embedding": {
+      "value": 0.82,
+      "method": "normalized_embedding_cosine_exhaustive_v1",
+      "source": {"backend": "openai", "model": "example-model"}
+    }
+  }
+}
+```
+
+The fragment shows one hit's `scores` object. `token` or `embedding` is `null`
+only when that method did not score the hit. Axiograph keeps every computed
+component through fusion and applies result limits to the fused ranking, so
+`null` does not mean that a computed score fell outside a hidden candidate
+window. `fusion` is the maximum available value, not a calibrated confidence.
+The tool uses exhaustive snapshot-local scans and requires
+`methods.ann_used` to be `false`.
+
+Do not send the old unversioned `similarity_ollama` field to a V2 decoder. The
+decoder uses position-specific score-method types and closed top-level method
+descriptors. It rejects legacy or unknown fields, swapped token/embedding/fusion
+methods, contradictory scan descriptors, and `ann_used=true` instead of guessing
+their meaning.
+
+A token-hash score requires a finite, non-zero token vector. Indexed text with
+no token terms has no token score, and a nonempty query with no token terms
+fails closed. Neither case becomes a normalized token score of zero.
+
+Provider calls return query vectors only. Axiograph computes the displayed
+embedding cosine locally. Stored vectors and provider query vectors must have a
+finite, non-zero norm; resolved rows are not publicly mutable, and scoring
+rechecks both norms when it computes the cosine denominator. A zero vector fails
+closed instead of becoming a cosine score of zero. These fields are retrieval
+evidence and cannot issue a certificate, change canonical `.axi`, or bypass
+typed review and promotion.
+
 ## Typed Query Lifecycle
 
 Every promotion-sensitive query should follow one lifecycle:

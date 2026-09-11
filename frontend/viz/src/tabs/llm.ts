@@ -1,10 +1,26 @@
-// @ts-nocheck
-
 import { UNSUPPORTED } from "../server/read-only-client";
+import { isRecord, type LlmHistoryEntry } from "../types";
 
-export function initLlmTab(ctx) {
+interface LlmContext {
+  llmStatusEl: HTMLElement;
+  llmQuestionEl: HTMLInputElement;
+  llmAutoCommitEl: HTMLInputElement;
+  llmCertifyEl: HTMLInputElement;
+  llmVerifyEl: HTMLInputElement;
+  llmRequireVerifiedEl: HTMLInputElement;
+  llmAskBtn: HTMLButtonElement;
+  llmToQueryBtn: HTMLButtonElement;
+  llmClearBtn: HTMLButtonElement;
+  llmChatEl: HTMLElement;
+  llmCitationsEl: HTMLElement;
+  llmDebugEl: HTMLElement;
+  rerender: () => void;
+  clearHighlights: () => void;
+  highlightFromToolLoop: (outcome: unknown) => void;
+}
+
+export function initLlmTab(ctx: LlmContext) {
   const {
-    ui,
     llmStatusEl,
     llmQuestionEl,
     llmAutoCommitEl,
@@ -17,16 +33,10 @@ export function initLlmTab(ctx) {
     llmChatEl,
     llmCitationsEl,
     llmDebugEl,
-    axqlQueryEl,
-    selectedContextFilter,
-    setActiveTab,
-    setAxqlStatus,
     rerender,
-    prefillAddFromToolLoop,
-    clearHighlights,
     highlightFromToolLoop,
   } = ctx;
-  function setLlmStatus(text) {
+  function setLlmStatus(text: string): void {
     if (!llmStatusEl) return;
     llmStatusEl.textContent = text || "";
   }
@@ -45,7 +55,9 @@ export function initLlmTab(ctx) {
         localStorage.getItem("axiograph_server_accepted_snapshot_id") || ""
       ).trim();
       if (accepted) key = accepted;
-    } catch (_e) {}
+    } catch {
+      key = "";
+    }
     if (!key) {
       const params = new URLSearchParams(window.location.search || "");
       key = (params.get("snapshot") || "").trim();
@@ -59,32 +71,33 @@ export function initLlmTab(ctx) {
     return llmHistoryKey;
   }
 
-  function setLlmHistoryKey(next) {
+  function setLlmHistoryKey(next: string): void {
     llmHistoryKey = next;
   }
 
-  function loadLlmHistoryForKey(key) {
+  function loadLlmHistoryForKey(key: string): LlmHistoryEntry[] {
     try {
       const raw = localStorage.getItem(key) || "";
       if (!raw.trim()) return [];
-      const v = JSON.parse(raw);
-      if (!Array.isArray(v)) return [];
-      return v
-        .map((m) => ({
-          role: String((m && m.role) || ""),
-          content: String((m && m.content) || ""),
-          public_rationale: String((m && m.public_rationale) || ""),
-          citations: Array.isArray(m && m.citations)
-            ? m.citations.map((x) => String(x))
+      const parsed: unknown = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return [];
+      return parsed
+        .filter(isRecord)
+        .map((message) => ({
+          role: String(message.role || ""),
+          content: String(message.content || ""),
+          public_rationale: String(message.public_rationale || ""),
+          citations: Array.isArray(message.citations)
+            ? message.citations.map((item) => String(item))
             : [],
-          queries: Array.isArray(m && m.queries)
-            ? m.queries.map((x) => String(x))
+          queries: Array.isArray(message.queries)
+            ? message.queries.map((item) => String(item))
             : [],
-          notes: Array.isArray(m && m.notes)
-            ? m.notes.map((x) => String(x))
+          notes: Array.isArray(message.notes)
+            ? message.notes.map((item) => String(item))
             : [],
         }))
-        .filter((m) => m.role && m.content);
+        .filter((message) => Boolean(message.role && message.content));
     } catch (_e) {
       return [];
     }
@@ -93,7 +106,9 @@ export function initLlmTab(ctx) {
   function saveLlmHistory() {
     try {
       localStorage.setItem(llmHistoryKey, JSON.stringify(llmHistory));
-    } catch (_e) {}
+    } catch {
+      return;
+    }
   }
 
   let llmHistory = loadLlmHistoryForKey(llmHistoryKey); // {role, content}
@@ -101,11 +116,11 @@ export function initLlmTab(ctx) {
     return llmHistory;
   }
 
-  function setLlmHistory(next) {
+  function setLlmHistory(next: LlmHistoryEntry[]): void {
     llmHistory = next || [];
   }
 
-  function setLlmCitations(obj) {
+  function setLlmCitations(obj: unknown): void {
     if (!llmCitationsEl) return;
     if (obj == null) {
       llmCitationsEl.textContent = "";
@@ -119,7 +134,9 @@ export function initLlmTab(ctx) {
     }
   }
 
-  async function openDocChunk() { setLlmCitations(UNSUPPORTED); }
+  function openDocChunk(_chunkId: string): void {
+    setLlmCitations(UNSUPPORTED);
+  }
 
   function renderLlmChat() {
     if (!llmChatEl) return;
@@ -216,29 +233,6 @@ export function initLlmTab(ctx) {
     llmChatEl.scrollTop = llmChatEl.scrollHeight;
   }
 
-  function appendLlmMessage(role, content, extras) {
-    const e = extras && typeof extras === "object" ? extras : {};
-    llmHistory.push({
-      role,
-      content: String(content || ""),
-      public_rationale: String(e.public_rationale || ""),
-      citations: Array.isArray(e.citations)
-        ? e.citations.map((x) => String(x))
-        : [],
-      queries: Array.isArray(e.queries) ? e.queries.map((x) => String(x)) : [],
-      notes: Array.isArray(e.notes) ? e.notes.map((x) => String(x)) : [],
-    });
-    if (llmHistory.length > 40) llmHistory.splice(0, llmHistory.length - 40);
-    // Keep localStorage bounded too (models sometimes emit long answers).
-    for (const m of llmHistory) {
-      if (m && typeof m.content === "string" && m.content.length > 2800) {
-        m.content = m.content.slice(0, 2800) + "…";
-      }
-    }
-    saveLlmHistory();
-    renderLlmChat();
-  }
-
   renderLlmChat();
 
   // The read-only server has no mutation endpoint; persisted preferences cannot
@@ -256,7 +250,9 @@ export function initLlmTab(ctx) {
       if (llmCertifyEl)
         llmCertifyEl.checked =
           v === "1" || v === "true" || v === "yes" || v === "on";
-    } catch (_e) {}
+    } catch {
+      return;
+    }
   }
 
   function saveLlmCertify() {
@@ -266,7 +262,9 @@ export function initLlmTab(ctx) {
         "axiograph_llm_certify",
         llmCertifyEl.checked ? "1" : "0",
       );
-    } catch (_e) {}
+    } catch {
+      return;
+    }
   }
 
   function loadLlmVerify() {
@@ -275,7 +273,9 @@ export function initLlmTab(ctx) {
       if (llmVerifyEl)
         llmVerifyEl.checked =
           v === "1" || v === "true" || v === "yes" || v === "on";
-    } catch (_e) {}
+    } catch {
+      return;
+    }
   }
 
   function saveLlmVerify() {
@@ -285,7 +285,9 @@ export function initLlmTab(ctx) {
         "axiograph_llm_verify",
         llmVerifyEl.checked ? "1" : "0",
       );
-    } catch (_e) {}
+    } catch {
+      return;
+    }
   }
 
   function loadLlmRequireVerified() {
@@ -294,7 +296,9 @@ export function initLlmTab(ctx) {
       if (llmRequireVerifiedEl)
         llmRequireVerifiedEl.checked =
           v === "1" || v === "true" || v === "yes" || v === "on";
-    } catch (_e) {}
+    } catch {
+      return;
+    }
   }
 
   function saveLlmRequireVerified() {
@@ -304,7 +308,9 @@ export function initLlmTab(ctx) {
         "axiograph_llm_require_verified",
         llmRequireVerifiedEl.checked ? "1" : "0",
       );
-    } catch (_e) {}
+    } catch {
+      return;
+    }
   }
 
   loadLlmCertify();
@@ -315,7 +321,7 @@ export function initLlmTab(ctx) {
   if (llmRequireVerifiedEl)
     llmRequireVerifiedEl.addEventListener("change", saveLlmRequireVerified);
 
-  function setLlmDebug(obj) {
+  function setLlmDebug(obj: unknown): void {
     if (!llmDebugEl) return;
     try {
       llmDebugEl.textContent = obj ? JSON.stringify(obj, null, 2) : "";
@@ -324,8 +330,8 @@ export function initLlmTab(ctx) {
     }
   }
 
-  async function llmAgentAsk() { setLlmStatus(UNSUPPORTED); }
-  async function llmToQuery() { setLlmStatus(UNSUPPORTED); }
+  function llmAgentAsk(): void { setLlmStatus(UNSUPPORTED); }
+  function llmToQuery(): void { setLlmStatus(UNSUPPORTED); }
   for (const control of [llmQuestionEl, llmAskBtn, llmToQueryBtn, llmCertifyEl, llmVerifyEl, llmRequireVerifiedEl]) {
     if (control) { control.disabled = true; control.title = UNSUPPORTED; }
   }

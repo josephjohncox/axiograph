@@ -53,7 +53,10 @@ use axiograph_pathdb::{
 };
 
 mod projection;
-pub(crate) use projection::{AuthoringDetailV1, AuthoringPresentationV1, AuthoringSectionV1};
+pub(crate) use projection::{
+    AuthoringDetailV1, AuthoringNestedCollectionV1, AuthoringNestedPageRequestV1,
+    AuthoringPresentationV1, AuthoringSectionV1,
+};
 
 pub(crate) const AUTHORING_WORKSPACE_REQUEST_VERSION_V1: &str = "authoring_workspace_request_v1";
 pub(crate) const AUTHORING_WORKSPACE_REPORT_VERSION_V1: &str = "authoring_workspace_report_v1";

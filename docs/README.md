@@ -43,9 +43,9 @@ of truth.
 | Semantic VCS, reconciliation, merge/rebase | `docs/reference/SEMANTIC_VCS.md` |
 | Embeddings, RAG, and evidence overlays | `docs/reference/EMBEDDINGS_AND_EVIDENCE.md` |
 | Backend projection, semantic loss, and evidence-only readback | `docs/reference/BACKEND_PROJECTIONS.md`, `docs/reference/KERNEL_IR.md` |
-| Development, testing, and releases | `docs/DEVELOPMENT.md`, `docs/howto/TESTING.md`, `docs/howto/RELEASING.md` |
+| Development, testing, and releases | `docs/DEVELOPMENT.md`, `docs/howto/TESTING.md`, `docs/howto/RELEASING.md`, `docs/reference/RELEASE_BASELINE_V20260908.md` |
 | Agent working context and backlog | `docs/reference/AGENT_CONTEXT.md`, `docs/roadmaps/ROADMAP_AGENT_BACKLOG.md` |
-| Engineering audit and remediation | [Baseline audit](reference/ENGINEERING_AUDIT_70C568B.md), [implementation tracker](roadmaps/ROADMAP_ENGINEERING_QUALITY.md) |
+| Engineering audit and remediation | [Baseline audit](reference/ENGINEERING_AUDIT_70C568B.md), [implementation tracker](roadmaps/ROADMAP_ENGINEERING_QUALITY.md), [complete execution plan](roadmaps/ENGINEERING_QUALITY_EXECUTION_PLAN.md) |
 
 Repo-wide language rule:
 
@@ -89,6 +89,7 @@ Repo-wide language rule:
 ## Reference
 
 - [Engineering audit at 70c568b](reference/ENGINEERING_AUDIT_70C568B.md) — baseline findings, measurements, limits, and linked remediation.
+- [Released baseline v20260908.0.0](reference/RELEASE_BASELINE_V20260908.md) — accepted release identity, publication evidence, and scope.
 - `docs/reference/CERTIFICATES.md` — current certificate families and Lean validation.
 - `docs/reference/TRUSTED_KERNEL.md` — exact trusted boundary and non-claims.
 - `docs/reference/SECURITY_BOUNDARIES.md` — bounded filesystem, process, network, parser, server, and storage surfaces.
@@ -140,6 +141,7 @@ Repo-wide language rule:
 ## Roadmaps
 
 - [Engineering quality implementation](roadmaps/ROADMAP_ENGINEERING_QUALITY.md) — prioritized fixes, acceptance checks, and validation evidence.
+- [Engineering quality execution plan](roadmaps/ENGINEERING_QUALITY_EXECUTION_PLAN.md) — complete requirement ledger and dependency-ordered unit catalog.
 - `docs/roadmaps/ROADMAP_AGENT_BACKLOG.md`
 - `docs/roadmaps/ROADMAP_TOOLING_OVERLAY_SEPARATION.md`
 - `docs/roadmaps/ROADMAP_PRODUCTION_READINESS.md`

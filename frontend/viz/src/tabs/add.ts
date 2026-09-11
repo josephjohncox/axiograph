@@ -1,28 +1,41 @@
-// @ts-nocheck
-
 import { UNSUPPORTED } from "../server/read-only-client";
+import type { DraftSelection } from "../core/draft-selection";
+import type { DraftOverlay, VizUiState } from "../types";
 
-export function initAddTab(ctx) {
+type StatusSetter = (message: string) => void;
+
+interface AddContext {
+  ui: VizUiState;
+  addGenerateBtn: HTMLButtonElement;
+  addCommitBtn: HTMLButtonElement;
+  addDraftAxiBtn: HTMLButtonElement;
+  addPromoteAxiBtn: HTMLButtonElement;
+  reviewCommitBtn: HTMLButtonElement;
+  reviewDraftAxiBtn: HTMLButtonElement;
+  reviewPromoteAxiBtn: HTMLButtonElement;
+  currentDraftFiltered: () => DraftSelection | null;
+  setReviewStatus: (...content: Array<Node | string>) => void;
+  setReviewCommitOutput: (value: unknown) => void;
+  setReviewPromoteOutput: (value: unknown) => void;
+  setAddCommitOutput: (value: unknown) => void;
+  setAddPromoteOutput: (value: unknown) => void;
+  setAddPromoteStatus: StatusSetter;
+  setAddStatus: StatusSetter;
+  setAddOutput: (value: unknown) => void;
+  setDraftOverlay: (overlay: DraftOverlay, options?: { notePrefix?: string }) => boolean;
+  clearDraftOverlay: () => void;
+  isServerMode: () => boolean;
+}
+
+export function initAddTab(ctx: AddContext) {
   const {
     ui,
-    addRelTypeEl,
-    addSourceNameEl,
-    addTargetNameEl,
-    addPairingEl,
-    addContextEl,
-    addEvidenceTextEl,
-    addConfidenceEl,
     addGenerateBtn,
     addCommitBtn,
     addDraftAxiBtn,
     addPromoteAxiBtn,
-    addAxiTextEl,
-    reviewAxiTextEl,
     currentDraftFiltered,
     setReviewStatus,
-    currentContextNameFromFilter,
-    setReviewCommitOutput,
-    setReviewPromoteOutput,
     setAddCommitOutput,
     setAddPromoteOutput,
     setAddPromoteStatus,
@@ -31,15 +44,15 @@ export function initAddTab(ctx) {
     setDraftOverlay,
     clearDraftOverlay,
     isServerMode,
-    renderDraftOverlayReview,
   } = ctx;
 
   const cliGuidance =
     "Review canonical .axi changes with `axiograph check --help` and `axiograph authoring --help`; use the documented AxiStore CLI workflow for accepted state.";
-  for (const [buttons, label] of [
+  const mutationButtons: Array<[HTMLButtonElement[], string]> = [
     [[addCommitBtn, ctx.reviewCommitBtn], "commit (CLI only)"],
     [[addPromoteAxiBtn, ctx.reviewPromoteAxiBtn], "promote (CLI only)"],
-  ]) {
+  ];
+  for (const [buttons, label] of mutationButtons) {
     for (const button of buttons) {
       if (!button) continue;
       button.disabled = true;
@@ -54,7 +67,7 @@ export function initAddTab(ctx) {
   setAddStatus(UNSUPPORTED);
   async function generateRelationProposals() { setAddStatus(UNSUPPORTED); }
 
-  function selectedDraftForAction(setStatus) {
+  function selectedDraftForAction(setStatus: StatusSetter): DraftSelection | null | undefined {
     try {
       if (typeof currentDraftFiltered !== "function") {
         throw new Error(
@@ -65,7 +78,7 @@ export function initAddTab(ctx) {
     } catch (error) {
       const message = `Cannot use draft selection: ${String(error)}`;
       setStatus(message);
-      ui.reviewActionStatus = message;
+      ui.draft.reviewActionStatus = message;
       setReviewStatus(message);
       return undefined;
     }
@@ -74,13 +87,16 @@ export function initAddTab(ctx) {
   // The read-only API has no mutation routes. Neither a role string
   // nor a receipt in read-only status is HTTP mutation authority. All outcomes
   // here are blocked; there is deliberately no legacy admin POST fallback.
-  async function explainUnavailableMutation(action, setStatus) {
+  async function explainUnavailableMutation(
+    action: string,
+    setStatus: StatusSetter,
+  ): Promise<void> {
     const reason = isServerMode()
       ? "the read-only server exposes no commit/promote endpoint"
       : "offline visualization";
     const message = `${action} blocked: ${reason}. ${cliGuidance}`;
     setStatus(message);
-    ui.reviewActionStatus = message;
+    ui.draft.reviewActionStatus = message;
     setReviewStatus(message);
   }
 
@@ -93,10 +109,13 @@ export function initAddTab(ctx) {
       setReviewStatus(message);
       return;
     }
-    if (ui.draftOverlay.validation?.ok === false) {
+    if (
+      ui.draft.kind === "loaded" &&
+      ui.draft.overlay.validation?.ok === false
+    ) {
       const message = `commit blocked: validation failed; fix proposals first. ${cliGuidance}`;
       setAddStatus(message);
-      ui.reviewActionStatus = message;
+      ui.draft.reviewActionStatus = message;
       setReviewStatus(message);
       return;
     }

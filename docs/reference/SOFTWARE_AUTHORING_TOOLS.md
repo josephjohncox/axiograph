@@ -233,15 +233,75 @@ requires changing this version. Compilation failures cannot establish the closur
 `follow_up_available=false`, no cursor is issued, and existing cursors are rejected.
 An unbound fresh request or explicit full report can still inspect those failures.
 
-Pagination bounds **entries**, not the byte size of an indivisible canonical
-artifact. Selected validation/query/evolution objects can contain large nested
-collections; request them deliberately or use explicit full. HTTP retains its
-16 MiB response bound and protocol input limits remain unchanged. Compact projection
-serializes only selected slices, not a full JSON tree followed by key deletion;
-it still performs full semantic evaluation. This is a payload improvement, not a
-CPU/memory scalability claim. The regression compares `serde_json::to_vec` on both
-real full and summary fixture reports (minified UTF-8) with a 12,000-byte summary
-ceiling and >90% reduction. This fixture ceiling is not a universal workspace bound.
+Top-level pagination bounds entries. Nested drilldown additionally bounds both
+entries and serialized item-envelope bytes. Add one `presentation.nested` object
+to a summary or standard request:
+
+```json
+{
+  "detail": "summary",
+  "nested": {
+    "collection": "runtime_closure_steps",
+    "limit": 20,
+    "byte_limit": 262144,
+    "cursor": "authoring-nested-page-v1:..."
+  }
+}
+```
+
+The nested collection names are:
+
+- `validation_finite_residuals`;
+- `runtime_judgments`, `runtime_admissibility_checks`,
+  `runtime_closure_steps`, and `runtime_assumption_diagnostics`;
+- `dependent_contexts` and `dependent_residuals`;
+- `prepared_inferred_types`, `prepared_kernel_refs`, and
+  `prepared_refinement_handles`;
+- `explanation_plan`, `explanation_typed_holes`,
+  `explanation_suggestions`, `explanation_refinement_candidates`,
+  `explanation_semantic_claims`, and `explanation_trust_gaps`; and
+- `competency_questions`, `competency_evaluations`,
+  `competency_unresolved`, `competency_prepared_kernel_refs`,
+  `competency_prepared_refinement_handles`, and
+  `competency_refinement_candidates`.
+
+A nested page has a closed `authoring-nested-page-v1` envelope. It reports
+`total`, `offset`, `returned`, `omitted`, `truncated`, `entry_limit`,
+`byte_limit`, `returned_bytes`, `max_item_bytes`, `items`, and `next_cursor`.
+The entry limit is 1–100. The byte limit is 1–1 MiB and defaults to 256 KiB.
+Each serialized item envelope is limited to 256 KiB. A byte limit too small for
+the next indivisible item fails instead of returning a non-progressing page.
+The byte limit applies to the serialized item envelopes, not to the retained
+summary, source, trust, promotion, and next-action fields around the page.
+HTTP keeps its independent 16 MiB whole-response rejection.
+
+Each item contains its collection, parent identity, canonical ordinal, item
+identity, exact canonical-item SHA-256 and byte count, media type, and the
+minified canonical JSON entry. The schema closes and types this envelope; the
+canonical domain entry remains lossless JSON, not a deserializable checker
+receipt or an SDK object. Concatenating and decoding all item strings reproduces
+the selected canonical full-report collection in order. Item and cursor bindings
+include exact source/request identity. Display mode, page limits, and cursors do
+not alter source, prepared-query, answer, or certificate identities. A source,
+import, CQ, baseline, query, collection, or workspace change invalidates the
+cursor. Existing `authoring-page-v1` top-level cursor behavior and ordering are
+unchanged; nested pages use the separate `authoring-nested-page-v1` version.
+
+Measured pretty-printed full reports were 688,114 bytes for software authoring
+and 1,018,751 bytes for regulated shipment. Their largest indivisible runtime
+report entries were 265,112 and 304,129 bytes. A deterministic generated package
+with 180 relation/constraint/fact/CQ families produced a 22,826,008-byte full
+report: CQ evaluations used 8,245,621 bytes, one runtime report used 1,251,845
+bytes, and closure steps used 612,498 bytes. These measurements select the nested
+families above; they are not universal capacity, latency, or peak-memory claims.
+Generate that input with
+`examples/software_authoring/generate_high_cardinality_authoring.py` in a build
+or temporary directory. It is measurement evidence, not accepted ontology data.
+
+Compact projection serializes only selected slices, not a full JSON tree followed
+by key deletion; it still performs full semantic evaluation. The summary
+regression keeps a 12,000-byte ceiling and >90% reduction for the two checked-in
+fixtures. This fixture ceiling is not a universal workspace bound.
 
 ### Import-aware derived query projection
 
@@ -395,6 +455,12 @@ axiograph authoring workspace --workspace . \
 axiograph authoring workspace --workspace . \
   --request examples/software_authoring/authoring_workspace_request.json \
   --detail summary --section stable_runtime_refs --page-limit 10 --cursor "$CURSOR"
+# Bound a nested runtime collection by entries and serialized item bytes:
+axiograph authoring workspace --workspace . \
+  --request examples/software_authoring/authoring_workspace_request.json \
+  --detail summary --nested-collection runtime_closure_steps \
+  --nested-limit 7 --nested-byte-limit 262144
+# Follow with --nested-cursor and the otherwise identical semantic request.
 # Canonical machine artifact, byte-identical to the pre-projection full report:
 axiograph authoring workspace --workspace . \
   --request examples/software_authoring/authoring_workspace_request.json --detail full

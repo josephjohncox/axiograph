@@ -1,15 +1,42 @@
-// @ts-nocheck
+import type { ContextMenuRequest } from "../core/context_menu";
+import type {
+  EdgeMap,
+  GraphEdge,
+  GraphNode,
+  GraphPayload,
+  NodeMap,
+  VizUiState,
+} from "../types";
 
-export function makeGraphRenderer(ctx) {
+interface GraphRendererContext {
+  graph: GraphPayload;
+  ui: VizUiState;
+  svg: SVGSVGElement;
+  nodeById: NodeMap;
+  outEdgesBySource: EdgeMap;
+  inEdgesByTarget: EdgeMap;
+  isNodeVisible: (node: GraphNode | null | undefined) => boolean;
+  isEdgeVisible: (edge: GraphEdge) => boolean;
+  nodeDisplayName: (node: GraphNode) => string;
+  nodeTitle: (node: GraphNode) => string;
+  nodeColor: (node: GraphNode) => string;
+  planeStrokeColor: (node: GraphNode) => string;
+  edgeColor: (edge: GraphEdge) => string;
+  edgeConfidence: (edge: GraphEdge) => number;
+  selectNode: (id: number, shiftKey: boolean) => void;
+  visibleEdgeIdxsAll: () => number[];
+  opacityByConfidenceEl: HTMLInputElement;
+  labelDensityEl: HTMLSelectElement;
+  bfsDepths: (anchorIds: number[], edgeIdxs: number[]) => Map<number, number>;
+  showContextMenu: (request: ContextMenuRequest) => void;
+}
+
+export function makeGraphRenderer(ctx: GraphRendererContext) {
   const {
     graph,
     ui,
     svg,
-    nodeById,
-    outEdgesBySource,
-    inEdgesByTarget,
     isNodeVisible,
-    isEdgeVisible,
     nodeDisplayName,
     nodeTitle,
     nodeColor,
@@ -24,7 +51,7 @@ export function makeGraphRenderer(ctx) {
     showContextMenu,
   } = ctx;
 
-function renderGraph(selectedId) {
+function renderGraph(selectedId: number): void {
   const focus = (graph.summary && graph.summary.focus_ids && graph.summary.focus_ids.length)
     ? graph.summary.focus_ids
     : (graph.nodes.length ? [graph.nodes[0].id] : []);
@@ -36,29 +63,30 @@ function renderGraph(selectedId) {
 
   // Layout is purely a UI view of the currently visible graph; it is not part
   // of the trusted kernel.
-  let pos = new Map(); // id -> {x,y,d}
+  const pos = new Map<number, { x: number; y: number; d: number }>(); // id -> {x,y,d}
   let W = 1000, H = 800;
 
   if (algo === "type_columns") {
-    const groups = new Map(); // type -> [nodes]
+    const groups = new Map<string, GraphNode[]>(); // type -> [nodes]
     for (const n of graph.nodes) {
       if (!isNodeVisible(n)) continue;
       const key = String(n.entity_type || "Entity");
-      if (!groups.has(key)) groups.set(key, []);
-      groups.get(key).push(n);
+      const nodes = groups.get(key) ?? [];
+      nodes.push(n);
+      groups.set(key, nodes);
     }
-    const types = Array.from(groups.keys()).sort((a,b) => a.localeCompare(b));
-    for (const t of types) groups.get(t).sort((a,b) => a.id - b.id);
+    const types = Array.from(groups.keys()).sort((a, b) => a.localeCompare(b));
+    for (const type of types) groups.get(type)?.sort((a, b) => a.id - b.id);
 
     const margin = 80;
     const colW = 220;
     const rowH = 70;
-    const maxRows = Math.max(1, ...types.map(t => groups.get(t).length));
+    const maxRows = Math.max(1, ...types.map((type) => groups.get(type)?.length ?? 0));
     W = Math.max(1000, margin * 2 + types.length * colW);
     H = Math.max(800, margin * 2 + maxRows * rowH);
     for (let ci = 0; ci < types.length; ci++) {
       const t = types[ci];
-      const ns = groups.get(t);
+      const ns = groups.get(t) ?? [];
       for (let ri = 0; ri < ns.length; ri++) {
         const x = margin + ci * colW + colW / 2;
         const y = margin + ri * rowH + rowH / 2;
@@ -69,7 +97,7 @@ function renderGraph(selectedId) {
     // Deterministic PRNG based on layoutSeed + node id (no Math.random, so
     // refresh is reproducible).
     const seed = (Number(ui.layoutSeed || 0) ^ 0x9e3779b9) >>> 0;
-    function rnd32(x) {
+    function rnd32(x: number): number {
       // xorshift32
       let v = (x ^ seed) >>> 0;
       v ^= v << 13; v >>>= 0;
@@ -91,11 +119,11 @@ function renderGraph(selectedId) {
     // BFS-based layouts: compute depths from the selected anchor.
     const depth = bfsDepths(anchor, visibleIdxs);
     const maxDepth = Math.max(...Array.from(depth.values()), 0);
-    const rings = [];
+    const rings: GraphNode[][] = [];
     for (let d = 0; d <= maxDepth; d++) rings.push([]);
     for (const n of graph.nodes) {
       if (!isNodeVisible(n)) continue;
-      const d = depth.has(n.id) ? depth.get(n.id) : (maxDepth + 1);
+      const d = depth.get(n.id) ?? (maxDepth + 1);
       if (!rings[d]) rings[d] = [];
       rings[d].push(n);
     }
@@ -164,7 +192,6 @@ function renderGraph(selectedId) {
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
   let visibleCount = 0;
   const density = labelDensityEl ? String(labelDensityEl.value || "smart") : "smart";
-  const labelAll = density === "all" ? true : (density === "none" ? false : (visibleCount <= 900));
   for (const n of graph.nodes) {
     if (!isNodeVisible(n)) continue;
     const p = pos.get(n.id);
@@ -181,6 +208,7 @@ function renderGraph(selectedId) {
     ui.layoutBounds = { minX: 0, minY: 0, maxX: W, maxY: H, W, H };
   }
 
+  const labelAll = density === "all" || (density === "smart" && visibleCount <= 900);
   const maxDrawEdges = 2200;
   const pathEdgeSet = new Set(ui.pathEdgeIdxs || []);
   let drawEdgeIdxs = visibleIdxs.slice();
@@ -190,7 +218,7 @@ function renderGraph(selectedId) {
     drawEdgeIdxs = Array.from(keep).sort((a,b) => a - b);
   }
 
-  const neighborSet = new Set();
+  const neighborSet = new Set<number>();
   if (selectedId != null) {
     for (const idx of visibleIdxs) {
       const e = graph.edges[idx];
@@ -205,10 +233,10 @@ function renderGraph(selectedId) {
     const b = pos.get(e.target);
     if (!a || !b) continue;
     const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
-    line.setAttribute("x1", a.x);
-    line.setAttribute("y1", a.y);
-    line.setAttribute("x2", b.x);
-    line.setAttribute("y2", b.y);
+    line.setAttribute("x1", String(a.x));
+    line.setAttribute("y1", String(a.y));
+    line.setAttribute("x2", String(b.x));
+    line.setAttribute("y2", String(b.y));
     const onPath = pathEdgeSet.has(idx);
     const touchesSelected = (selectedId != null) && (e.source === selectedId || e.target === selectedId);
     const conf01 = edgeConfidence(e);
@@ -239,8 +267,8 @@ function renderGraph(selectedId) {
     gEl.style.cursor = "pointer";
 
     const circle = document.createElementNS("http://www.w3.org/2000/svg", "circle");
-    circle.setAttribute("cx", p.x);
-    circle.setAttribute("cy", p.y);
+    circle.setAttribute("cx", String(p.x));
+    circle.setAttribute("cy", String(p.y));
     const isSelected = n.id === selectedId;
     const isNeighbor = neighborSet.has(n.id);
     const isHighlighted = ui.highlightIds && ui.highlightIds.has(n.id);
@@ -253,8 +281,8 @@ function renderGraph(selectedId) {
 
     if (isSelected || isNeighbor || isHighlighted) {
       const ring = document.createElementNS("http://www.w3.org/2000/svg", "circle");
-      ring.setAttribute("cx", p.x);
-      ring.setAttribute("cy", p.y);
+      ring.setAttribute("cx", String(p.x));
+      ring.setAttribute("cy", String(p.y));
       ring.setAttribute("r", String(baseR + 3));
       ring.setAttribute("fill", "none");
       ring.setAttribute("stroke", isSelected ? "#2b7fff" : (isNeighbor ? "#ff006e" : "#ff9800"));
@@ -269,8 +297,8 @@ function renderGraph(selectedId) {
       : (labelAll || isSelected || isNeighbor || isHighlighted);
     if (showLabel) {
       const label = document.createElementNS("http://www.w3.org/2000/svg", "text");
-      label.setAttribute("x", p.x);
-      label.setAttribute("y", p.y - 14);
+      label.setAttribute("x", String(p.x));
+      label.setAttribute("y", String(p.y - 14));
       label.setAttribute("text-anchor", "middle");
       label.setAttribute("font-size", "10");
       label.setAttribute("fill", "#333");

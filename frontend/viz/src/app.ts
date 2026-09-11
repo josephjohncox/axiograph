@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { getDom } from "./dom";
 import { initGraph } from "./graph";
 import {
@@ -49,8 +48,16 @@ import { makeBfsDepths, makeEdgeColor } from "./util/graph_helpers";
 import { UNSUPPORTED } from "./server/read-only-client";
 import { isServerMode } from "./util/env";
 import { categorizeAttrs } from "./util/attrs";
+import type { GraphPayload, VizUiState } from "./types";
 
-export function initApp(graph: any) {
+function extendContext<T extends object, U extends object>(
+  target: T,
+  extension: U,
+): asserts target is T & U {
+  Object.assign(target, extension);
+}
+
+export function initApp(graph: GraphPayload) {
   const dom = getDom();
   const {
     nodesEl,
@@ -173,20 +180,19 @@ export function initApp(graph: any) {
   const { nodeById, outEdgesBySource, inEdgesByTarget } = initGraph(graph);
   const edgeColor = makeEdgeColor(nodeById);
   const bfsDepths = makeBfsDepths(graph);
-  let renderDetail = () => {};
-  let renderGraph = () => {};
+  let renderDetail: (id: number) => void = () => {};
+  let renderGraph: (id: number) => void = () => {};
+  let selectedIdRef: () => number | null = () => null;
 
-  const ui = {
+  const ui: VizUiState = {
     pathStart: null,
     pathEnd: null,
     pathEdgeIdxs: [],
     pathMessage: "",
-    highlightIds: new Set(),
+    highlightIds: new Set<number>(),
     activeRunId: null,
-    runMap: new Map(),
-    draftOverlay: null,
-    draftSelected: new Set(),
-    reviewActionStatus: "",
+    runMap: new Map<string, number[]>(),
+    draft: { kind: "empty", reviewActionStatus: "" },
     layoutAlgo: "radial",
     layoutCenter: "focus",
     layoutSeed: 0,
@@ -206,8 +212,8 @@ export function initApp(graph: any) {
     nodeById,
     outEdgesBySource,
     inEdgesByTarget,
-    factContexts: new Map(),
-    contextNameById: new Map(),
+    factContexts: new Map<number, Set<number>>(),
+    contextNameById: new Map<number, string>(),
     show_plane_accepted,
     show_plane_evidence,
     show_plane_data,
@@ -326,12 +332,14 @@ export function initApp(graph: any) {
     clamp01,
   };
 
-  Object.assign(appCtx, makeSummaries(appCtx));
-  Object.assign(appCtx, initDetailTabs(appCtx));
+  extendContext(appCtx, makeSummaries(appCtx));
+  extendContext(appCtx, initDetailTabs(appCtx));
 
   // Sidebar tabs (keep the UI scannable as tooling grows).
-  const tabButtons = Array.from(document.querySelectorAll(".tabbtn"));
-  const tabPanels = {
+  const tabButtons = Array.from(
+    document.querySelectorAll<HTMLButtonElement>(".tabbtn"),
+  );
+  const tabPanels: Record<string, HTMLElement | null> = {
     explore: document.getElementById("tab_explore"),
     query: document.getElementById("tab_query"),
     llm: document.getElementById("tab_llm"),
@@ -340,7 +348,7 @@ export function initApp(graph: any) {
     add: document.getElementById("tab_add"),
   };
 
-  function setActiveTab(name) {
+  function setActiveTab(name: string) {
     const want = name && tabPanels[name] ? name : "explore";
     for (const btn of tabButtons) {
       btn.classList.toggle("active", (btn.dataset && btn.dataset.tab) === want);
@@ -351,7 +359,9 @@ export function initApp(graph: any) {
     }
     try {
       localStorage.setItem("axiograph_viz_sidebar_tab", want);
-    } catch (_e) {}
+    } catch {
+      return;
+    }
   }
 
   function initTabs() {
@@ -366,7 +376,9 @@ export function initApp(graph: any) {
     try {
       const v = localStorage.getItem("axiograph_viz_sidebar_tab");
       if (v) initial = v;
-    } catch (_e) {}
+    } catch {
+      initial = "explore";
+    }
     setActiveTab(initial);
   }
   initTabs();
@@ -395,6 +407,11 @@ export function initApp(graph: any) {
       appCtx.contextNameById.set(n.id, n.name || `Context#${n.id}`);
     }
   }
+  function addFactContext(tupleId: number, contextId: number): void {
+    const contexts = appCtx.factContexts.get(tupleId) ?? new Set<number>();
+    contexts.add(contextId);
+    appCtx.factContexts.set(tupleId, contexts);
+  }
   if (graph.tuple_contexts && typeof graph.tuple_contexts === "object") {
     for (const [k, v] of Object.entries(graph.tuple_contexts)) {
       const tid = Number(k);
@@ -403,34 +420,24 @@ export function initApp(graph: any) {
       for (const cidRaw of arr) {
         const cid = Number(cidRaw);
         if (!Number.isFinite(cid)) continue;
-        if (!appCtx.factContexts.has(tid))
-          appCtx.factContexts.set(tid, new Set());
-        appCtx.factContexts.get(tid).add(cid);
+        addFactContext(tid, cid);
       }
     }
   } else {
     // Fallback: derive membership from edges in the neighborhood graph.
     for (const e of graph.edges) {
       if (e.label === "axi_fact_in_context") {
-        if (!appCtx.factContexts.has(e.source))
-          appCtx.factContexts.set(e.source, new Set());
-        appCtx.factContexts.get(e.source).add(e.target);
+        addFactContext(e.source, e.target);
       }
     }
   }
-  appCtx.isServerMode = isServerMode;
-  appCtx.bfsDepths = bfsDepths;
-
-  function renderNodeList(filter) {
-    return renderNodeListView(appCtx, filter);
-  }
-  appCtx.categorizeAttrs = categorizeAttrs;
+  extendContext(appCtx, { isServerMode, bfsDepths, categorizeAttrs });
 
   function rerender() {
     renderNodeList(searchEl.value);
-    const selectedId = appCtx.selectedIdRef ? appCtx.selectedIdRef() : null;
+    const selectedId = selectedIdRef();
     if (selectedId != null) {
-      for (const el of nodesEl.querySelectorAll(".node")) {
+      for (const el of nodesEl.querySelectorAll<HTMLElement>(".node")) {
         el.classList.toggle("selected", el.dataset.id === String(selectedId));
       }
       renderDetail(selectedId);
@@ -438,24 +445,34 @@ export function initApp(graph: any) {
     }
   }
 
-  appCtx.rerender = rerender;
+  extendContext(appCtx, { rerender });
   initLayoutControls(appCtx);
-  initVisibility(appCtx);
-  Object.assign(appCtx, initContextMenu(appCtx));
+  const visibilityApi = initVisibility(appCtx);
+  extendContext(appCtx, visibilityApi);
+  extendContext(appCtx, initContextMenu(appCtx));
 
-  appCtx.shortestPathEdgeIdxs = (a, b) => shortestPathEdgeIdxs(appCtx, a, b);
-  appCtx.updatePathStatus = () => updatePathStatus(appCtx);
+  extendContext(appCtx, {
+    shortestPathEdgeIdxs: (a: number, b: number) => shortestPathEdgeIdxs(appCtx, a, b),
+    updatePathStatus: () => updatePathStatus(appCtx),
+  });
 
   const selectionApi = initSelection(appCtx);
-  Object.assign(appCtx, selectionApi);
+  extendContext(appCtx, selectionApi);
+  selectedIdRef = selectionApi.selectedIdRef;
+
+  function renderNodeList(filter: string): void {
+    renderNodeListView(
+      { ...appCtx, ...visibilityApi, ...selectionApi },
+      filter,
+    );
+  }
 
   const detailRenderer = makeDetailRenderer(appCtx);
   renderDetail = detailRenderer.renderDetail;
   const graphRenderer = makeGraphRenderer(appCtx);
   renderGraph = graphRenderer.renderGraph;
-  appCtx.renderDetail = renderDetail;
-  appCtx.renderGraph = renderGraph;
-  Object.assign(appCtx, initDescribe(appCtx));
+  extendContext(appCtx, { renderDetail, renderGraph });
+  extendContext(appCtx, initDescribe(appCtx));
 
   // Populate the node list before selecting a focus node so selection highlighting works.
   renderNodeList(searchEl.value);
@@ -473,11 +490,11 @@ export function initApp(graph: any) {
 
   initPathUi(appCtx);
   initContextFilter(appCtx);
-  Object.assign(appCtx, initRunFilter(appCtx));
-  Object.assign(appCtx, initComponents(appCtx));
-  appCtx.clearPath = clearPath;
+  extendContext(appCtx, initRunFilter(appCtx));
+  extendContext(appCtx, initComponents(appCtx));
+  extendContext(appCtx, { clearPath });
 
-  Object.assign(appCtx, {
+  extendContext(appCtx, {
     setActiveTab,
     selectedContextFilter: () => selectedContextFilter(appCtx),
     currentContextNameFromFilter: () => currentContextNameFromFilter(appCtx),
@@ -499,9 +516,9 @@ export function initApp(graph: any) {
   if (addConfidenceEl)
     addConfidenceEl.addEventListener("input", updateAddConfidenceLabel);
   updateAddConfidenceLabel();
-  appCtx.updateAddConfidenceLabel = updateAddConfidenceLabel;
+  extendContext(appCtx, { updateAddConfidenceLabel });
 
-  async function certifySelectedPath() {
+  function certifySelectedPath(): void {
     ui.pathMessage = UNSUPPORTED;
     updatePathStatus(appCtx);
   }
@@ -509,30 +526,30 @@ export function initApp(graph: any) {
     if (button) { button.disabled = true; button.title = UNSUPPORTED; }
   }
 
-  appCtx.certifySelectedPath = certifySelectedPath;
+  extendContext(appCtx, { certifySelectedPath });
 
   if (certifyPathBtn)
-    certifyPathBtn.addEventListener("click", () => certifySelectedPath(false));
+    certifyPathBtn.addEventListener("click", certifySelectedPath);
   if (verifyPathBtn)
-    verifyPathBtn.addEventListener("click", () => certifySelectedPath(true));
+    verifyPathBtn.addEventListener("click", certifySelectedPath);
 
   const statusApi = initStatus(appCtx);
-  Object.assign(appCtx, statusApi);
+  extendContext(appCtx, statusApi);
 
   const draftApi = initDraft(appCtx);
-  Object.assign(appCtx, draftApi);
+  extendContext(appCtx, draftApi);
 
   const queryApi = initQueryTab(appCtx);
-  Object.assign(appCtx, queryApi);
+  extendContext(appCtx, queryApi);
 
   const llmApi = initLlmTab(appCtx);
-  Object.assign(appCtx, llmApi);
+  extendContext(appCtx, llmApi);
 
   const predictiveProposalApi = initPredictiveProposalTab(appCtx);
-  Object.assign(appCtx, predictiveProposalApi);
+  extendContext(appCtx, predictiveProposalApi);
 
   const addApi = initAddTab(appCtx);
-  Object.assign(appCtx, addApi);
+  extendContext(appCtx, addApi);
 
   initServerControlsView(appCtx);
 
@@ -553,7 +570,7 @@ export function initApp(graph: any) {
   setViewBox();
 
   let panning = false;
-  let panStart = null;
+  let panStart: { x: number; y: number; vx: number; vy: number } | null = null;
 
   svg.addEventListener(
     "wheel",
@@ -624,9 +641,9 @@ export function initApp(graph: any) {
     setViewBox();
   }
 
-  function centerViewOnNode(nodeId) {
-    if (!ui.nodePos || !ui.nodePos.has(nodeId)) return;
-    const p = ui.nodePos.get(nodeId);
+  function centerViewOnNode(nodeId: number) {
+    const p = ui.nodePos?.get(nodeId);
+    if (!p) return;
     view.x = p.x - view.w / 2;
     view.y = p.y - view.h / 2;
     setViewBox();
@@ -637,16 +654,17 @@ export function initApp(graph: any) {
   if (layoutResetViewBtn)
     layoutResetViewBtn.addEventListener("click", resetViewToDefault);
 
-  appCtx.fitViewToLayoutBounds = fitViewToLayoutBounds;
-  appCtx.resetViewToDefault = resetViewToDefault;
-  appCtx.centerViewOnNode = centerViewOnNode;
+  extendContext(appCtx, {
+    fitViewToLayoutBounds,
+    resetViewToDefault,
+    centerViewOnNode,
+  });
 
   // Keyboard shortcuts (avoid interfering with typing in inputs).
   window.addEventListener("keydown", (ev) => {
+    const target = ev.target;
     const tag =
-      ev.target && ev.target.tagName
-        ? String(ev.target.tagName).toLowerCase()
-        : "";
+      target instanceof Element ? target.tagName.toLowerCase() : "";
     if (tag === "input" || tag === "textarea" || ev.isComposing) return;
 
     if (ev.key === "/" && !ev.ctrlKey && !ev.metaKey && !ev.altKey) {
