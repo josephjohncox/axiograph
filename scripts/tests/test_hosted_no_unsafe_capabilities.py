@@ -7,9 +7,11 @@ import re
 import shutil
 import stat
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
+from typing import cast
 from unittest import mock
 
 from scripts.tests.run_hosted_no_unsafe_capability_tests import (
@@ -39,6 +41,7 @@ from scripts.tests.run_hosted_no_unsafe_capability_tests import (
 )
 
 REPO = Path(__file__).resolve().parents[2]
+HELPER_MODULE = "scripts.tests.run_hosted_no_unsafe_capability_tests"
 
 
 class FakePrivilegedOperations:
@@ -68,19 +71,22 @@ class FakePrivilegedOperations:
             "target_pre_identity": [os.makedev(8, 1), 99],
         }
 
-    def create_device(self, _contract: dict[str, object]) -> dict[str, object]:
+    def create_device(self, contract: dict[str, object]) -> dict[str, object]:
+        del contract
         self.events.append("create-device")
         return dict(self.device)
 
-    def create_mount(self, _contract: dict[str, object]) -> dict[str, object]:
+    def create_mount(self, contract: dict[str, object]) -> dict[str, object]:
+        del contract
         self.events.append("create-mount")
         return dict(self.mount)
 
     def harden_mount(
         self,
-        _contract: dict[str, object],
+        contract: dict[str, object],
         record: dict[str, object],
     ) -> dict[str, object]:
+        del contract
         self.events.append("harden-mount")
         if self.harden_error is not None:
             raise CapabilityFixtureError(self.harden_error)
@@ -90,16 +96,18 @@ class FakePrivilegedOperations:
 
     def remove_device(
         self,
-        _contract: dict[str, object],
-        _record: dict[str, object],
+        contract: dict[str, object],
+        record: dict[str, object],
     ) -> None:
+        del contract, record
         self.events.append("remove-device")
 
     def unmount(
         self,
-        _contract: dict[str, object],
-        _record: dict[str, object],
+        contract: dict[str, object],
+        record: dict[str, object],
     ) -> None:
+        del contract, record
         self.events.append("unmount")
 
 
@@ -132,9 +140,11 @@ class HostedCapabilityFixtureContractTests(unittest.TestCase):
                 )
 
     def test_mount_observation_requires_one_exact_hardened_mount(self) -> None:
-        target = Path("/tmp/owned fixture")
+        # Parsing fixture only: this path is never created on disk. The escaped
+        # \040 exercises mountinfo space decoding.
+        target = Path("/mnt/owned fixture")
         mountinfo = (
-            "81 40 8:1 /source /tmp/owned\\040fixture "
+            "81 40 8:1 /source /mnt/owned\\040fixture "
             "ro,nosuid,nodev,noexec,relatime - ext4 /dev/root rw\n"
         )
         observed = mount_observation(mountinfo, target)
@@ -169,7 +179,9 @@ class HostedCapabilityFixtureContractTests(unittest.TestCase):
                 "mount_source": str(root / "mount-repo/scripts-source"),
                 "mount_target": str(root / "mount-repo/scripts"),
                 "archive": str(root / "archive"),
-                "output": "/tmp/escape",
+                # Deliberately outside the fixture root so the contract is
+                # rejected; never created on disk.
+                "output": "/nonexistent/escape",
             }
             (root / "fixture-contract.json").write_text(
                 json.dumps(contract), encoding="utf-8"
@@ -310,10 +322,84 @@ class HostedCapabilityFixtureContractTests(unittest.TestCase):
         self.assertEqual(len(sudo_commands), 2)
         self.assertTrue(
             all(
-                command.startswith("python3 scripts/tests/")
+                command.startswith(f"python3 -m {HELPER_MODULE}")
                 for command in sudo_commands
             )
         )
+
+    def test_workflow_invokes_the_helper_only_as_an_importable_module(self) -> None:
+        workflow = (
+            REPO / ".github/workflows/no-unsafe-capability-tests.yml"
+        ).read_text(encoding="utf-8")
+        # A bare script path sets sys.path[0] to scripts/tests, so the helper's
+        # absolute `scripts.*` imports fail with ModuleNotFoundError.
+        self.assertNotIn("run_hosted_no_unsafe_capability_tests.py", workflow)
+        invocations = re.findall(
+            r"python3 (?:-m )?\S*run_hosted_no_unsafe_capability_tests\S*", workflow
+        )
+        self.assertEqual(len(invocations), 6)
+        for invocation in invocations:
+            self.assertEqual(invocation, f"python3 -m {HELPER_MODULE}")
+
+    def test_module_form_imports_but_script_path_form_actually_fails(self) -> None:
+        helper_path = REPO / "scripts/tests/run_hosted_no_unsafe_capability_tests.py"
+        module_form = subprocess.run(
+            [sys.executable, "-m", HELPER_MODULE, "--help"],
+            cwd=REPO,
+            capture_output=True,
+            text=True,
+            timeout=120,
+            check=False,
+        )
+        self.assertEqual(module_form.returncode, 0, module_form.stderr)
+        self.assertIn("collect-evidence", module_form.stdout)
+
+        script_form = subprocess.run(
+            [sys.executable, str(helper_path), "--help"],
+            cwd=REPO,
+            capture_output=True,
+            text=True,
+            timeout=120,
+            check=False,
+        )
+        self.assertNotEqual(script_form.returncode, 0)
+        self.assertIn("No module named 'scripts'", script_form.stderr)
+
+    def test_module_form_executes_a_real_unprivileged_subcommand(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary).resolve()
+            source = base / "evidence"
+            source.mkdir()
+            (source / "prepare.log").write_text("prepared\n", encoding="utf-8")
+            (source / "cleanup.json").write_text("{}\n", encoding="utf-8")
+            output = base / "upload"
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    HELPER_MODULE,
+                    "collect-evidence",
+                    "--source-dir",
+                    str(source),
+                    "--output-dir",
+                    str(output),
+                ],
+                cwd=REPO,
+                capture_output=True,
+                text=True,
+                timeout=120,
+                check=False,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.assertNotIn("ModuleNotFoundError", completed.stderr)
+            self.assertEqual(
+                sorted(entry.name for entry in output.iterdir()),
+                ["cleanup.json", "evidence-manifest.json", "prepare.log"],
+            )
+            manifest = json.loads(
+                (output / "evidence-manifest.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(manifest["schema"], EVIDENCE_MANIFEST_SCHEMA)
 
     def test_prebootstrap_failure_retains_evidence_without_masking_failure(
         self,
@@ -656,7 +742,9 @@ class HostedCapabilityFixtureContractTests(unittest.TestCase):
                 if key != "target_pre_identity"
             }
             hardened_observation["options"] = ["nodev", "noexec", "nosuid", "ro"]
-            target_pre_identity = tuple(mount_record["target_pre_identity"])
+            target_pre_identity = tuple(
+                cast("list[int]", mount_record["target_pre_identity"])
+            )
             with (
                 mock.patch(f"{helper}._run_privileged_command") as command,
                 mock.patch(
@@ -680,7 +768,7 @@ class HostedCapabilityFixtureContractTests(unittest.TestCase):
                 )
                 mounted_contract = _privileged_contract(root)
                 mounted_contract["directory_identities"]["mount_target"] = list(
-                    mount_record["source_identity"]
+                    cast("list[int]", mount_record["source_identity"])
                 )
                 self.assertNotEqual(
                     mounted_contract["directory_identities"]["mount_target"],

@@ -89,7 +89,7 @@ jobs:
           echo "974128f44dd43618a06d21e5fe6d9ff67188de5986fe0bc57b534b0e4639efb9  $archive_part" |
             sha256sum --check --strict
           mv "$archive_part" "$ARCHIVE_DOWNLOAD"
-          python3 scripts/tests/run_hosted_no_unsafe_capability_tests.py prepare \
+          python3 -m scripts.tests.run_hosted_no_unsafe_capability_tests prepare \
             --fixture-root "$FIXTURE_ROOT" \
             --archive "$ARCHIVE_DOWNLOAD"
 
@@ -101,7 +101,7 @@ jobs:
           FIXTURE_ROOT="$RUNNER_TEMP/$FIXTURE_NAME"
           EVIDENCE_DIR="$RUNNER_TEMP/$EVIDENCE_DIR_NAME"
           test "$(id -u)" -ne 0
-          sudo -- python3 scripts/tests/run_hosted_no_unsafe_capability_tests.py \
+          sudo -- python3 -m scripts.tests.run_hosted_no_unsafe_capability_tests \
             setup-privileged --fixture-root "$FIXTURE_ROOT" \
             2>&1 | tee "$EVIDENCE_DIR/setup.log"
 
@@ -113,7 +113,7 @@ jobs:
           FIXTURE_ROOT="$RUNNER_TEMP/$FIXTURE_NAME"
           EVIDENCE_DIR="$RUNNER_TEMP/$EVIDENCE_DIR_NAME"
           test "$(id -u)" -ne 0
-          python3 scripts/tests/run_hosted_no_unsafe_capability_tests.py verify-and-run \
+          python3 -m scripts.tests.run_hosted_no_unsafe_capability_tests verify-and-run \
             --fixture-root "$FIXTURE_ROOT" \
             --report "$EVIDENCE_DIR/capability.json" \
             2>&1 | tee "$EVIDENCE_DIR/run.log"
@@ -129,11 +129,11 @@ jobs:
           CLEANUP_LOG="$EVIDENCE_DIR/cleanup.log"
           CLEANUP_REPORT="$EVIDENCE_DIR/cleanup.json"
           test "$(id -u)" -ne 0
-          sudo -- python3 scripts/tests/run_hosted_no_unsafe_capability_tests.py \
+          sudo -- python3 -m scripts.tests.run_hosted_no_unsafe_capability_tests \
             cleanup-privileged --fixture-root "$FIXTURE_ROOT" \
             2>&1 | tee "$CLEANUP_LOG"
           cleanup_exit="${PIPESTATUS[0]}"
-          python3 scripts/tests/run_hosted_no_unsafe_capability_tests.py record-cleanup \
+          python3 -m scripts.tests.run_hosted_no_unsafe_capability_tests record-cleanup \
             --log "$CLEANUP_LOG" \
             --exit-code "$cleanup_exit" \
             --report "$CLEANUP_REPORT"
@@ -151,7 +151,7 @@ jobs:
           EVIDENCE_DIR="$RUNNER_TEMP/$EVIDENCE_DIR_NAME"
           UPLOAD_DIR="$RUNNER_TEMP/$UPLOAD_DIR_NAME"
           test "$(id -u)" -ne 0
-          python3 scripts/tests/run_hosted_no_unsafe_capability_tests.py collect-evidence \
+          python3 -m scripts.tests.run_hosted_no_unsafe_capability_tests collect-evidence \
             --source-dir "$EVIDENCE_DIR" \
             --output-dir "$UPLOAD_DIR"
 
