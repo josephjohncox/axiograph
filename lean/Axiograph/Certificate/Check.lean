@@ -458,7 +458,7 @@ def tupleEntityTypeName (schema : SchemaV1Schema) (relationName : String) : Stri
 ## Subtyping (schema-level)
 
 When checking `query_result_v4` certificates, a type atom `?x : T`
-as satisfied when `?x` has type `U` and `U <: T` in the schema’s subtyping
+as satisfied when `?x` has type `U` and `U < T` in the schema’s subtyping
 closure (not only when `U = T`).
 
 This helper mirrors that behavior so Lean accepts witnesses that rely on

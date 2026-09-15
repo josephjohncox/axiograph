@@ -686,7 +686,7 @@ mod tests {
         serde_json::from_value(json!({
             "version": 1,
             "select_vars": ["?x"],
-            "where_all": [{"kind": "type", "term": "?x", "type": "Person"}],
+            "where_atoms": [{"kind": "type", "term": "?x", "type": "Person"}],
             "limit": limit
         }))
         .expect("minimal query IR")

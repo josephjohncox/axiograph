@@ -11,6 +11,10 @@
 //! - certificates can be anchored to a single parser/AST
 //! - Rust and Lean stay in lockstep without end-user dialect drift
 
+pub use crate::schema_v1::{
+    CanonicalSourceMap, CanonicalSourceOccurrenceV1, CanonicalSyntacticAddressV1, ConstraintTermV1,
+    RefinementTermV1, RewritePathStepV1, RewritePathTermV1, RewriteSideV1, RoleTypePathStepV1,
+};
 use crate::schema_v1::{SchemaV1Module, SchemaV1ParseError};
 
 pub fn parse_axi_v1(text: &str) -> Result<SchemaV1Module, SchemaV1ParseError> {
@@ -20,7 +24,7 @@ pub fn parse_axi_v1(text: &str) -> Result<SchemaV1Module, SchemaV1ParseError> {
 /// Parse through the canonical parser with operational, non-AST source metadata.
 pub fn parse_axi_v1_with_source_map(
     text: &str,
-) -> Result<(SchemaV1Module, crate::schema_v1::CanonicalSourceMap), SchemaV1ParseError> {
+) -> Result<(SchemaV1Module, CanonicalSourceMap), SchemaV1ParseError> {
     crate::schema_v1::parse_schema_v1_with_source_map(text)
 }
 

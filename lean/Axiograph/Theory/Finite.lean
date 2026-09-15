@@ -702,7 +702,7 @@ private def validateAxiCategorySchema
         s!"schema `{schema.name}` subtype references unknown supertype `{subtype.sup}`"]
     if subtypeEdges.contains (subtype.sub, subtype.sup) then
       throw #[residual s!"subtype:{subtype.sub}:{subtype.sup}" .duplicateName
-        s!"schema `{schema.name}` repeats subtype `{subtype.sub} <: {subtype.sup}`"]
+        s!"schema `{schema.name}` repeats subtype `{subtype.sub} < {subtype.sup}`"]
     subtypeEdges := subtypeEdges.insert (subtype.sub, subtype.sup)
   for subtype in schema.subtypes do
     if subtype.sub == subtype.sup || subtypeReachable schema.subtypes subtype.sup subtype.sub then

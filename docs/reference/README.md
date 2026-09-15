@@ -1,13 +1,18 @@
 # Reference
 
+**Claim status:** `current_implementation`. See
+[Documentation Claim Status](CLAIM_STATUS.md).
+
 Reference docs are for lookup and should stay stable.
 
 ## Start by task
 
 | Task | Primary reference | Adjacent checks/docs |
 | --- | --- | --- |
+| Interpret documentation claim status | `docs/reference/CLAIM_STATUS.md` | `docs/reference/TRUSTED_KERNEL.md`, `docs/reference/RELEASE_BASELINE_V20260908.md` |
 | Determine what is trusted | `docs/reference/TRUSTED_KERNEL.md` | `docs/reference/CERTIFICATES.md`, `docs/howto/FORMAL_VERIFICATION.md` |
 | Audit untrusted I/O, resource limits, or privileged mutation | `docs/reference/SECURITY_BOUNDARIES.md` | `docs/howto/TESTING.md`, `rust/crates/axiograph-security` |
+| Work on the canonical `.axi` parser or AST | `docs/reference/CANONICAL_AXI_V1_CONTRACT.md` | `fixtures/canonical/contract/axi_v1_contract.json`, `make verify-axi-v1-contract` |
 | Work on the canonical semantic spine | `docs/howto/CANONICAL_SEMANTIC_SPINE.md`, `docs/reference/KERNEL_IR.md` | `examples/regulated_shipment/README.md`, `docs/howto/TESTING.md` (`make verify-regulated-shipment`, `make verify-canonical-spine`) |
 | Emit or verify certificates | `docs/reference/CERTIFICATES.md` | `docs/howto/FORMAL_VERIFICATION.md` |
 | Use runtime theory admissibility judgments or typed holes | `docs/reference/RUNTIME_THEORY_CHECKER.md` | `docs/reference/LEAN_THEORY_EVALUATION.md`, `docs/reference/KERNEL_IR.md` |
@@ -18,15 +23,17 @@ Reference docs are for lookup and should stay stable.
 | Use embeddings/RAG/vector search safely | `docs/reference/EMBEDDINGS_AND_EVIDENCE.md` | `docs/howto/KNOWLEDGE_INGESTION.md` |
 | Author/query through CQs, typed query metadata, or certified lowerings | `docs/reference/QUERY_LANG.md` | `docs/reference/CERTIFICATES.md`, `examples/competency_questions/README.md` |
 
-Semantic authority stays with accepted canonical `.axi`, compiled IR, and
-explicitly checked certificates. Typed runtime reports cite, scope, and explain
-that authority; storage/debug formats are documented only where they are needed
-for engine tests.
+Accepted canonical `.axi` remains the reviewable meaning plane. Compiled IR is
+the canonical Rust runtime package, not Lean authority. A trusted formal claim
+requires the applicable checked certificate. Storage and debug formats remain
+outside the semantic boundary.
 
 ## Reference files
 
+- [Documentation claim status](CLAIM_STATUS.md) — current status labels, evidence requirements, and authority boundaries.
 - [Engineering audit at 70c568b](ENGINEERING_AUDIT_70C568B.md) — baseline usability, correctness, theory, retrieval, API, and code findings. Current work is tracked in the [engineering-quality roadmap](../roadmaps/ROADMAP_ENGINEERING_QUALITY.md).
 - [Released baseline v20260908.0.0](RELEASE_BASELINE_V20260908.md) — parent-accepted release identity, publication evidence, and scope.
+- `docs/reference/CANONICAL_AXI_V1_CONTRACT.md` — canonical AST constructors, exact-byte identity, parser stages, bounds, and rejection classes.
 - `docs/reference/CERTIFICATES.md` — active certificate families and Lean checker validation.
 - `docs/reference/TRUSTED_KERNEL.md` — current trusted boundary and non-claims.
 - `docs/reference/SECURITY_BOUNDARIES.md` — bounded files, processes, networks, parsers, servers, stores, and privileged mutation.

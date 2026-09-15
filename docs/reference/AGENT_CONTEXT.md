@@ -1,5 +1,12 @@
 # Agent Context
 
+**Claim status:** `current_implementation` and `design_target`. See
+[Documentation Claim Status](CLAIM_STATUS.md).
+
+Sections named **Current State** or **Current** describe the current source.
+Sections that state remaining goals or cleanup pressure are design targets.
+Neither class changes accepted state or expands the Lean trust boundary.
+
 This document holds the durable context that used to live directly in
 `AGENTS.md`. Keep `AGENTS.md` short and update this document when the current
 technical reality changes.

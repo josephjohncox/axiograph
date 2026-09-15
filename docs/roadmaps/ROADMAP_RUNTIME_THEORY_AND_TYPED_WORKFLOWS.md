@@ -1,5 +1,13 @@
 # Runtime Theory And Typed Workflow Execution Plan
 
+**Claim status:** `design_target` and `current_implementation`. See the
+[claim-status taxonomy](../reference/CLAIM_STATUS.md).
+
+Required capabilities and acceptance gates are design targets. Sentences that
+name an existing type or command describe current implementation. Verify those
+claims with the referenced production gate. Runtime reports remain outside the
+trusted Lean boundary.
+
 This roadmap is the current execution plan for turning Axiograph's first-pass
 typed surfaces into one operational ontology-engineering runtime. It is not a
 new semantic source of truth. The source of truth remains accepted canonical

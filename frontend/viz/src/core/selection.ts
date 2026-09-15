@@ -1,4 +1,4 @@
-import { isRecord, type VizUiState } from "../types";
+import type { VizUiState } from "../types";
 
 interface SelectionContext {
   nodesEl: HTMLElement;
@@ -52,46 +52,9 @@ export function initSelection(ctx: SelectionContext) {
     ctx.ui.highlightIds = new Set<number>();
   }
 
-  function highlightFromQueryResponse(resp: unknown): void {
-    const ids = new Set<number>();
-    const rows = isRecord(resp) && Array.isArray(resp.rows) ? resp.rows : [];
-    for (const row of rows) {
-      if (!isRecord(row)) continue;
-      for (const value of Object.values(row)) {
-        if (isRecord(value) && typeof value.id === "number") ids.add(value.id);
-      }
-    }
-    ctx.ui.highlightIds = ids;
-  }
+  // Query and evidence IDs are not graph IDs without an authenticated image
+  // binding. No response-to-highlight adapter is exposed by this frontend.
+  Object.assign(ctx, { selectNode, selectedIdRef, clearHighlights });
 
-  function highlightFromToolLoop(outcome: unknown): void {
-    if (!isRecord(outcome)) return;
-    if (outcome.query_result) {
-      highlightFromQueryResponse(outcome.query_result);
-      return;
-    }
-    if (outcome.query) {
-      highlightFromQueryResponse(outcome.query);
-      return;
-    }
-    if (Array.isArray(outcome.rows)) {
-      highlightFromQueryResponse({ rows: outcome.rows });
-    }
-  }
-
-  Object.assign(ctx, {
-    selectNode,
-    selectedIdRef,
-    clearHighlights,
-    highlightFromQueryResponse,
-    highlightFromToolLoop,
-  });
-
-  return {
-    selectNode,
-    selectedIdRef,
-    clearHighlights,
-    highlightFromQueryResponse,
-    highlightFromToolLoop,
-  };
+  return { selectNode, selectedIdRef, clearHighlights };
 }

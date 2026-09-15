@@ -18,6 +18,17 @@ relationship suggestions are not kernel IR. They are evidence/index sidecars
 that may point at compiled IR ids and may emit typed proposals for review. See
 `docs/reference/EMBEDDINGS_AND_EVIDENCE.md`.
 
+## Source And AST Contract
+
+Accepted `.axi` uses the versioned contract in
+[`CANONICAL_AXI_V1_CONTRACT.md`](CANONICAL_AXI_V1_CONTRACT.md). Exact UTF-8 bytes
+remain the revision authority. Ordered parser arrays and a normalized test view
+do not replace those bytes.
+
+Rust and Lean construct their ASTs independently. The compiler consumes the
+Rust AST after boundary and parser checks. The Lean checker reparses the exact
+source and does not deserialize Rust AST or kernel IR as source meaning.
+
 ## Implemented Canonical Compiler Contract
 
 The authoritative compiler is `axiograph_kernel::CanonicalCompiler` in
@@ -896,7 +907,7 @@ should use instead of re-deriving endpoints heuristically from field names.
 ### Objects and subtypes
 
 - `object T` lowers to `ObjectTypeDef`.
-- `T <: U` lowers to `SubtypeInclusionDef`.
+- `T < U` lowers to `SubtypeInclusionDef`.
 - the compiled IR should retain both supertypes and admissible subtypes so
   typed tooling can answer:
   - which refinements inhabit a given supertype,

@@ -32,7 +32,7 @@ use the same file, JSON, and process primitives.
 | --- | --- |
 | Regular-file input | Open the final component with no-follow/reparse-point handling; verify regular-file type and size on that handle; stream at most `limit + 1` bytes. |
 | No-unsafe scanner and generator input | Metadata-open with Linux `O_PATH` and no-follow. Reject special files before a data open. Upgrade only the held regular inode through the internal descriptor portal with `O_NONBLOCK`. |
-| Canonical `.axi` | 4 MiB per CLI module, plus line, line-length, syntax-depth, import-count, search-entry, search-depth, and import-closure limits. |
+| Canonical `.axi` | 4 MiB per CLI module, plus line, line-length, syntax-depth, import-count, search-entry, search-depth, and import-closure limits. The exact parser limits and stage taxonomy are in `CANONICAL_AXI_V1_CONTRACT.md`. |
 | JSON | Call-specific byte limit, at most 128 nested containers before Serde allocation, then type-specific item/string/aggregate validation. |
 | Verified CBOR | 64 MiB envelope, explicit recursion limit 64, exact schema version, zero unknown flags, no trailing value, and type-specific collection/counter/weight limits. |
 | Protobuf descriptors | Bounded descriptor bytes, file/node/nesting counts, and bounded external `buf` execution. |
@@ -106,6 +106,21 @@ This policy deliberately does not treat arbitrary RFC 1918, link-local,
 metadata-service, `.local`, or `.internal` addresses as public HTTP targets. A
 local custom proposal service should use the bounded command adapter rather
 than the public HTTP adapter.
+
+## Canonical `.axi` Parser Stages
+
+The canonical parser contract separates boundary decoding, parsing, typecheck,
+canonical formation, and certificate checking. A parser pass does not prove
+formation or type safety. A formation pass does not create a Lean proof.
+
+Rust and Lean reconstruct their ASTs from the exact UTF-8 source. The
+`--contract-ast-v1` JSON output supports tests only. It is not a trusted input,
+a digest input, or a compatibility format.
+
+The Rust direct parser limits source bytes, lines, line bytes, and delimiter
+depth. The Lean trusted loader limits source bytes. These controls are
+operational limits, not theorems. See
+[`CANONICAL_AXI_V1_CONTRACT.md`](CANONICAL_AXI_V1_CONTRACT.md).
 
 ## Deserialization And Allocation
 
@@ -200,6 +215,35 @@ It probes that name before it checks other directory entries.
 It uses exclusive creation, file and directory sync, and two final name observations.
 It never replaces, renames, or deletes an output object.
 A failed post-create operation leaves a non-authoritative residue for manual inspection.
+
+Generator failures retain one primary cause and an ordered, deduplicated tuple
+of additional close or residue causes. Production-helper tests cover checked
+manifest and archive original/observation closes, archive race conversion,
+output verification close, fixed-name probe close, and parent cleanup after a
+parent-open failure. A failed close of a successfully opened fixed-name probe
+is additional `E_REGEN_OUTPUT_PROBE`, not generic `E_REGEN_CLOSE`.
+
+The no-unsafe row evidence map is a closed contract bound to the reviewed
+regression-matrix hash and a fixed map digest. Local cases bind exact method
+source, test or subtest parameters, execution level, normative row purpose,
+assertion site, stable assertion-site occurrence, and assertion arguments. A
+present `normative_cause` must occur in a pinned source argument and match an
+exact or wildcard cause in the same matrix row. The runner records repeated
+assertion calls as separate ordered observations. A recorded occurrence can
+satisfy only one predicate across the complete map; duplicate reuse rejects.
+Map generation removes predicates that repeat the same source, stimulus, and
+pinned arguments. The read-only verifier also requires malformed variants of
+actual evidence to reject. Its wrong-cause mutation disables map-digest
+enforcement, substitutes a different cause that remains normative for the same
+row, validates that map, and then requires rejection against the executed
+observation. A fabricated normative cause rejects separately. A digest mismatch
+is therefore not the semantic wrong-cause rejection. This is finite operational
+evidence. It does not prove arbitrary
+Python semantics or authenticate an otherwise exact fabricated transcript.
+TYPE-05 combines local FIFO/socket CLI and zero-target-data-open evidence with
+the pinned hosted device receipt. CHECK-03 combines local parent
+link/non-directory/escape CLI evidence with the pinned hosted mount receipt.
+The local runner does not claim privileged execution for either hosted case.
 
 The dedicated hosted capability workflow tests two Linux boundaries that need
 root-created fixtures. The workflow uses `sudo` only for one setup helper and

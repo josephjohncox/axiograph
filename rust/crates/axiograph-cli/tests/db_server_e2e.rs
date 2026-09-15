@@ -292,6 +292,7 @@ fn read_only_http_contract_with_controlled_assets_needs_no_frontend_tools() {
         if !oversized_ui && !missing_assets {
             let html = page.text().unwrap();
             assert!(html.contains("axiograph_graph"));
+            assert!(html.contains("axiograph_viz_graph_v1"));
             assert!(html.contains("test template"));
         }
         let valid = serde_json::json!({"version":1,"select_vars":["entity"],"where_atoms":[{"kind":"type","term":"?entity","type":"{\"kind\":\"object_type\",\"id\":\"fixture\"}"}],"limit":1});
@@ -330,6 +331,8 @@ fn read_only_http_contract_with_controlled_assets_needs_no_frontend_tools() {
             serde_json::json!({"query":"select ?x where ..."}).to_string(),
             serde_json::json!({"query":valid,"certify":true}).to_string(),
             serde_json::json!({"query":{"version":999,"where_atoms":[]}}).to_string(),
+            serde_json::json!({"query":{"version":1,"where_atoms":[],"extra":true}}).to_string(),
+            serde_json::json!({"query":{"version":1,"where_atoms":[{"kind":"type","term":{"kind":"wildcard","extra":true},"type":"fixture"}]}}).to_string(),
         ] {
             assert_eq!(
                 http.post(format!("{base}/query"))

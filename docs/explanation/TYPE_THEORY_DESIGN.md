@@ -1,7 +1,14 @@
 # Type Theory Design for Axiograph
 
-**Diataxis:** Explanation  
+**Diataxis:** Explanation
 **Audience:** contributors
+**Claim status:** `design_target`, `current_implementation`, and
+`trusted_formal_result`. See
+[Documentation Claim Status](../reference/CLAIM_STATUS.md).
+
+Sections explicitly marked **Design status** are design targets. Sections marked
+**Implementation status** describe current source. A **Formal status** claim
+applies only to the named `VerifyMain` fragment.
 
 > Current status: Axiograph's trusted type-theoretic foundation is Lean 4 +
 > mathlib. Rust is the operational runtime and must expose typed refs, checked
@@ -47,7 +54,8 @@ Design rule: keep kernel objects universe-polymorphic when the abstraction
 really ranges over schemas or categories. Keep executable certificate checkers
 concrete when possible so the checked surface stays small.
 
-**Status:** Current Lean foundation; expand only where kernel modules need it.
+**Implementation status:** `current_implementation`. Lean provides this
+foundation. Extend it only when a kernel module needs it.
 
 ---
 
@@ -71,8 +79,9 @@ This gives the trusted checker:
 Runtime Rust builders should mirror these invariants with checked constructors,
 but the trusted claim is the Lean replay result.
 
-**Status:** Implemented for the finite presentation fragment in
-`Axiograph.Theory.Finite.Path`; certificate dispatch remains narrower.
+**Formal status:** `trusted_formal_result` for the certificate paths named in
+[Trusted Kernel](../reference/TRUSTED_KERNEL.md). The dependent path type also
+supports broader theorem code that no certificate path invokes.
 
 ---
 
@@ -98,8 +107,8 @@ structure VProb where
 The `bound` proof matters to Lean, but it is not runtime evidence that users
 need to inspect. Certificates and derivation traces, by contrast, are data.
 
-**Status:** Current Lean/Rust boundary. Rust may cache or emit witnesses; Lean
-decides whether the witness establishes the semantic claim.
+**Implementation status:** `current_implementation`. Rust can cache or emit a
+witness. Lean decides whether the witness establishes the named semantic claim.
 
 ---
 
@@ -120,7 +129,8 @@ Certificates should name the equations or rewrite rules they use. The checker
 replays those steps against the accepted `.axi` module closure and compiled
 semantic IR.
 
-**Status:** `Axiograph.Theory.Finite.PathEquiv` now includes category laws and
+**Formal status:** `trusted_formal_result` for the named imported certificate
+paths. `Axiograph.Theory.Finite.PathEquiv` now includes category laws and
 accepted parallel-path equations. `GroupoidPath` is endpoint-indexed and its
 identity, associativity, and inverse laws are proved by denotation into
 mathlib's free groupoid. General rewrite termination/confluence remains a
@@ -135,19 +145,20 @@ The trusted fragment should use fixed-point values with explicit bounds, not
 ambient floating-point assumptions.
 
 ```lean
-structure FixedProb where
+structure FixedProb (precision : Nat) where
   numerator : Nat
   bounded : numerator <= precision
 
-def composeConfidence (a b : FixedProb) : FixedProb :=
-  -- fixed-point multiplication plus a proof that the result is bounded
-  sorry
+def composedNumerator (precision : Nat) (a b : FixedProb precision) : Nat :=
+  if precision = 0 then 0 else (a.numerator * b.numerator) / precision
 ```
 
-Rust can use convenient runtime types, but certificate payloads should lower to
-the fixed-point representation that Lean checks.
+The trusted constructor must also prove that the composed numerator stays within
+the precision bound. Rust can use convenient runtime types. Certificate payloads
+must use the fixed-point representation that Lean checks.
 
-**Status:** Current direction for `VProb` and certificate checking.
+**Formal status:** `trusted_formal_result` where certificate checking uses
+`Axiograph.Prob.Verified`. This status does not apply to general runtime scores.
 
 ---
 
@@ -164,8 +175,8 @@ discipline at operational boundaries:
 These patterns reduce malformed certificate emission and make runtime behavior
 reviewable. They do not replace Lean.
 
-**Status:** Rust should stay strict and typed, but semantic authority remains in
-Lean.
+**Implementation status:** `current_implementation`. Rust stays strict and
+typed, but semantic authority remains in the named Lean boundary.
 
 ---
 
@@ -186,7 +197,8 @@ explicit accept/reject results. If a semantic rule depends on a snapshot,
 module, world, or context, that dependency must be carried by the certificate
 or anchor.
 
-**Status:** Keep side effects out of trusted semantic kernels.
+**Design status:** `design_target`. Keep side effects out of trusted semantic
+kernels.
 
 ---
 
@@ -204,7 +216,8 @@ The design target is Lean semantics for these modalities plus Rust certificate
 emitters for concrete operations. Runtime proposal-adapter or LLM output stays in
 the evidence plane until it passes typed validation, review, and promotion.
 
-**Status:** Finite context-indexed values and proof-carrying context transports
+**Implementation status:** `current_implementation`. Finite context-indexed
+values and proof-carrying context transports
 are implemented in `Axiograph.Theory.Finite`. Modal logic, arbitrary context
 categories, sheaf descent, and proposal-adapter trust remain unimplemented.
 
@@ -220,7 +233,8 @@ Rust code generation should target typed runtime surfaces and certificate
 schemas, not a separate proof authority. Generated Rust remains untrusted until
 its emitted certificate checks in Lean.
 
-**Status:** Use generation to reduce repetition, not to widen the trusted base.
+**Design status:** `design_target`. Use generation to reduce repetition. Do not
+widen the trusted base.
 
 ---
 
@@ -237,8 +251,8 @@ These tools complement Lean. They can show that Rust code is less likely to
 emit malformed data or violate memory/format invariants, but they do not define
 Axiograph's semantic truth.
 
-**Status:** Recommended for high-risk runtime surfaces; not a replacement for
-certificate checking.
+**Design status:** `design_target`. Use these tools for selected high-risk
+runtime surfaces. They do not replace certificate checking.
 
 ---
 
@@ -246,12 +260,12 @@ certificate checking.
 
 | Feature | Importance | Current owner | Status |
 | --------- | ------------ | --------------- | -------- |
-| Finite indexed path/groupoid laws | High | Lean | Implemented as theorem support; not a `VerifyMain` certificate family |
-| `.axi` parser parity | High | Lean + Rust | In progress |
+| Finite indexed path/groupoid laws | High | Lean | Imported support for named path certificate results. The category wire path remains replay-only. |
+| `.axi` parser parity | High | Lean + Rust | Bounded contract and differential slices exist. Full compiler equivalence remains open. |
 | Finite category presentation and relation projections | High | Rust canonical IR + Lean finite theory | Implemented finite model and anchored `category_kernel_v3` serialization/dispatch in `VerifyMain`: formation, equation congruence, formal inverse cancellation, and bounded generator reachability replay. Acceptance-to-denotation theorem remains open. |
 | Reconciliation certificates | High | Lean + Rust emitters | Planned |
 | Modal/temporal semantics | Medium | Lean | Planned |
-| Semantic coverage reports | Medium | Rust, checked anchors | Planned |
+| Semantic coverage reports | Medium | Rust, checked anchors | Runtime report slices exist. Trusted formal coverage remains open. |
 | Rust local invariant proofs | Medium | Rust tooling | Selective |
 
 ---

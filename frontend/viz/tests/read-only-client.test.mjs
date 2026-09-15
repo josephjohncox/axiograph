@@ -29,15 +29,28 @@ test("complete finite result/trust shape validates before any presentation, no v
   assert.deepEqual(validateQueryResponse(response), response);
   for (const change of [v => v.family = "legacy", v => v.source_identity = "other", v => v.result.rows[0].entity = 0x100000000, v => v.result.rows[0].entity = -1, v => v.result.rows[0].entity = "0", v => v.result.rows[0].extra = 1, v => v.result.rows = [{}], v => v.result.selected_vars = ["entity", "entity"], v => v.result.truncated = "false", v => v.trust.soundness = "lean_verified_finite_exact_complete", v => v.trust.completeness_claim = "exact", v => v.trust.scope.anchor = "unrelated_image", v => v.trust.trust_class = "unknown", v => v.trust.gaps = [null], v => v.trust.notes = [2], v => delete v.non_claims, v => v.non_claims = []]) { const v = clone(response); change(v); assert.throws(() => validateQueryResponse(v)); }
 });
-test("production serializer only wraps IR; Rust owns atom parsing/typing and semantic rejection", () => {
+test("production serializer enforces the closed IR transport; Rust owns semantic validation", () => {
   assert.deepEqual(JSON.parse(serializeFiniteQuery(JSON.stringify(QUERY_EXAMPLE))), { query: QUERY_EXAMPLE });
   assert.throws(() => serializeFiniteQuery("select ?x where ..."));
   assert.throws(() => serializeFiniteQuery('{"version":2}'));
   assert.throws(() => serializeFiniteQuery('"legacy"'));
-  assert.throws(() => serializeFiniteQuery(" ".repeat(1048577)), /oversized/);
-  // Deliberately pass unknown semantic input to Rust, not a JS query parser.
-  assert.deepEqual(JSON.parse(serializeFiniteQuery('{"version":1,"where_atoms":[{"kind":"unknown"}]}')).query.where_atoms, [{ kind: "unknown" }]);
+  assert.throws(() => serializeFiniteQuery(" ".repeat(1048577)), /exceeds/);
+  assert.throws(() => serializeFiniteQuery('{"version":1,"where_atoms":[{"kind":"unknown"}]}'), /unknown query atom/);
+  assert.throws(() => serializeFiniteQuery('{"version":1,"where_atoms":[],"extra":true}'), /unknown/);
+  assert.throws(() => serializeFiniteQuery('{"version":1,"where_atoms":[],"disjuncts":[]}'), /exactly one/);
+  assert.throws(() => serializeFiniteQuery('{"version":1,"where_atoms":[],"limit":201}'), /integer/);
 });
+test("query and result count boundaries accept N and reject N+1", () => {
+  const atom = { kind: "attr_eq", term: "?entity", key: "name", value: "Alice" };
+  assert.doesNotThrow(() => serializeFiniteQuery(JSON.stringify({ version: 1, where_atoms: Array.from({ length: 256 }, () => atom) })));
+  assert.throws(() => serializeFiniteQuery(JSON.stringify({ version: 1, where_atoms: Array.from({ length: 257 }, () => atom) })), /fanout|atom count/);
+  const atLimit = clone(response);
+  atLimit.result.rows = Array.from({ length: 200 }, (_, entity) => ({ entity }));
+  assert.equal(validateQueryResponse(atLimit).result.rows.length, 200);
+  atLimit.result.rows.push({ entity: 200 });
+  assert.throws(() => validateQueryResponse(atLimit), /rows/);
+});
+
 test("streamed JSON rejects absent/dishonest length, malformed UTF8/JSON, depth, HTTP errors", async () => {
   assert.deepEqual(await readBoundedJson(json({ x: 1 })), { x: 1 });
   for (const r of [new Response("{}"), new Response("{", { headers: { "content-type": "application/json" } }), json({ error: "<img onerror=evil>" }, 400), new Response(new Uint8Array([255]), { headers: { "content-type": "application/json" } }), new Response("[".repeat(66) + "0" + "]".repeat(66), { headers: { "content-type": "application/json" } })]) await assert.rejects(readBoundedJson(r));
@@ -94,6 +107,15 @@ test("automatic describe and predictive callback/keyboard controls have no remot
   assert.equal(ctx.proposalProposeBtn.disabled, true);
   await ctx.proposalProposeBtn.fire("click"); await ctx.proposalPlanBtn.fire("click"); assert.match(ctx.status, /Unavailable/);
   const describe = initDescribe(ctx); await describe.fetchDescribeEntity(0); assert.match(ctx.ui.describeCache.get(0).data.error, /Unavailable/);
+});
+
+test("failed rediscovery retains the previously validated client state", async () => {
+  let malformed = false;
+  const client = new ReadOnlyClient(async path => json(path === "/capabilities" ? (malformed ? { ...caps, extra: true } : caps) : path === "/status" ? status : response));
+  await client.discover();
+  malformed = true;
+  await assert.rejects(client.discover());
+  assert.deepEqual(await client.query(JSON.stringify(QUERY_EXAMPLE)), response);
 });
 
 test("older discovery cannot enable queries after a newer malformed discovery", async () => {

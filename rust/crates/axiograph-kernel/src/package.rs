@@ -13,12 +13,14 @@ use crate::{
 use axiograph_dsl::{
     axi_v1::parse_axi_v1_with_source_map,
     schema_v1::{
-        parse_path_expr_v3, CarrierFieldsV1, ConstraintV1, GeneratorKindV1, PathExprV3,
-        RefinementPredicateV1, RewriteVarTypeV1, RoleKindV1, SchemaV1Instance, SchemaV1Module,
-        SchemaV1Schema, SetItemV1, TypeExprV1,
+        parse_path_expr_v3, CanonicalSyntacticAddressV1, CarrierFieldsV1, ConstraintV1,
+        GeneratorKindV1, PathExprV3, RefinementPredicateV1, RewriteVarTypeV1, RoleKindV1,
+        SchemaV1Instance, SchemaV1Module, SchemaV1ParseError, SchemaV1Schema, SetItemV1,
+        TypeExprV1,
     },
 };
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::Arc,
@@ -33,12 +35,18 @@ pub const INSTANCE_MODEL_IR_VERSION: &str = "instance_model_ir_v3";
 pub enum KernelCompileError {
     #[error("accepted module bytes are not valid UTF-8")]
     InvalidUtf8,
-    #[error("cannot parse canonical .axi module: {0}")]
-    Parse(String),
+    #[error("cannot parse canonical .axi module: parse error on line {line}: {message}")]
+    Parse { line: usize, message: String },
     #[error("duplicate accepted module `{0}` in compiler input")]
     DuplicateModule(String),
     #[error("root module `{0}` is absent from compiler input")]
     MissingRootModule(String),
+    #[error("module `{module}` cannot resolve import `{import}`: {detail}")]
+    ImportResolution {
+        module: String,
+        import: String,
+        detail: String,
+    },
     #[error("module `{module}` imports unknown module `{import}`")]
     UnknownImport { module: String, import: String },
     #[error("import cycle detected: {0}")]
@@ -84,7 +92,7 @@ pub enum KernelCompileError {
     },
     #[error("schema `{schema}` has a subtype cycle involving `{0}`", .cycle.join(" -> "))]
     SubtypeCycle { schema: String, cycle: Vec<String> },
-    #[error("schema `{schema}` repeats subtype inclusion `{subtype} <: {supertype}`")]
+    #[error("schema `{schema}` repeats subtype inclusion `{subtype} < {supertype}")]
     DuplicateSubtype {
         schema: String,
         subtype: String,
@@ -298,15 +306,17 @@ pub enum KernelCompileError {
 pub struct CanonicalModuleSource {
     exact_text: String,
     parsed: SchemaV1Module,
-    source_map: axiograph_dsl::schema_v1::CanonicalSourceMap,
+    source_map: axiograph_dsl::axi_v1::CanonicalSourceMap,
     revision: RevisionDigestV2,
 }
 
 impl CanonicalModuleSource {
     pub fn parse(bytes: Vec<u8>) -> Result<Self, KernelCompileError> {
         let exact_text = String::from_utf8(bytes).map_err(|_| KernelCompileError::InvalidUtf8)?;
-        let (parsed, source_map) = parse_axi_v1_with_source_map(&exact_text)
-            .map_err(|error| KernelCompileError::Parse(error.to_string()))?;
+        let (parsed, source_map) = parse_axi_v1_with_source_map(&exact_text).map_err(|error| {
+            let SchemaV1ParseError::Line { line, message } = error;
+            KernelCompileError::Parse { line, message }
+        })?;
         let revision = RevisionDigestV2::from_accepted_text(&exact_text);
         Ok(Self {
             exact_text,
@@ -328,7 +338,7 @@ impl CanonicalModuleSource {
         &self.revision
     }
 
-    pub fn source_map(&self) -> &axiograph_dsl::schema_v1::CanonicalSourceMap {
+    pub fn source_map(&self) -> &axiograph_dsl::axi_v1::CanonicalSourceMap {
         &self.source_map
     }
 }
@@ -341,6 +351,10 @@ mod source_map_tests {
     fn parser_source_map_is_not_semantic_identity_or_ir_wire() {
         let source = CanonicalModuleSource::parse(b"module M\n# exact bytes\nschema S:\n  object Company\n  relation Employment(company: Company)\n".to_vec()).unwrap();
         assert!(!source.source_map.role_carriers.is_empty());
+        assert!(
+            source.source_map.occurrences().len() > source.source_map.role_carriers.len(),
+            "general parser occurrences must remain richer than the preserved carrier slice"
+        );
         let mut without_map = source.clone();
         without_map.source_map = Default::default();
         assert_eq!(source.revision, without_map.revision);
@@ -367,6 +381,272 @@ mod source_map_tests {
             serde_json::to_vec(unmapped.ir()).unwrap()
         );
     }
+
+    #[test]
+    fn diagnostic_collector_is_source_ordered_bounded_and_non_authoritative() {
+        let base = CanonicalModuleSource::parse(
+            b"module Base\nschema Shared:\n  object Company\n  relation First(x: Compny)\n  relation Second(x: relation(MissingRelation))\n".to_vec(),
+        )
+        .unwrap();
+        let root = CanonicalModuleSource::parse(
+            b"module Root\nimport Base\nschema Local:\n  object Person\n  relation Third(x: Persn)\n".to_vec(),
+        )
+        .unwrap();
+        let request = KernelCompilationRequest {
+            repository_id: RepositoryIdV2::from_descriptor_bytes(b"diagnostic-collector"),
+            accepted_snapshot_id: SnapshotIdV2::from_canonical_fields(&[
+                base.exact_text().as_bytes(),
+                root.exact_text().as_bytes(),
+            ]),
+            root_module: "Root".into(),
+            modules: vec![root, base],
+        };
+        assert!(CanonicalCompiler::compile(request.clone()).is_err());
+        let complete =
+            CanonicalCompiler::collect_diagnostics(&request, KernelDiagnosticLimits::default())
+                .unwrap();
+        assert_eq!(complete.observed_errors, 3);
+        assert_eq!(complete.diagnostics.len(), 3);
+        assert_eq!(complete.omitted_observed_errors, 0);
+        assert!(!complete.truncated());
+        let modules = complete
+            .diagnostics
+            .iter()
+            .map(|diagnostic| match &diagnostic.subject {
+                KernelDiagnosticSubjectV1::Syntactic { module, .. } => module.as_str(),
+                KernelDiagnosticSubjectV1::Unlocated => "unlocated",
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(modules, ["Base", "Base", "Root"]);
+
+        let bounded = CanonicalCompiler::collect_diagnostics(
+            &request,
+            KernelDiagnosticLimits {
+                max_items: 2,
+                ..KernelDiagnosticLimits::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(bounded.observed_errors, 3);
+        assert_eq!(bounded.diagnostics.len(), 2);
+        assert_eq!(bounded.omitted_observed_errors, 1);
+        assert!(bounded.truncated());
+
+        let byte_bounded = CanonicalCompiler::collect_diagnostics(
+            &request,
+            KernelDiagnosticLimits {
+                max_message_bytes: 1,
+                ..KernelDiagnosticLimits::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(byte_bounded.observed_errors, 3);
+        assert!(byte_bounded.diagnostics.is_empty());
+        assert_eq!(byte_bounded.omitted_observed_errors, 3);
+
+        let work_bounded = CanonicalCompiler::collect_diagnostics(
+            &request,
+            KernelDiagnosticLimits {
+                max_work: 1,
+                ..KernelDiagnosticLimits::default()
+            },
+        )
+        .unwrap();
+        assert!(work_bounded.work_exhausted);
+        assert!(work_bounded.truncated());
+        assert!(work_bounded.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn oversized_missing_root_is_omitted_without_rendering_or_retention() {
+        let root_module = "R".repeat(MAX_KERNEL_DIAGNOSTIC_MESSAGE_BYTES * 16);
+        let request = KernelCompilationRequest {
+            repository_id: RepositoryIdV2::from_descriptor_bytes(b"oversized-missing-root"),
+            accepted_snapshot_id: SnapshotIdV2::from_canonical_fields(&[b"no-modules"]),
+            root_module,
+            modules: Vec::new(),
+        };
+        let collection = CanonicalCompiler::collect_diagnostics(
+            &request,
+            KernelDiagnosticLimits {
+                max_message_bytes: 1,
+                ..KernelDiagnosticLimits::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(collection.observed_errors, 1);
+        assert_eq!(collection.omitted_observed_errors, 1);
+        assert_eq!(collection.message_bytes, 0);
+        assert!(collection.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn duplicate_cycle_count_is_independent_of_retention_cap() {
+        let first = CanonicalModuleSource::parse(b"module A\nimport B\n".to_vec()).unwrap();
+        let mut second = CanonicalModuleSource::parse(b"module B\nimport A\n".to_vec()).unwrap();
+        // Exercise the collector defensively against a repeated parsed edge.
+        // Canonical parsing rejects this state, but retention limits must not
+        // change counts even if an internal producer violates that invariant.
+        second.parsed.imports.push("A".to_string());
+        let request = KernelCompilationRequest {
+            repository_id: RepositoryIdV2::from_descriptor_bytes(b"duplicate-cycle"),
+            accepted_snapshot_id: SnapshotIdV2::from_canonical_fields(&[
+                first.exact_text().as_bytes(),
+                second.exact_text().as_bytes(),
+            ]),
+            root_module: "A".into(),
+            modules: vec![first, second],
+        };
+        let retained =
+            CanonicalCompiler::collect_diagnostics(&request, KernelDiagnosticLimits::default())
+                .unwrap();
+        let omitted = CanonicalCompiler::collect_diagnostics(
+            &request,
+            KernelDiagnosticLimits {
+                max_message_bytes: 1,
+                ..KernelDiagnosticLimits::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(retained.observed_errors, 1);
+        assert_eq!(retained.diagnostics.len(), 1);
+        assert_eq!(retained.omitted_observed_errors, 0);
+        assert_eq!(omitted.observed_errors, retained.observed_errors);
+        assert!(omitted.diagnostics.is_empty());
+        assert_eq!(omitted.omitted_observed_errors, 1);
+    }
+
+    #[test]
+    fn omitted_duplicate_module_is_counted_once() {
+        let module = CanonicalModuleSource::parse(b"module Repeated\n".to_vec()).unwrap();
+        let request = KernelCompilationRequest {
+            repository_id: RepositoryIdV2::from_descriptor_bytes(b"duplicate-module"),
+            accepted_snapshot_id: SnapshotIdV2::from_canonical_fields(&[module
+                .exact_text()
+                .as_bytes()]),
+            root_module: "Repeated".into(),
+            modules: vec![module.clone(), module.clone(), module],
+        };
+        let collection = CanonicalCompiler::collect_diagnostics(
+            &request,
+            KernelDiagnosticLimits {
+                max_message_bytes: 1,
+                ..KernelDiagnosticLimits::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(collection.observed_errors, 1);
+        assert_eq!(collection.omitted_observed_errors, 1);
+        assert!(collection.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn omitted_authoritative_cycle_is_observed_once() {
+        let first_name = format!("A{}", "a".repeat(40_000));
+        let second_name = format!("B{}", "b".repeat(40_000));
+        let first = CanonicalModuleSource::parse(
+            format!("module {first_name}\nimport {second_name}\n").into_bytes(),
+        )
+        .unwrap();
+        let second = CanonicalModuleSource::parse(
+            format!("module {second_name}\nimport {first_name}\n").into_bytes(),
+        )
+        .unwrap();
+        let request = KernelCompilationRequest {
+            repository_id: RepositoryIdV2::from_descriptor_bytes(b"oversized-cycle"),
+            accepted_snapshot_id: SnapshotIdV2::from_canonical_fields(&[
+                first.exact_text().as_bytes(),
+                second.exact_text().as_bytes(),
+            ]),
+            root_module: first_name,
+            modules: vec![first, second],
+        };
+        let authoritative = CanonicalCompiler::compile(request.clone()).unwrap_err();
+        let collection = CanonicalCompiler::collect_diagnostics_with_authoritative_error(
+            &request,
+            KernelDiagnosticLimits {
+                max_message_bytes: 1,
+                ..KernelDiagnosticLimits::default()
+            },
+            &authoritative,
+        )
+        .unwrap();
+        assert!(collection.authoritative_error_observed);
+        assert_eq!(collection.observed_errors, 1);
+        assert_eq!(collection.omitted_observed_errors, 1);
+        assert!(collection.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn omitted_authoritative_import_and_role_are_each_observed_once() {
+        let assert_once = |request: KernelCompilationRequest| {
+            let authoritative = CanonicalCompiler::compile(request.clone()).unwrap_err();
+            let collection = CanonicalCompiler::collect_diagnostics_with_authoritative_error(
+                &request,
+                KernelDiagnosticLimits {
+                    max_message_bytes: 1,
+                    ..KernelDiagnosticLimits::default()
+                },
+                &authoritative,
+            )
+            .unwrap();
+            assert!(collection.authoritative_error_observed);
+            assert_eq!(collection.observed_errors, 1);
+            assert_eq!(collection.omitted_observed_errors, 1);
+            assert!(collection.diagnostics.is_empty());
+        };
+        let import =
+            CanonicalModuleSource::parse(b"module Root\nimport Missing\n".to_vec()).unwrap();
+        assert_once(KernelCompilationRequest {
+            repository_id: RepositoryIdV2::from_descriptor_bytes(b"omitted-import"),
+            accepted_snapshot_id: SnapshotIdV2::from_canonical_fields(&[import
+                .exact_text()
+                .as_bytes()]),
+            root_module: "Root".into(),
+            modules: vec![import],
+        });
+        let role = CanonicalModuleSource::parse(
+            b"module Root\nschema S:\n  object Company\n  relation R(x: Compny)\n".to_vec(),
+        )
+        .unwrap();
+        assert_once(KernelCompilationRequest {
+            repository_id: RepositoryIdV2::from_descriptor_bytes(b"omitted-role"),
+            accepted_snapshot_id: SnapshotIdV2::from_canonical_fields(&[role
+                .exact_text()
+                .as_bytes()]),
+            root_module: "Root".into(),
+            modules: vec![role],
+        });
+    }
+
+    #[test]
+    fn diagnostic_recovery_reports_only_confirmed_import_failures() {
+        let root = CanonicalModuleSource::parse(
+            b"module Root\nimport ConfirmedMissing\nimport Unsearched\n".to_vec(),
+        )
+        .unwrap();
+        let request = KernelCompilationRequest {
+            repository_id: RepositoryIdV2::from_descriptor_bytes(b"known-import-failures"),
+            accepted_snapshot_id: SnapshotIdV2::from_canonical_fields(&[root
+                .exact_text()
+                .as_bytes()]),
+            root_module: "Root".into(),
+            modules: vec![root],
+        };
+        let known = BTreeSet::from([("Root".to_string(), 0_usize, "ConfirmedMissing".to_string())]);
+        let collection = CanonicalCompiler::collect_diagnostics_for_known_import_failures(
+            &request,
+            KernelDiagnosticLimits::default(),
+            &known,
+        )
+        .unwrap();
+        assert_eq!(collection.observed_errors, 1);
+        assert_eq!(collection.diagnostics.len(), 1);
+        assert!(matches!(
+            &collection.diagnostics[0].cause,
+            KernelCompileError::UnknownImport { import, .. } if import == "ConfirmedMissing"
+        ));
+    }
 }
 
 /// The accepted binding is mandatory. Draft/review tooling may use a distinct
@@ -377,6 +657,294 @@ pub struct KernelCompilationRequest {
     pub accepted_snapshot_id: SnapshotIdV2,
     pub root_module: String,
     pub modules: Vec<CanonicalModuleSource>,
+}
+
+/// Hard ceilings for the untrusted, non-authoritative diagnostic sidecar.
+pub const MAX_KERNEL_DIAGNOSTIC_ITEMS: usize = 64;
+pub const MAX_KERNEL_DIAGNOSTIC_MESSAGE_BYTES: usize = 64 * 1024;
+pub const MAX_KERNEL_DIAGNOSTIC_WORK: usize = 65_536;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KernelDiagnosticLimits {
+    pub max_items: usize,
+    pub max_message_bytes: usize,
+    pub max_work: usize,
+}
+
+impl Default for KernelDiagnosticLimits {
+    fn default() -> Self {
+        Self {
+            max_items: MAX_KERNEL_DIAGNOSTIC_ITEMS,
+            max_message_bytes: MAX_KERNEL_DIAGNOSTIC_MESSAGE_BYTES,
+            max_work: MAX_KERNEL_DIAGNOSTIC_WORK,
+        }
+    }
+}
+
+impl KernelDiagnosticLimits {
+    fn validate(self) -> Result<Self, KernelCompileError> {
+        if self.max_items == 0
+            || self.max_items > MAX_KERNEL_DIAGNOSTIC_ITEMS
+            || self.max_message_bytes == 0
+            || self.max_message_bytes > MAX_KERNEL_DIAGNOSTIC_MESSAGE_BYTES
+            || self.max_work == 0
+            || self.max_work > MAX_KERNEL_DIAGNOSTIC_WORK
+        {
+            return Err(KernelCompileError::FiniteTheory(
+                "diagnostic limits must be positive and no greater than the hard item/byte/work ceilings"
+                    .to_string(),
+            ));
+        }
+        Ok(self)
+    }
+}
+
+/// A parser-owned occurrence is not a compiled ref. Invalid declarations never
+/// receive a `KernelRefV2`; checked refs remain available only from a successful
+/// `CompiledKernelSnapshot`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum KernelDiagnosticSubjectV1 {
+    Syntactic {
+        module: String,
+        address: CanonicalSyntacticAddressV1,
+    },
+    Unlocated,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KernelCompilationDiagnosticV1 {
+    pub cause: KernelCompileError,
+    pub subject: KernelDiagnosticSubjectV1,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KernelDiagnosticCollectionV1 {
+    pub diagnostics: Vec<KernelCompilationDiagnosticV1>,
+    /// True when the separately known fail-fast compiler error was observed,
+    /// including when byte/item bounds omitted it from `diagnostics`.
+    pub authoritative_error_observed: bool,
+    /// Errors observed within the work ceiling. If `work_exhausted` is true,
+    /// additional errors can exist and no complete-count claim is made.
+    pub observed_errors: usize,
+    pub omitted_observed_errors: usize,
+    pub message_bytes: usize,
+    pub work_units: usize,
+    pub work_exhausted: bool,
+    pub limits: KernelDiagnosticLimits,
+}
+
+impl KernelDiagnosticCollectionV1 {
+    pub fn truncated(&self) -> bool {
+        self.omitted_observed_errors > 0 || self.work_exhausted
+    }
+}
+
+type KernelDiagnosticIdentity = [u8; 32];
+
+fn kernel_diagnostic_identity<'a>(
+    parts: impl IntoIterator<Item = &'a [u8]>,
+) -> KernelDiagnosticIdentity {
+    let mut digest = Sha256::new();
+    for part in parts {
+        digest.update(part.len().to_le_bytes());
+        digest.update(part);
+    }
+    digest.finalize().into()
+}
+
+struct KernelDiagnosticBuilder<'a> {
+    collection: KernelDiagnosticCollectionV1,
+    authoritative_error: Option<&'a KernelCompileError>,
+    /// Compact, cap-independent occurrence identities. The work ceiling bounds
+    /// this set even when the item or message-byte ceiling retains nothing.
+    observed_identities: BTreeSet<KernelDiagnosticIdentity>,
+}
+
+impl<'a> KernelDiagnosticBuilder<'a> {
+    fn new(
+        limits: KernelDiagnosticLimits,
+        authoritative_error: Option<&'a KernelCompileError>,
+    ) -> Result<Self, KernelCompileError> {
+        Ok(Self {
+            collection: KernelDiagnosticCollectionV1 {
+                diagnostics: Vec::new(),
+                authoritative_error_observed: false,
+                observed_errors: 0,
+                omitted_observed_errors: 0,
+                message_bytes: 0,
+                work_units: 0,
+                work_exhausted: false,
+                limits: limits.validate()?,
+            },
+            authoritative_error,
+            observed_identities: BTreeSet::new(),
+        })
+    }
+
+    fn charge_work(&mut self) -> bool {
+        if self.collection.work_units >= self.collection.limits.max_work {
+            self.collection.work_exhausted = true;
+            return false;
+        }
+        self.collection.work_units += 1;
+        true
+    }
+
+    /// Record one unique observed occurrence before applying retention limits.
+    /// The caller supplies an exact byte count without rendering and defers all
+    /// diagnostic-owned strings to `make_diagnostic`, so an omitted message
+    /// cannot cause an oversized formatting or cloning allocation.
+    fn observe(
+        &mut self,
+        identity: KernelDiagnosticIdentity,
+        exact_message_bytes: usize,
+        make_diagnostic: impl FnOnce() -> KernelCompilationDiagnosticV1,
+    ) {
+        if !self.observed_identities.insert(identity) {
+            return;
+        }
+        self.collection.observed_errors = self.collection.observed_errors.saturating_add(1);
+        let fits = self.collection.diagnostics.len() < self.collection.limits.max_items
+            && self
+                .collection
+                .message_bytes
+                .checked_add(exact_message_bytes)
+                .is_some_and(|total| total <= self.collection.limits.max_message_bytes);
+        if !fits {
+            self.collection.omitted_observed_errors =
+                self.collection.omitted_observed_errors.saturating_add(1);
+            return;
+        }
+        let diagnostic = make_diagnostic();
+        debug_assert_eq!(diagnostic.cause.to_string().len(), exact_message_bytes);
+        self.collection.message_bytes += exact_message_bytes;
+        self.collection.diagnostics.push(diagnostic);
+    }
+
+    fn mark_authoritative_missing_root(&mut self, root: &str) {
+        if matches!(
+            self.authoritative_error,
+            Some(KernelCompileError::MissingRootModule(expected)) if expected == root
+        ) {
+            self.collection.authoritative_error_observed = true;
+        }
+    }
+
+    fn mark_authoritative_duplicate_module(&mut self, module: &str) {
+        if matches!(
+            self.authoritative_error,
+            Some(KernelCompileError::DuplicateModule(expected)) if expected == module
+        ) {
+            self.collection.authoritative_error_observed = true;
+        }
+    }
+
+    fn mark_authoritative_unknown_import(&mut self, module: &str, import: &str) {
+        if matches!(
+            self.authoritative_error,
+            Some(KernelCompileError::UnknownImport {
+                module: authoritative_module,
+                import: authoritative_import,
+            }) if authoritative_module == module && authoritative_import == import
+        ) {
+            self.collection.authoritative_error_observed = true;
+        }
+    }
+
+    fn mark_authoritative_role(
+        &mut self,
+        module: &str,
+        schema_index: usize,
+        relation_index: usize,
+        role_index: usize,
+        kind: DiagnosticCarrierKind,
+        target: &str,
+    ) {
+        let Some(KernelCompileError::RoleCarrier {
+            module: authoritative_module,
+            schema_index: authoritative_schema,
+            relation_index: authoritative_relation,
+            role_index: authoritative_role,
+            cause,
+        }) = self.authoritative_error
+        else {
+            return;
+        };
+        let matching_leaf = matches!(
+            (kind, cause.as_ref()),
+            (
+                DiagnosticCarrierKind::Object,
+                KernelCompileError::UnknownObjectTarget {
+                    target: authoritative_target,
+                    ..
+                }
+            ) if authoritative_target == target
+        ) || matches!(
+            (kind, cause.as_ref()),
+            (
+                DiagnosticCarrierKind::Relation,
+                KernelCompileError::UnknownRelationTarget {
+                    target: authoritative_target,
+                    ..
+                }
+            ) if authoritative_target == target
+        );
+        if authoritative_module == module
+            && *authoritative_schema == schema_index
+            && *authoritative_relation == relation_index
+            && *authoritative_role == role_index
+            && matching_leaf
+        {
+            self.collection.authoritative_error_observed = true;
+        }
+    }
+
+    fn observe_import_cycle(&mut self, cycle: &[String], closing_module: &str) {
+        let joined_bytes = cycle
+            .iter()
+            .map(String::len)
+            .fold(closing_module.len(), usize::saturating_add)
+            .saturating_add(cycle.len().saturating_mul(" -> ".len()));
+        let exact_message_bytes = "import cycle detected: ".len().saturating_add(joined_bytes);
+        if self.authoritative_error.is_some_and(|authoritative| {
+            let KernelCompileError::ImportCycle(expected) = authoritative else {
+                return false;
+            };
+            cycle
+                .iter()
+                .map(String::as_str)
+                .chain(std::iter::once(closing_module))
+                .eq(expected.split(" -> "))
+        }) {
+            self.collection.authoritative_error_observed = true;
+        }
+        let identity = kernel_diagnostic_identity(
+            std::iter::once(b"import-cycle".as_slice())
+                .chain(cycle.iter().map(|module| module.as_bytes()))
+                .chain(std::iter::once(closing_module.as_bytes())),
+        );
+        self.observe(identity, exact_message_bytes, || {
+            let mut joined = String::with_capacity(joined_bytes);
+            for (index, module) in cycle.iter().enumerate() {
+                if index > 0 {
+                    joined.push_str(" -> ");
+                }
+                joined.push_str(module);
+            }
+            if !cycle.is_empty() {
+                joined.push_str(" -> ");
+            }
+            joined.push_str(closing_module);
+            KernelCompilationDiagnosticV1 {
+                cause: KernelCompileError::ImportCycle(joined),
+                subject: KernelDiagnosticSubjectV1::Unlocated,
+            }
+        });
+    }
+
+    fn finish(self) -> KernelDiagnosticCollectionV1 {
+        self.collection
+    }
 }
 
 /// Immutable downstream handle. The IR is assembled only by
@@ -1151,9 +1719,364 @@ fn checked_finite_model_validation() -> FiniteModelValidationIr {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DiagnosticCarrierKind {
+    Object,
+    Relation,
+}
+
+fn role_type_carrier(expression: &TypeExprV1) -> (DiagnosticCarrierKind, &str) {
+    match expression {
+        TypeExprV1::Object { name } => (DiagnosticCarrierKind::Object, name),
+        TypeExprV1::RelationObject { relation } => (DiagnosticCarrierKind::Relation, relation),
+        TypeExprV1::Indexed { base, .. } | TypeExprV1::Refined { base, .. } => {
+            role_type_carrier(base)
+        }
+    }
+}
+
+fn role_diagnostic_message_bytes(
+    kind: DiagnosticCarrierKind,
+    module: &str,
+    schema: &str,
+    relation: &str,
+    role: &str,
+    target: &str,
+) -> usize {
+    let unknown = match kind {
+        DiagnosticCarrierKind::Object => "` references unknown object `",
+        DiagnosticCarrierKind::Relation => "` references unknown relation object `",
+    };
+    [
+        "schema `".len(),
+        module.len(),
+        1,
+        schema.len(),
+        "` relation `".len(),
+        relation.len(),
+        "` role `".len(),
+        role.len(),
+        unknown.len(),
+        target.len(),
+        1,
+    ]
+    .into_iter()
+    .fold(0_usize, usize::saturating_add)
+}
+
+fn diagnostic_module_order(
+    root: &str,
+    sources: &BTreeMap<String, &CanonicalModuleSource>,
+    builder: &mut KernelDiagnosticBuilder<'_>,
+) -> Vec<String> {
+    fn visit(
+        module: &str,
+        sources: &BTreeMap<String, &CanonicalModuleSource>,
+        temporary: &mut Vec<String>,
+        permanent: &mut BTreeSet<String>,
+        ordered: &mut Vec<String>,
+        builder: &mut KernelDiagnosticBuilder<'_>,
+    ) -> bool {
+        if permanent.contains(module) {
+            return true;
+        }
+        if let Some(position) = temporary.iter().position(|name| name == module) {
+            builder.observe_import_cycle(&temporary[position..], module);
+            return true;
+        }
+        let Some(source) = sources.get(module).copied() else {
+            return true;
+        };
+        temporary.push(module.to_string());
+        for import in &source.parsed.imports {
+            if !builder.charge_work() {
+                temporary.pop();
+                return false;
+            }
+            if !sources.contains_key(import) {
+                continue;
+            }
+            if !visit(import, sources, temporary, permanent, ordered, builder) {
+                temporary.pop();
+                return false;
+            }
+        }
+        temporary.pop();
+        permanent.insert(module.to_string());
+        ordered.push(module.to_string());
+        true
+    }
+
+    let mut temporary = Vec::new();
+    let mut permanent = BTreeSet::new();
+    let mut ordered = Vec::new();
+    if !sources.contains_key(root) {
+        builder.mark_authoritative_missing_root(root);
+        let exact_message_bytes = "root module `"
+            .len()
+            .saturating_add(root.len())
+            .saturating_add("` is absent from compiler input".len());
+        // This path is observed at most once per collection. A constant
+        // occurrence identity avoids scanning an unbounded absent root name.
+        let identity = kernel_diagnostic_identity([b"missing-root-module".as_slice()]);
+        builder.observe(identity, exact_message_bytes, || {
+            KernelCompilationDiagnosticV1 {
+                cause: KernelCompileError::MissingRootModule(root.to_string()),
+                subject: KernelDiagnosticSubjectV1::Unlocated,
+            }
+        });
+        return ordered;
+    }
+    visit(
+        root,
+        sources,
+        &mut temporary,
+        &mut permanent,
+        &mut ordered,
+        builder,
+    );
+    ordered
+}
+
 pub struct CanonicalCompiler;
 
 impl CanonicalCompiler {
+    /// Collect independent, parser-addressed formation errors without changing
+    /// canonical compilation. The collector never returns executable IR and
+    /// never turns an invalid package into a successful snapshot.
+    pub fn collect_diagnostics(
+        request: &KernelCompilationRequest,
+        limits: KernelDiagnosticLimits,
+    ) -> Result<KernelDiagnosticCollectionV1, KernelCompileError> {
+        Self::collect_diagnostics_inner(request, limits, None, None, None)
+    }
+
+    /// Collect after import loading has failed. Only imports confirmed failed
+    /// by that bounded loader are reported; unsearched imports remain unknown.
+    pub fn collect_diagnostics_for_known_import_failures(
+        request: &KernelCompilationRequest,
+        limits: KernelDiagnosticLimits,
+        known_import_failures: &BTreeSet<(String, usize, String)>,
+    ) -> Result<KernelDiagnosticCollectionV1, KernelCompileError> {
+        Self::collect_diagnostics_inner(request, limits, Some(known_import_failures), None, None)
+    }
+
+    /// Collect confirmed import failures while tracking the first authoritative
+    /// loader failure even when a retention or work ceiling omits it.
+    pub fn collect_diagnostics_for_known_import_failures_with_authoritative_error(
+        request: &KernelCompilationRequest,
+        limits: KernelDiagnosticLimits,
+        known_import_failures: &BTreeSet<(String, usize, String)>,
+        authoritative_import_failure: &(String, usize, String),
+        authoritative_error: &KernelCompileError,
+    ) -> Result<KernelDiagnosticCollectionV1, KernelCompileError> {
+        Self::collect_diagnostics_inner(
+            request,
+            limits,
+            Some(known_import_failures),
+            Some(authoritative_import_failure),
+            Some(authoritative_error),
+        )
+    }
+
+    /// Collect while tracking whether the known fail-fast error was observed,
+    /// even if a retention ceiling omits its message.
+    pub fn collect_diagnostics_with_authoritative_error(
+        request: &KernelCompilationRequest,
+        limits: KernelDiagnosticLimits,
+        authoritative_error: &KernelCompileError,
+    ) -> Result<KernelDiagnosticCollectionV1, KernelCompileError> {
+        Self::collect_diagnostics_inner(request, limits, None, None, Some(authoritative_error))
+    }
+
+    fn collect_diagnostics_inner(
+        request: &KernelCompilationRequest,
+        limits: KernelDiagnosticLimits,
+        known_import_failures: Option<&BTreeSet<(String, usize, String)>>,
+        authoritative_import_failure: Option<&(String, usize, String)>,
+        authoritative_error: Option<&KernelCompileError>,
+    ) -> Result<KernelDiagnosticCollectionV1, KernelCompileError> {
+        let mut builder = KernelDiagnosticBuilder::new(limits, authoritative_error)?;
+        let mut sources = BTreeMap::new();
+        for source in &request.modules {
+            if !builder.charge_work() {
+                return Ok(builder.finish());
+            }
+            let name = source.parsed.module_name.clone();
+            if sources.insert(name.clone(), source).is_some() {
+                builder.mark_authoritative_duplicate_module(&name);
+                let exact_message_bytes = "duplicate accepted module `"
+                    .len()
+                    .saturating_add(name.len())
+                    .saturating_add("` in compiler input".len());
+                let identity =
+                    kernel_diagnostic_identity([b"duplicate-module".as_slice(), name.as_bytes()]);
+                builder.observe(identity, exact_message_bytes, || {
+                    KernelCompilationDiagnosticV1 {
+                        cause: KernelCompileError::DuplicateModule(name),
+                        subject: KernelDiagnosticSubjectV1::Unlocated,
+                    }
+                });
+            }
+        }
+
+        let order = diagnostic_module_order(&request.root_module, &sources, &mut builder);
+        for module_name in order {
+            let Some(source) = sources.get(&module_name).copied() else {
+                continue;
+            };
+            for (import_index, import) in source.parsed.imports.iter().enumerate() {
+                if !sources.contains_key(import)
+                    && known_import_failures.is_none_or(|known| {
+                        known.contains(&(module_name.clone(), import_index, import.clone()))
+                    })
+                {
+                    if authoritative_import_failure.is_none_or(|authoritative| {
+                        authoritative.0 == module_name
+                            && authoritative.1 == import_index
+                            && authoritative.2 == *import
+                    }) {
+                        builder.mark_authoritative_unknown_import(&module_name, import);
+                    }
+                    let exact_message_bytes = "module `"
+                        .len()
+                        .saturating_add(module_name.len())
+                        .saturating_add("` imports unknown module `".len())
+                        .saturating_add(import.len())
+                        .saturating_add(1);
+                    let import_index_bytes = import_index.to_le_bytes();
+                    let identity = kernel_diagnostic_identity([
+                        b"unknown-import".as_slice(),
+                        module_name.as_bytes(),
+                        import_index_bytes.as_slice(),
+                        import.as_bytes(),
+                    ]);
+                    builder.observe(identity, exact_message_bytes, || {
+                        KernelCompilationDiagnosticV1 {
+                            cause: KernelCompileError::UnknownImport {
+                                module: module_name.clone(),
+                                import: import.clone(),
+                            },
+                            subject: KernelDiagnosticSubjectV1::Syntactic {
+                                module: module_name.clone(),
+                                address: CanonicalSyntacticAddressV1::ImportName { import_index },
+                            },
+                        }
+                    });
+                }
+            }
+            for (schema_index, schema) in source.parsed.schemas.iter().enumerate() {
+                if !builder.charge_work() {
+                    return Ok(builder.finish());
+                }
+                let mut object_labels = BTreeSet::new();
+                for object in &schema.objects {
+                    if !builder.charge_work() {
+                        return Ok(builder.finish());
+                    }
+                    object_labels.insert(object.as_str());
+                }
+                let mut relation_labels = BTreeSet::new();
+                for relation in &schema.relations {
+                    if !builder.charge_work() {
+                        return Ok(builder.finish());
+                    }
+                    relation_labels.insert(relation.name.as_str());
+                }
+                for (relation_index, relation) in schema.relations.iter().enumerate() {
+                    for (role_index, role) in relation.fields.iter().enumerate() {
+                        if !builder.charge_work() {
+                            return Ok(builder.finish());
+                        }
+                        let (kind, target) = role_type_carrier(&role.ty);
+                        let unknown = match kind {
+                            DiagnosticCarrierKind::Object => !object_labels.contains(target),
+                            DiagnosticCarrierKind::Relation => !relation_labels.contains(target),
+                        };
+                        if !unknown {
+                            continue;
+                        }
+                        builder.mark_authoritative_role(
+                            &module_name,
+                            schema_index,
+                            relation_index,
+                            role_index,
+                            kind,
+                            target,
+                        );
+                        let exact_message_bytes = role_diagnostic_message_bytes(
+                            kind,
+                            &module_name,
+                            &schema.name,
+                            &relation.name,
+                            &role.field,
+                            target,
+                        );
+                        let schema_index_bytes = schema_index.to_le_bytes();
+                        let relation_index_bytes = relation_index.to_le_bytes();
+                        let role_index_bytes = role_index.to_le_bytes();
+                        let kind_bytes: &[u8] = match kind {
+                            DiagnosticCarrierKind::Object => b"object",
+                            DiagnosticCarrierKind::Relation => b"relation",
+                        };
+                        let identity = kernel_diagnostic_identity([
+                            b"role-carrier".as_slice(),
+                            module_name.as_bytes(),
+                            schema_index_bytes.as_slice(),
+                            relation_index_bytes.as_slice(),
+                            role_index_bytes.as_slice(),
+                            kind_bytes,
+                            target.as_bytes(),
+                        ]);
+                        builder.observe(identity, exact_message_bytes, || {
+                            let cause = match kind {
+                                DiagnosticCarrierKind::Object => {
+                                    KernelCompileError::UnknownObjectTarget {
+                                        schema: format!("{module_name}.{}", schema.name),
+                                        site: format!(
+                                            "relation `{}` role `{}`",
+                                            relation.name, role.field
+                                        ),
+                                        target: target.to_string(),
+                                    }
+                                }
+                                DiagnosticCarrierKind::Relation => {
+                                    KernelCompileError::UnknownRelationTarget {
+                                        schema: format!("{module_name}.{}", schema.name),
+                                        site: format!(
+                                            "relation `{}` role `{}`",
+                                            relation.name, role.field
+                                        ),
+                                        target: target.to_string(),
+                                    }
+                                }
+                            };
+                            KernelCompilationDiagnosticV1 {
+                                cause: KernelCompileError::RoleCarrier {
+                                    module: module_name.clone(),
+                                    schema_index,
+                                    relation_index,
+                                    role_index,
+                                    cause: Box::new(cause),
+                                },
+                                subject: KernelDiagnosticSubjectV1::Syntactic {
+                                    module: module_name.clone(),
+                                    address: CanonicalSyntacticAddressV1::RoleTypeCarrier {
+                                        schema_index,
+                                        relation_index,
+                                        role_index,
+                                    },
+                                },
+                            }
+                        });
+                    }
+                }
+            }
+        }
+
+        Ok(builder.finish())
+    }
+
     pub fn compile(
         request: KernelCompilationRequest,
     ) -> Result<CompiledKernelSnapshot, KernelCompileError> {
@@ -4835,7 +5758,10 @@ instance I of S:
 
     #[test]
     fn partial_explicit_function_and_violated_equation_are_rejected() {
-        let partial = base_fixture().replace("    (source=Bob, target=Bob)\n", "");
+        let partial = base_fixture().replace(
+            "    (source=Alice, target=Alice),\n    (source=Bob, target=Bob)\n",
+            "    (source=Alice, target=Alice)\n",
+        );
         assert!(matches!(
             compile_single(&partial),
             Err(KernelCompileError::PartialGenerator { .. })

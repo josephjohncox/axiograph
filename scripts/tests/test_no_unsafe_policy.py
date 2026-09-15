@@ -6,8 +6,8 @@ import gzip
 import io
 import json
 import os
+import re
 import shutil
-import signal
 import socket
 import subprocess
 import sys
@@ -60,6 +60,11 @@ from scripts.no_unsafe_fs import (
 REPO = Path(__file__).parents[2]
 CANONICAL_MANIFEST = REPO / "scripts/no_unsafe_external_cache_manifest_v1.json"
 CACHE_LIBRARY = REPO / CANDIDATE_HOMES[0] / "library"
+
+
+def diagnostic_codes(stderr: str) -> list[str]:
+    """Return only primary bracketed diagnostic codes, in emitted order."""
+    return re.findall(r"(?m)^\[([A-Z][A-Z0-9_]+)\]", stderr)
 
 
 class CountingOps(RealFileOps):
@@ -395,16 +400,17 @@ class RootCorrectionTests(unittest.TestCase):
             "sys.argv=[sys.argv[1]]; raise SystemExit(scanner.main())"
         )
         for argv0 in ("", "./scripts/check_no_unsafe.py", "scripts/../scripts/check_no_unsafe.py", "bad\\name"):
-            with self.subTest(argv0=argv0), self.assertRaises(PolicyFailure) as caught:
-                bind_invocation(argv0, "check_no_unsafe.py")
-            self.assertEqual(caught.exception.code, "E_ROOT_BINDING")
-            result = subprocess.run(
-                [sys.executable, "-c", malformed_launcher, argv0], cwd=REPO,
-                capture_output=True, text=True, timeout=30, check=False,
-            )
-            self.assertEqual(result.returncode, 1)
-            self.assertIn("[E_ROOT_BINDING]", result.stderr)
-            self.assertIn("exemptions=0", result.stderr)
+            with self.subTest(argv0=argv0):
+                with self.assertRaises(PolicyFailure) as caught:
+                    bind_invocation(argv0, "check_no_unsafe.py")
+                self.assertEqual(caught.exception.code, "E_ROOT_BINDING")
+                result = subprocess.run(
+                    [sys.executable, "-c", malformed_launcher, argv0], cwd=REPO,
+                    capture_output=True, text=True, timeout=30, check=False,
+                )
+                self.assertEqual(result.returncode, 1)
+                self.assertIn("[E_ROOT_BINDING]", result.stderr)
+                self.assertIn("exemptions=0", result.stderr)
 
     def test_scripts_parent_mutation_before_s1_is_root_binding_failure(self) -> None:
         for mutation in ("touch", "replace"):
@@ -458,9 +464,11 @@ class RootCorrectionTests(unittest.TestCase):
                 script.write_text("# stable\n")
 
                 class MutateAfterReplay(RealFileOps):
-                    def __init__(self, selected: str) -> None:
+                    def __init__(self, selected: str, bound_root: Path = root, bound_scripts: Path = scripts) -> None:
                         super().__init__()
                         self.selected = selected
+                        self.root = bound_root
+                        self.scripts = bound_scripts
                         self.scripts_metadata: list[int] = []
                         self.replay_data_fd: int | None = None
                         self.mutated = False
@@ -481,12 +489,12 @@ class RootCorrectionTests(unittest.TestCase):
                         super().close(fd)
                         if fd == self.replay_data_fd and not self.mutated:
                             if self.selected == "touch":
-                                os.utime(scripts)
+                                os.utime(self.scripts)
                             else:
-                                moved = root / "scripts-original"
-                                os.rename(scripts, moved)
-                                scripts.mkdir()
-                                (scripts / "check_no_unsafe.py").write_text("# replacement\n")
+                                moved = self.root / "scripts-original"
+                                os.rename(self.scripts, moved)
+                                self.scripts.mkdir()
+                                (self.scripts / "check_no_unsafe.py").write_text("# replacement\n")
                             self.mutated = True
 
                 ops = MutateAfterReplay(mutation)
@@ -623,9 +631,10 @@ class ArchiveParserTests(unittest.TestCase):
             (ArchiveLimits(len(compressed), len(raw), 8, 8, 3, 256), "E_ARCHIVE_MEMBER_SIZE"),
             (ArchiveLimits(len(compressed), len(raw), 8, 8, 4, 3), "E_ARCHIVE_PATH_SIZE"),
         ):
-            with self.subTest(code=code), self.assertRaises(PolicyFailure) as caught:
-                self.parse(compressed, limits)
-            self.assertEqual(caught.exception.code, code)
+            with self.subTest(code=code):
+                with self.assertRaises(PolicyFailure) as caught:
+                    self.parse(compressed, limits)
+                self.assertEqual(caught.exception.code, code)
 
     def test_pax_semantic_overrides_and_sparse_records_fail_closed(self) -> None:
         for key, value, code in (
@@ -876,7 +885,12 @@ class ScannerCliTests(unittest.TestCase):
 
 class IsolatedScannerTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.temporary = tempfile.TemporaryDirectory()
+        fixture_parent = REPO / "build/engineering-quality/no-unsafe-test-fixtures"
+        fixture_parent.mkdir(parents=True, exist_ok=True)
+        self.temporary = tempfile.TemporaryDirectory(
+            prefix="isolated-scanner-",
+            dir=fixture_parent,
+        )
         self.root = Path(self.temporary.name)
         scripts = self.root / "scripts"
         scripts.mkdir()
@@ -1018,24 +1032,60 @@ class IsolatedScannerTests(unittest.TestCase):
                     os.close(root_fd)
 
     def test_candidate_fifo_and_socket_are_nonregular_without_data_open(self) -> None:
-        fifo = self.home / "library/candidate-fifo"
-        os.mkfifo(fifo)
-        result = self.run_scanner()
-        self.assertEqual(result.returncode, 1)
-        self.assertIn("[E_FS_NONREGULAR]", result.stderr)
-        self.assertIn("exemptions=0", result.stderr)
-        fifo.unlink()
-        unix_socket = socket.socket(socket.AF_UNIX)
-        library_fd = os.open(self.home / "library", os.O_RDONLY | O_DIRECTORY)
-        try:
-            unix_socket.bind(f"/proc/self/fd/{library_fd}/candidate-socket.rs")
-            result = self.run_scanner()
-            self.assertEqual(result.returncode, 1)
-            self.assertIn("[E_FS_NONREGULAR]", result.stderr)
-            self.assertIn("exemptions=0", result.stderr)
-        finally:
-            unix_socket.close()
-            os.close(library_fd)
+        class TargetPortalOps(CountingOps):
+            def __init__(self, target_name: str) -> None:
+                super().__init__()
+                self.target_name = target_name
+                self.target_portals = 0
+
+            def open_portal(self, metadata_fd: int, flags: int) -> int:
+                if os.readlink(f"/proc/self/fd/{metadata_fd}").endswith(
+                    "/" + self.target_name
+                ):
+                    self.target_portals += 1
+                return super().open_portal(metadata_fd, flags)
+
+        expected = json.loads(CANONICAL_MANIFEST.read_bytes())["records"][0]
+        for kind in ("fifo", "socket"):
+            with self.subTest(kind=kind):
+                target_name = f"candidate-{kind}.rs"
+                target = self.home / "library" / target_name
+                unix_socket: socket.socket | None = None
+                library_fd: int | None = None
+                if kind == "fifo":
+                    os.mkfifo(target)
+                else:
+                    unix_socket = socket.socket(socket.AF_UNIX)
+                    library_fd = os.open(self.home / "library", os.O_RDONLY | O_DIRECTORY)
+                    unix_socket.bind(f"/proc/self/fd/{library_fd}/{target_name}")
+                try:
+                    result = self.run_scanner()
+                    self.assertEqual(result.returncode, 1)
+                    self.assertEqual(diagnostic_codes(result.stderr), ["E_FS_NONREGULAR"])
+                    self.assertIn("exemptions=0", result.stderr)
+                    root_fd = os.open(self.root, os.O_RDONLY | O_DIRECTORY)
+                    ops = TargetPortalOps(target_name)
+                    try:
+                        with self.assertRaises(PolicyFailure) as caught:
+                            scan_candidate(
+                                root_fd,
+                                CANDIDATE_HOMES[0],
+                                CANDIDATE_HOMES[0],
+                                expected,
+                                ScanCounters(),
+                                ops=ops,
+                            )
+                        self.assertEqual(caught.exception.code, "E_FS_NONREGULAR")
+                        self.assertEqual(ops.target_portals, 0)
+                    finally:
+                        os.close(root_fd)
+                finally:
+                    if unix_socket is not None:
+                        unix_socket.close()
+                    if library_fd is not None:
+                        os.close(library_fd)
+                    if target.exists():
+                        target.unlink()
 
     def test_git_index_link_fifo_and_unsupported_control_fail_closed(self) -> None:
         index = self.root / ".git/index"
@@ -1452,9 +1502,10 @@ class ArchiveOperationTests(unittest.TestCase):
         other = REPO / "scripts/README.md"
         try:
             for fault, code in cases.items():
-                with self.subTest(fault=fault), self.assertRaises(PolicyFailure) as caught:
-                    read_archive_inventory(root_fd, ops=self.FaultOps(fault, other))
-                self.assertEqual(caught.exception.code, code)
+                with self.subTest(fault=fault):
+                    with self.assertRaises(PolicyFailure) as caught:
+                        read_archive_inventory(root_fd, ops=self.FaultOps(fault, other))
+                    self.assertEqual(caught.exception.code, code)
         finally:
             os.close(root_fd)
 
@@ -2010,9 +2061,10 @@ class CorrectionRegressionTests(unittest.TestCase):
                 parsed = self._parse_with_limits(compressed, accepted)
                 self.assertEqual(len(parsed.directories), 10)  # type: ignore[attr-defined]
                 self.assertEqual(len(parsed.files), 32)  # type: ignore[attr-defined]
-            with self.subTest(boundary=boundary, value="N+1"), self.assertRaises(PolicyFailure) as caught:
-                self._parse_with_limits(compressed, rejected)
-            self.assertEqual(caught.exception.code, code)
+            with self.subTest(boundary=boundary, value="N+1"):
+                with self.assertRaises(PolicyFailure) as caught:
+                    self._parse_with_limits(compressed, rejected)
+                self.assertEqual(caught.exception.code, code)
 
     @staticmethod
     def _parse_with_limits(compressed: bytes, limits: ArchiveLimits) -> object:
@@ -2089,9 +2141,10 @@ class CorrectionRegressionTests(unittest.TestCase):
             def replace_path(block: bytearray, value: bytes = path) -> None:
                 block[0:100] = bytes(100)
                 block[0:len(value)] = value
-            with self.subTest(category="path", path=path, code=code), self.assertRaises(PolicyFailure) as caught:
-                self._parse_bytes(self._rewrite_header(raw, replace_path), len(raw))
-            self.assertEqual(caught.exception.code, code)
+            with self.subTest(category="path", path=path, code=code):
+                with self.assertRaises(PolicyFailure) as caught:
+                    self._parse_bytes(self._rewrite_header(raw, replace_path), len(raw))
+                self.assertEqual(caught.exception.code, code)
         for typeflag, code in (
             (b"1", "E_ARCHIVE_KIND_HARDLINK"),
             (b"2", "E_ARCHIVE_KIND_SYMLINK"),
@@ -2103,12 +2156,13 @@ class CorrectionRegressionTests(unittest.TestCase):
             (b"K", "E_ARCHIVE_KIND_UNSUPPORTED"),
             (b"Z", "E_ARCHIVE_KIND_UNSUPPORTED"),
         ):
-            with self.subTest(category="kind", typeflag=typeflag, code=code), self.assertRaises(PolicyFailure) as caught:
-                self._parse_bytes(
-                    self._rewrite_header(raw, lambda block, value=typeflag: block.__setitem__(156, value[0])),
-                    len(raw),
-                )
-            self.assertEqual(caught.exception.code, code)
+            with self.subTest(category="kind", typeflag=typeflag, code=code):
+                with self.assertRaises(PolicyFailure) as caught:
+                    self._parse_bytes(
+                        self._rewrite_header(raw, lambda block, value=typeflag: block.__setitem__(156, value[0])),
+                        len(raw),
+                    )
+                self.assertEqual(caught.exception.code, code)
         with self.assertRaises(PolicyFailure) as caught:
             self._parse_with_limits(b"not gzip", ArchiveLimits(64, 64, 8, 8, 8, 256))
         self.assertEqual(caught.exception.code, "E_ARCHIVE_GZIP")
@@ -2438,9 +2492,10 @@ class CorrectionRegressionTests(unittest.TestCase):
             b"100644 " + oid + b" 0\t" + home.encode() + b"/bad\npath\0",
             b"040000 " + oid + b" 0\t" + home.encode() + b"\0",
         ):
-            with self.subTest(raw=raw), self.assertRaises(PolicyFailure) as caught:
-                _parse_index_paths(raw, closure)
-            self.assertEqual(caught.exception.code, "E_GIT_SCHEMA")
+            with self.subTest(raw=raw):
+                with self.assertRaises(PolicyFailure) as caught:
+                    _parse_index_paths(raw, closure)
+                self.assertEqual(caught.exception.code, "E_GIT_SCHEMA")
         malformed_tree = b"100644 tree " + oid + b"\t" + home.encode() + b"\0"
         with self.assertRaises(PolicyFailure) as caught:
             _parse_tree_paths(malformed_tree, closure)
@@ -2505,11 +2560,14 @@ class CorrectionRegressionTests(unittest.TestCase):
         from scripts import no_unsafe_fs
 
         for missing_flag in ("O_PATH", "O_NONBLOCK"):
-            with self.subTest(missing_flag=missing_flag), mock.patch.object(no_unsafe_fs, missing_flag, 0), self.assertRaises(PolicyFailure) as caught:
-                RealFileOps().require_supported(
-                    "E_REGEN_FS", require_openat2=True, openat2_resolve=RESOLVE_INPUT
-                )
-            self.assertEqual(caught.exception.code, "E_REGEN_FS_UNSUPPORTED")
+            with self.subTest(missing_flag=missing_flag), mock.patch.object(
+                no_unsafe_fs, missing_flag, 0
+            ):
+                with self.assertRaises(PolicyFailure) as caught:
+                    RealFileOps().require_supported(
+                        "E_REGEN_FS", require_openat2=True, openat2_resolve=RESOLVE_INPUT
+                    )
+                self.assertEqual(caught.exception.code, "E_REGEN_FS_UNSUPPORTED")
 
         class ProbeFailureOps(RealFileOps):
             def __init__(self, fault: str) -> None:
@@ -2798,15 +2856,14 @@ class CorrectionRegressionTests(unittest.TestCase):
                     ("metadata", "E_SOURCE_METADATA"),
                     ("close", "E_SOURCE_CLOSE"),
                 ):
-                    with self.subTest(fault=fault), self.assertRaises(
-                        PolicyFailure
-                    ) as caught:
-                        scan_sources(
-                            BoundRepository(str(repository), held),
-                            {"cache_home_paths": CANDIDATE_HOMES},
-                            ops=SourceInitialFaultOps(fault),
-                        )
-                    self.assertEqual(caught.exception.code, code)
+                    with self.subTest(fault=fault):
+                        with self.assertRaises(PolicyFailure) as caught:
+                            scan_sources(
+                                BoundRepository(str(repository), held),
+                                {"cache_home_paths": CANDIDATE_HOMES},
+                                ops=SourceInitialFaultOps(fault),
+                            )
+                        self.assertEqual(caught.exception.code, code)
             finally:
                 held.close()
                 os.close(outer_fd)
@@ -3033,8 +3090,10 @@ class CorrectionRegressionTests(unittest.TestCase):
                         b"{}\n",
                         ops=FailNamedCloseOps(OUTPUT_BASENAME),
                     )
-                self.assertEqual(caught.exception.code, "E_REGEN_OUTPUT_EXISTS")
-                self.assertIn("E_REGEN_OUTPUT_PROBE", caught.exception.additional)
+                self.assertEqual(
+                    (caught.exception.code, caught.exception.additional),
+                    ("E_REGEN_OUTPUT_EXISTS", ("E_REGEN_OUTPUT_PROBE",)),
+                )
             finally:
                 os.close(descriptor)
 
@@ -3049,8 +3108,10 @@ class CorrectionRegressionTests(unittest.TestCase):
                         ["a", "missing"],
                         ops=FailNamedCloseOps("/a"),
                     )
-                self.assertEqual(caught.exception.code, "E_REGEN_CONFINEMENT")
-                self.assertIn("E_REGEN_CLOSE", caught.exception.additional)
+                self.assertEqual(
+                    (caught.exception.code, caught.exception.additional),
+                    ("E_REGEN_CONFINEMENT", ("E_REGEN_CLOSE",)),
+                )
             finally:
                 os.close(descriptor)
 
@@ -3110,7 +3171,10 @@ class CorrectionRegressionTests(unittest.TestCase):
                         read_checked_manifest(
                             descriptor, ops=CheckedCloseOps(target, phase)
                         )
-                    self.assertEqual(caught.exception.code, "E_REGEN_CHECK_CLOSE")
+                    self.assertEqual(
+                        (caught.exception.code, caught.exception.additional),
+                        ("E_REGEN_CHECK_CLOSE", ()),
+                    )
                 finally:
                     os.close(descriptor)
 
@@ -3158,9 +3222,67 @@ class CorrectionRegressionTests(unittest.TestCase):
             try:
                 with self.assertRaises(PolicyFailure) as caught:
                     read_checked_manifest(descriptor, ops=ops)
-                self.assertEqual(caught.exception.code, "E_REGEN_CHECK_READ")
-                self.assertIn("E_REGEN_CHECK_CLOSE", caught.exception.additional)
+                self.assertEqual(
+                    (caught.exception.code, caught.exception.additional),
+                    ("E_REGEN_CHECK_READ", ("E_REGEN_CHECK_CLOSE",)),
+                )
                 self.assertTrue(ops.read_failed)
+                self.assertTrue(ops.close_failed)
+            finally:
+                os.close(descriptor)
+
+        class ObservationAndCloseFailureOps(RealFileOps):
+            def __init__(self, target: Path) -> None:
+                super().__init__()
+                self.target = target
+                self.target_opens = 0
+                self.observation_metadata_fd: int | None = None
+                self.observation_data_fd: int | None = None
+                self.metadata_failed = False
+                self.close_failed = False
+
+            def openat2(self, parent_fd: int, name: str, flags: int, mode: int, resolve: int) -> int:
+                descriptor = super().openat2(parent_fd, name, flags, mode, resolve)
+                if name == self.target.name:
+                    self.target_opens += 1
+                    if self.target_opens == 2:
+                        self.observation_metadata_fd = descriptor
+                return descriptor
+
+            def open_portal(self, metadata_fd: int, flags: int) -> int:
+                descriptor = super().open_portal(metadata_fd, flags)
+                if metadata_fd == self.observation_metadata_fd:
+                    self.observation_data_fd = descriptor
+                return descriptor
+
+            def fstat(self, fd: int):  # type: ignore[no-untyped-def]
+                if fd == self.observation_data_fd and not self.metadata_failed:
+                    self.metadata_failed = True
+                    raise OSError(errno.EIO, "injected checked observation metadata")
+                return super().fstat(fd)
+
+            def close(self, fd: int) -> None:
+                if fd == self.observation_data_fd and not self.close_failed:
+                    super().close(fd)
+                    self.close_failed = True
+                    raise OSError(errno.EIO, "injected checked observation close")
+                super().close(fd)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            target = root / MANIFEST_REL
+            target.parent.mkdir()
+            shutil.copyfile(CANONICAL_MANIFEST, target)
+            descriptor = os.open(root, os.O_RDONLY | O_DIRECTORY)
+            ops = ObservationAndCloseFailureOps(target)
+            try:
+                with self.assertRaises(PolicyFailure) as caught:
+                    read_checked_manifest(descriptor, ops=ops)
+                self.assertEqual(
+                    (caught.exception.code, caught.exception.additional),
+                    ("E_REGEN_CHECK_METADATA", ("E_REGEN_CHECK_CLOSE",)),
+                )
+                self.assertTrue(ops.metadata_failed)
                 self.assertTrue(ops.close_failed)
             finally:
                 os.close(descriptor)
@@ -3208,8 +3330,10 @@ class CorrectionRegressionTests(unittest.TestCase):
                         b"{}\n",
                         ops=OutputVerificationCloseOps(),
                     )
-                self.assertEqual(caught.exception.code, "E_REGEN_CLOSE")
-                self.assertIn("E_REGEN_RESIDUE", caught.exception.additional)
+                self.assertEqual(
+                    (caught.exception.code, caught.exception.additional),
+                    ("E_REGEN_CLOSE", ("E_REGEN_RESIDUE",)),
+                )
             finally:
                 os.close(descriptor)
 
@@ -3273,7 +3397,10 @@ class CorrectionRegressionTests(unittest.TestCase):
                             ops=ArchiveCloseOps(target, phase),
                             limits=ArchiveLimits(1, 1, 1, 1, 1, 256),
                         )
-                    self.assertEqual(caught.exception.code, "E_REGEN_ARCHIVE_CLOSE")
+                    self.assertEqual(
+                        (caught.exception.code, caught.exception.additional),
+                        ("E_REGEN_ARCHIVE_CLOSE", ()),
+                    )
                 finally:
                     os.close(descriptor)
 
@@ -3296,8 +3423,10 @@ class CorrectionRegressionTests(unittest.TestCase):
                         ops=ArchiveCloseOps(target, "original"),
                         limits=ArchiveLimits(1, 1, 1, 1, 1, 256),
                     )
-                self.assertEqual(caught.exception.code, "E_ARCHIVE_TAR")
-                self.assertIn("E_REGEN_ARCHIVE_CLOSE", caught.exception.additional)
+                self.assertEqual(
+                    (caught.exception.code, caught.exception.additional),
+                    ("E_ARCHIVE_TAR", ("E_REGEN_ARCHIVE_CLOSE",)),
+                )
             finally:
                 os.close(descriptor)
 
@@ -3349,81 +3478,344 @@ class CorrectionRegressionTests(unittest.TestCase):
                         ops=ObservationFailureOps(target),
                         limits=ArchiveLimits(1, 1, 1, 1, 1, 256),
                     )
-                self.assertEqual(caught.exception.code, "E_REGEN_ARCHIVE_RACE")
-                self.assertIn("E_REGEN_ARCHIVE_CLOSE", caught.exception.additional)
+                self.assertEqual(
+                    (caught.exception.code, caught.exception.additional),
+                    ("E_REGEN_ARCHIVE_RACE", ("E_REGEN_ARCHIVE_CLOSE",)),
+                )
             finally:
                 os.close(descriptor)
 
-    def test_row_case_map_rejects_absent_unexecuted_unknown_and_wrong_level(self) -> None:
-        from scripts.run_no_unsafe_row_evidence import (
-            EVIDENCE_SCHEMA,
-            CaseMapFailure,
-            validate_case_map,
-            validate_executed_evidence,
-        )
+    def test_row_requirement_validator_rejects_wrong_bindings_and_fake_assertions(self) -> None:
+        from scripts import run_no_unsafe_row_evidence as row_evidence
+        from scripts import verify_no_unsafe_row_evidence as evidence_verifier
 
-        original = json.loads((REPO / "scripts/no_unsafe_row_cases_v1.json").read_bytes())
-        self.assertEqual(len(validate_case_map(original)), 81)
+        case_path = REPO / row_evidence.CASE_MAP_REL
+        original = json.loads(case_path.read_bytes())
+        case_rows = row_evidence.validate_case_map(original)
+        self.assertEqual(len(case_rows), 81)
 
-        mutations = {}
-        absent = json.loads(json.dumps(original))
-        absent["rows"].pop()
-        mutations["absent"] = absent
-        unexecuted = json.loads(json.dumps(original))
-        unexecuted["rows"][0]["runners"] = []
-        mutations["unexecuted"] = unexecuted
-        unknown = json.loads(json.dumps(original))
-        unknown["rows"][0]["runners"][0]["selector"] = (
-            "scripts.tests.test_no_unsafe_policy.MissingTests.test_absent"
+        mutations: dict[str, dict[str, object]] = {}
+        missing_row = json.loads(json.dumps(original))
+        missing_row["rows"].pop()
+        mutations["missing-row"] = missing_row
+        missing_case = json.loads(json.dumps(original))
+        missing_case["rows"][0]["cases"] = []
+        mutations["missing-case"] = missing_case
+        wrong_method = json.loads(json.dumps(original))
+        method_case = next(
+            case
+            for row in wrong_method["rows"]
+            for case in row["cases"]
+            if case["kind"] == "execution"
         )
-        mutations["unknown"] = unknown
+        method_case["invocation"]["method"]["source_sha256"] = "0" * 64
+        mutations["wrong-method"] = wrong_method
+        wrong_stimulus = json.loads(json.dumps(original))
+        wrong_stimulus["rows"][0]["stimulus"] = "unrelated"
+        mutations["wrong-stimulus"] = wrong_stimulus
+        wrong_window = json.loads(json.dumps(original))
+        window_case = next(
+            case
+            for row in wrong_window["rows"]
+            for case in row["cases"]
+            if case["kind"] == "execution" and case["stimulus"]["kind"] == "subtest"
+        )
+        window_case["stimulus"]["params"] = {"window": "unrelated"}
+        mutations["wrong-window"] = wrong_window
         wrong_level = json.loads(json.dumps(original))
-        wrong_level["rows"][0]["runners"][0]["level"] = "direct"
-        mutations["wrong_level"] = wrong_level
-        for case, malformed in mutations.items():
-            with self.subTest(kind="case-map", case=case), self.assertRaises(CaseMapFailure):
-                validate_case_map(malformed)
+        wrong_level["rows"][0]["cases"][0]["level"] = "direct"
+        mutations["wrong-level"] = wrong_level
+        unrelated = json.loads(json.dumps(original))
+        unrelated_predicate = next(
+            predicate
+            for row in unrelated["rows"]
+            for case in row["cases"]
+            for predicate in case["predicates"]
+            if case["kind"] == "execution"
+        )
+        unrelated_predicate["assertion"]["source_line"] = 1
+        mutations["unrelated-assertion"] = unrelated
+        wrong_matrix = json.loads(json.dumps(original))
+        wrong_matrix["normative_matrix"]["sha256"] = "0" * 64
+        mutations["wrong-normative-contract"] = wrong_matrix
+        wrong_hosted = json.loads(json.dumps(original))
+        wrong_hosted["hosted_proofs"][0]["jobs"]["amd64"] = 1
+        mutations["wrong-hosted-proof"] = wrong_hosted
+        for name, malformed in mutations.items():
+            with self.subTest(kind="closed-map", case=name), self.assertRaises(
+                row_evidence.CaseMapFailure
+            ):
+                row_evidence.validate_case_map(malformed, enforce_identity=False)
 
-        case_rows = validate_case_map(original)
-        executions = {}
-        for row in case_rows:
-            for runner in row["runners"]:
-                key = (row["id"], runner["selector"], runner["level"], runner["official_archive"])
-                assertion = {
-                    "row_id": row["id"], "method": "assertEqual",
-                    "test_function": "test_observed_fixture",
-                    "source_file": "scripts/tests/test_no_unsafe_policy.py",
-                    "source_line": 1,
-                    "arguments": ["'actual'", "'actual'"], "keywords": {}, "passed": True,
+        duplicate_reuse = json.loads(json.dumps(original))
+        duplicate_case = next(
+            case
+            for row in duplicate_reuse["rows"]
+            for case in row["cases"]
+            if case["kind"] == "execution" and len(case["predicates"]) >= 2
+        )
+        duplicate_case["predicates"][1]["assertion"] = json.loads(
+            json.dumps(duplicate_case["predicates"][0]["assertion"])
+        )
+        with self.assertRaisesRegex(
+            row_evidence.CaseMapFailure,
+            "observation occurrence is reused",
+        ):
+            row_evidence.validate_case_map(duplicate_reuse, enforce_identity=False)
+
+        wrong_cause, cause_case_id = evidence_verifier._wrong_cause_mutation(original)
+        row_evidence.validate_case_map(wrong_cause, enforce_identity=False)
+        cause_case = next(
+            case
+            for row in wrong_cause["rows"]
+            for case in row["cases"]
+            if case["id"] == cause_case_id
+        )
+        wrong_normative_cause = json.loads(json.dumps(original))
+        normative_assertion = next(
+            predicate["assertion"]
+            for row in wrong_normative_cause["rows"]
+            for case in row["cases"]
+            for predicate in case["predicates"]
+            if predicate["assertion"]["normative_cause"] is not None
+        )
+        source_cause = normative_assertion["normative_cause"]
+        cause_check = next(
+            item
+            for item in normative_assertion["argument_equals"]
+            if source_cause in item["value"]
+        )
+        cause_check["value"] = cause_check["value"].replace(source_cause, "E_FAKE")
+        normative_assertion["normative_cause"] = "E_FAKE"
+        with self.assertRaisesRegex(
+            row_evidence.CaseMapFailure,
+            "normative cause binding",
+        ):
+            row_evidence.validate_case_map(
+                wrong_normative_cause,
+                enforce_identity=False,
+            )
+        wrong_occurrence = json.loads(json.dumps(original))
+        occurrence_case = next(
+            case
+            for row in wrong_occurrence["rows"]
+            for case in row["cases"]
+            if case["id"] == cause_case_id
+        )
+        occurrence_case["predicates"][0]["assertion"]["site_occurrence"] += 1_000_000
+        row_evidence.validate_case_map(wrong_occurrence, enforce_identity=False)
+
+        invocation = cause_case["invocation"]
+        cause_argv = row_evidence._expected_argv(
+            invocation["selector"],
+            invocation["id"],
+        )
+        cause_environment = {
+            name: os.environ[name]
+            for name in row_evidence.SAFE_ENVIRONMENT_NAMES
+            if name in os.environ
+        }
+        if invocation["official_archive"]:
+            cause_environment["AXIOGRAPH_RUN_OFFICIAL_KANI_ARCHIVE"] = "1"
+        cause_completed = subprocess.run(
+            cause_argv,
+            cwd=REPO,
+            env=cause_environment,
+            input=b"",
+            capture_output=True,
+            timeout=600,
+            check=False,
+        )
+        self.assertEqual(cause_completed.returncode, 0, cause_completed.stderr.decode())
+        cause_outcome = json.loads(cause_completed.stdout)
+        original_case = next(
+            case
+            for row in original["rows"]
+            for case in row["cases"]
+            if case["id"] == cause_case["id"]
+        )
+        matched = row_evidence._match_case_predicates(
+            original_case,
+            cause_outcome,
+            invocation["id"],
+            set(),
+            context="validator regression original",
+        )
+        self.assertEqual(len(matched), len(original_case["predicates"]))
+        for label, malformed_case in (
+            ("wrong-cause-identity-disabled", cause_case),
+            ("wrong-occurrence", occurrence_case),
+        ):
+            with self.subTest(kind="executed-semantic", case=label), self.assertRaises(
+                row_evidence.CaseMapFailure
+            ):
+                row_evidence._match_case_predicates(
+                    malformed_case,
+                    cause_outcome,
+                    invocation["id"],
+                    set(),
+                    context=label,
+                )
+
+        selector = (
+            "scripts.tests.test_no_unsafe_policy.OutputOperationTests."
+            "test_probe_and_create_failures_are_disjoint"
+        )
+        binding = row_evidence._method_binding(selector)
+        invocation_id = row_evidence._invocation_id(
+            binding,
+            "direct",
+            False,
+            "VALIDATOR-REGRESSION",
+        )
+        argv = row_evidence._expected_argv(selector, invocation_id)
+        completed = subprocess.run(
+            argv,
+            cwd=REPO,
+            env={
+                name: os.environ[name]
+                for name in row_evidence.SAFE_ENVIRONMENT_NAMES
+                if name in os.environ
+            },
+            input=b"",
+            capture_output=True,
+            timeout=60,
+            check=False,
+        )
+        outcome = json.loads(completed.stdout)
+        execution = {
+            "id": invocation_id,
+            "selector": selector,
+            "level": "direct",
+            "official_archive": False,
+            "purpose": "VALIDATOR-REGRESSION",
+            "method": binding,
+            "argv": argv,
+            "cwd": str(REPO),
+            "allowlisted_environment": {
+                name: os.environ[name]
+                for name in row_evidence.SAFE_ENVIRONMENT_NAMES
+                if name in os.environ
+            },
+            "exit": completed.returncode,
+            "stdout": completed.stdout.decode(),
+            "stderr": completed.stderr.decode(),
+            "outcome": outcome,
+        }
+        expected = {
+            "id": invocation_id,
+            "selector": selector,
+            "level": "direct",
+            "official_archive": False,
+            "purpose": "VALIDATOR-REGRESSION",
+            "method": binding,
+        }
+        row_evidence._validate_invocation(execution, expected, require_satisfied=True)
+        for field, replacement_value in (
+            ("level", "CLI"),
+            ("id", "invocation-unknown"),
+            ("exit", 1),
+            ("stdout", "{}\n"),
+        ):
+            malformed_execution = json.loads(json.dumps(execution))
+            malformed_execution[field] = replacement_value
+            with self.subTest(kind="real-invocation", field=field), self.assertRaises(
+                row_evidence.CaseMapFailure
+            ):
+                row_evidence._validate_invocation(
+                    malformed_execution,
+                    expected,
+                    require_satisfied=True,
+                )
+
+        copied_outcome = json.loads(json.dumps(execution))
+        copied_outcome["outcome"]["invocation_id"] = "invocation-copied"
+        copied_outcome["stdout"] = json.dumps(
+            copied_outcome["outcome"],
+            sort_keys=True,
+        ) + "\n"
+        with self.assertRaisesRegex(row_evidence.CaseMapFailure, "outcome binding"):
+            row_evidence._validate_invocation(
+                copied_outcome,
+                expected,
+                require_satisfied=True,
+            )
+
+        observed = next(item for item in outcome["assertions"] if item["arguments"])
+        assertion = {
+            key: observed[key]
+            for key in (
+                "site_occurrence",
+                "method",
+                "test_function",
+                "source_file",
+                "source_sha256",
+                "source_line",
+                "subtest_params",
+            )
+        }
+        assertion["argument_equals"] = [
+            {"index": 0, "value": observed["arguments"][0]}
+        ]
+        assertion["normative_cause"] = None
+        bound_case = {
+            "predicates": [
+                {"id": "validator-predicate-1", "assertion": assertion}
+            ]
+        }
+        self.assertEqual(
+            row_evidence._match_case_predicates(
+                bound_case,
+                outcome,
+                invocation_id,
+                set(),
+                context="fabrication control",
+            ),
+            [
+                {
+                    "id": "validator-predicate-1",
+                    "occurrence": observed["occurrence"],
+                    "site_occurrence": observed["site_occurrence"],
                 }
-                outcome = {"successful": True, "tests_run": 1, "skips": 0, "assertions": [assertion]}
-                executions[key] = {
-                    "row_id": key[0], "selector": key[1], "level": key[2], "official_archive": key[3],
-                    "argv": ["python3", "runner", key[1], "--row-id", key[0]], "cwd": str(REPO),
-                    "allowlisted_environment": {}, "exit": 0, "stdout": "", "stderr": "", "outcome": outcome,
-                }
-        evidence_rows=[]
-        for row in case_rows:
-            references=[]
-            observations=[]
-            for runner in row["runners"]:
-                key=(row["id"],runner["selector"],runner["level"],runner["official_archive"])
-                execution=executions[key]
-                references.append({"selector":key[1],"level":key[2],"official_archive":key[3],"exit":0,"outcome":execution["outcome"]})
-                observations.append({"selector":key[1],"level":key[2],"official_archive":key[3],"assertions":execution["outcome"]["assertions"]})
-            evidence_rows.append({"id":row["id"],"required_level":row["required_level"],"stimulus":row["stimulus"],"required_evidence":row["required_evidence"],"executed":True,"passed":True,"observations":observations,"executions":references})
-        valid_evidence={"schema":EVIDENCE_SCHEMA,"case_map":"case-map.json","cwd":str(REPO),"row_count":81,"execution_count":len(executions),"all_executed":True,"all_passed":True,"rows":evidence_rows,"executions":list(executions.values())}
-        validate_executed_evidence(valid_evidence,case_rows)
-        evidence_mutations={}
-        absent_evidence=json.loads(json.dumps(valid_evidence)); absent_evidence["rows"].pop(); evidence_mutations["absent"]=absent_evidence
-        unexecuted_evidence=json.loads(json.dumps(valid_evidence)); unexecuted_evidence["rows"][0]["executed"]=False; evidence_mutations["unexecuted"]=unexecuted_evidence
-        unknown_evidence=json.loads(json.dumps(valid_evidence)); unknown_evidence["executions"][0]["selector"]="scripts.tests.test_no_unsafe_policy.MissingTests.test_absent"; evidence_mutations["unknown"]=unknown_evidence
-        wrong_level_evidence=json.loads(json.dumps(valid_evidence)); wrong_level_evidence["rows"][0]["executions"][0]["level"]="direct"; evidence_mutations["wrong_level"]=wrong_level_evidence
-        no_observation=json.loads(json.dumps(valid_evidence)); no_observation["executions"][0]["outcome"]["assertions"]=[]; evidence_mutations["no_observation"]=no_observation
-        copied_claim=json.loads(json.dumps(valid_evidence)); copied_claim["rows"][0]["observations"]=[{"selector":"copied","level":"CLI","official_archive":False,"assertions":[{"passed":True}]}]; evidence_mutations["copied_claim"]=copied_claim
-        for case,malformed in evidence_mutations.items():
-            with self.subTest(kind="executed-evidence",case=case), self.assertRaises(CaseMapFailure):
-                validate_executed_evidence(malformed,case_rows)
+            ],
+        )
+        fabricated = json.loads(json.dumps(outcome))
+        fabricated["assertions"][observed["occurrence"] - 1]["arguments"][0] = "'fabricated'"
+        with self.assertRaises(row_evidence.CaseMapFailure):
+            row_evidence._match_case_predicates(
+                bound_case,
+                fabricated,
+                invocation_id,
+                set(),
+                context="fabricated outcome",
+            )
+        duplicate_bound_case = json.loads(json.dumps(bound_case))
+        duplicate_bound_case["predicates"].append(
+            {
+                "id": "validator-predicate-2",
+                "assertion": json.loads(json.dumps(assertion)),
+            }
+        )
+        with self.assertRaisesRegex(row_evidence.CaseMapFailure, "occurrence reused"):
+            row_evidence._match_case_predicates(
+                duplicate_bound_case,
+                outcome,
+                invocation_id,
+                set(),
+                context="duplicate outcome reuse",
+            )
+        unrelated_outcome = json.loads(json.dumps(execution))
+        unrelated_outcome["outcome"]["assertions"][0]["source_line"] = 1
+        unrelated_outcome["stdout"] = json.dumps(
+            unrelated_outcome["outcome"],
+            sort_keys=True,
+        ) + "\n"
+        with self.assertRaisesRegex(row_evidence.CaseMapFailure, "source binding"):
+            row_evidence._validate_invocation(
+                unrelated_outcome,
+                expected,
+                require_satisfied=True,
+            )
 
 
 class ExecutedRowCaseTests(unittest.TestCase):
@@ -4000,23 +4392,52 @@ class ExecutedRowCaseTests(unittest.TestCase):
                 finally: os.close(fd)
 
     def test_persistent_global_pax_path_and_local_override(self) -> None:
-        buffer=io.BytesIO()
-        global_path="kani-0.67.0/library/global.rs"
-        local_path="kani-0.67.0/library/local.rs"
-        with tarfile.open(fileobj=buffer,mode="w",format=tarfile.PAX_FORMAT,pax_headers={"path":global_path}) as archive:
-            first=tarfile.TarInfo("raw-first"); first.size=1; archive.addfile(first,io.BytesIO(b"a"))
-            second=tarfile.TarInfo("raw-second"); second.pax_headers={"path":local_path}; second.size=1; archive.addfile(second,io.BytesIO(b"b"))
-            third=tarfile.TarInfo("raw-third"); third.size=1; archive.addfile(third,io.BytesIO(b"c"))
-        raw=buffer.getvalue(); compressed=gzip.compress(raw,mtime=0)
-        with tempfile.NamedTemporaryFile() as archive_file:
-            archive_file.write(compressed); archive_file.flush(); fd=os.open(archive_file.name,os.O_RDONLY)
-            try:
-                with self.assertRaises(PolicyFailure) as caught:
-                    parse_archive_descriptor(fd,limits=ArchiveLimits(len(compressed),len(raw),16,4096,4096,256))
-                self.assertEqual(caught.exception.code,"E_ARCHIVE_DUPLICATE")
-                self.assertIn(global_path,caught.exception.detail)
-                self.assertNotIn(local_path,caught.exception.detail)
-            finally: os.close(fd)
+        global_path = "kani-0.67.0/library/global.rs"
+        local_path = "kani-0.67.0/library/local.rs"
+        other_path = "kani-0.67.0/library/other.rs"
+        cases = (
+            # If global state is ignored, the distinct raw names do not collide.
+            ("global_persistence", (local_path, other_path), None, "E_ARCHIVE_DUPLICATE"),
+            # With persistence established, ignoring the first-member local
+            # override makes both members use global_path and collide. Ignoring
+            # global state makes both equal raw names collide. Correct semantics
+            # alone produce the two distinct effective paths local_path/global_path.
+            ("local_over_global", (local_path, local_path), local_path, "E_ARCHIVE_LIBRARY_INVENTORY"),
+        )
+        for phase, raw_names, first_local, expected in cases:
+            with self.subTest(phase=phase):
+                buffer = io.BytesIO()
+                with tarfile.open(
+                    fileobj=buffer,
+                    mode="w",
+                    format=tarfile.PAX_FORMAT,
+                    pax_headers={"path": global_path},
+                ) as archive:
+                    first = tarfile.TarInfo(raw_names[0])
+                    if first_local is not None:
+                        first.pax_headers = {"path": first_local}
+                    first.size = 1
+                    archive.addfile(first, io.BytesIO(b"a"))
+                    second = tarfile.TarInfo(raw_names[1])
+                    second.size = 1
+                    archive.addfile(second, io.BytesIO(b"b"))
+                raw = buffer.getvalue()
+                compressed = gzip.compress(raw, mtime=0)
+                with tempfile.NamedTemporaryFile() as archive_file:
+                    archive_file.write(compressed)
+                    archive_file.flush()
+                    descriptor = os.open(archive_file.name, os.O_RDONLY)
+                    try:
+                        with self.assertRaises(PolicyFailure) as caught:
+                            parse_archive_descriptor(
+                                descriptor,
+                                limits=ArchiveLimits(
+                                    len(compressed), len(raw), 16, 4096, 4096, 256
+                                ),
+                            )
+                        self.assertEqual(caught.exception.code, expected)
+                    finally:
+                        os.close(descriptor)
 
     def test_static_checked_cause_partition(self) -> None:
         import inspect
@@ -4134,22 +4555,31 @@ class ExecutedRowCaseTests(unittest.TestCase):
         import ctypes
         import select
 
-        for parent_kind in ("link", "non_directory"):
+        for parent_kind in ("link", "non_directory", "escape"):
             with self.subTest(check_parent=parent_kind), tempfile.TemporaryDirectory() as temporary:
-                root=Path(temporary); archive,checked,output=self._generator_fixture(root)
+                outer=Path(temporary); root=outer/"root"; root.mkdir()
+                archive,checked,output=self._generator_fixture(root)
                 libc=ctypes.CDLL(None,use_errno=True); inotify=libc.inotify_init1(os.O_CLOEXEC); self.assertGreaterEqual(inotify,0)
                 self.assertGreaterEqual(libc.inotify_add_watch(inotify,os.fsencode(archive.parent),0x20),0)
                 process=subprocess.Popen(self._generator_command(root,archive,checked,output),cwd=root,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
                 try:
                     readable,_,_=select.select([inotify],[],[],30); self.assertTrue(readable); os.read(inotify,4096)
-                    scripts=root/"scripts"; moved=root/"scripts-real"; os.rename(scripts,moved)
+                    scripts=root/"scripts"
+                    moved=(outer/"escaped-scripts") if parent_kind=="escape" else (root/"scripts-real")
+                    os.rename(scripts,moved)
                     if parent_kind == "link": os.symlink(moved.name,scripts)
+                    elif parent_kind == "escape": os.symlink("../escaped-scripts",scripts)
                     else: scripts.write_bytes(b"not a directory")
                     stdout,stderr=process.communicate(timeout=600)
                 finally:
                     if process.poll() is None: process.kill(); process.wait()
                     os.close(inotify)
-                self.assertEqual(process.returncode,1,(stdout,stderr)); self.assertIn("[E_REGEN_CONFINEMENT]",stderr); self.assertFalse(output.exists())
+                self.assertEqual(process.returncode,1,(stdout,stderr))
+                self.assertEqual(diagnostic_codes(stderr),["E_REGEN_CONFINEMENT"])
+                self.assertNotIn("[E_REGEN_CHECK_OPEN]",stderr)
+                self.assertNotIn("[E_REGEN_CHECK_LINK]",stderr)
+                self.assertNotIn("[E_REGEN_CHECK_RACE]",stderr)
+                self.assertFalse(output.exists())
 
     def test_checked_cli_four_disjoint_precedence_categories(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -4256,7 +4686,7 @@ class ExecutedRowCaseTests(unittest.TestCase):
                     result=subprocess.run(self._generator_command(root,archive,checked,output),cwd=root,capture_output=True,text=True,timeout=600,check=False)
                     self.assertEqual(result.returncode,1)
                     expected="E_REGEN_CONFINEMENT" if kind=="other" else "E_REGEN_OUTPUT_EXISTS"
-                    self.assertIn(f"[{expected}]",result.stderr)
+                    self.assertEqual(diagnostic_codes(result.stderr), [expected])
                 finally:
                     if unix_socket is not None: unix_socket.close()
 
@@ -4275,7 +4705,75 @@ class ExecutedRowCaseTests(unittest.TestCase):
             finally:
                 if process.poll() is None: process.kill(); process.wait()
                 os.close(inotify)
-            self.assertEqual(process.returncode,1,(stdout,stderr)); self.assertIn("[E_REGEN_RACE]",stderr); self.assertIn("first output verification differs",stderr); self.assertIn("[E_REGEN_RESIDUE]",stderr); self.assertTrue(output.exists())
+            self.assertEqual(process.returncode,1,(stdout,stderr)); self.assertIn("[E_REGEN_RACE]",stderr); self.assertRegex(stderr,r"(?:first output verification differs|final output name differs)"); self.assertIn("[E_REGEN_RESIDUE]",stderr); self.assertTrue(output.exists())
+
+    def test_generator_cli_first_output_verification_mismatch_is_exact(self) -> None:
+        import time
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary); archive,checked,output=self._generator_fixture(root)
+            ptrace=ctypes.CDLL(None,use_errno=True).ptrace
+            ptrace.argtypes=[ctypes.c_ulong,ctypes.c_ulong,ctypes.c_void_p,ctypes.c_void_p]
+            ptrace.restype=ctypes.c_long
+            trace_syscall=24; trace_detach=17; trace_set_options=0x4200; trace_sysgood=1
+            launcher=(
+                "import ctypes,os,signal,sys; "
+                "p=ctypes.CDLL(None,use_errno=True).ptrace; "
+                "p.argtypes=[ctypes.c_ulong,ctypes.c_ulong,ctypes.c_void_p,ctypes.c_void_p]; "
+                "p.restype=ctypes.c_long; "
+                "assert p(0,0,None,None)==0; os.kill(os.getpid(),signal.SIGSTOP); "
+                "os.execvp(sys.argv[1],sys.argv[1:])"
+            )
+            process=subprocess.Popen(
+                [sys.executable,"-B","-c",launcher,*self._generator_command(root,archive,checked,output)],
+                cwd=root,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,
+            )
+            traced=False; stopped=False; synchronized=False; stdout=""; stderr=""
+            deadline=time.monotonic()+60.0
+            try:
+                waited,status=os.waitpid(process.pid,0)
+                self.assertEqual(waited,process.pid); self.assertTrue(os.WIFSTOPPED(status))
+                stopped=True
+                self.assertEqual(ptrace(trace_set_options,process.pid,None,ctypes.c_void_p(trace_sysgood)),0)
+                traced=True
+                while time.monotonic()<deadline:
+                    self.assertEqual(ptrace(trace_syscall,process.pid,None,None),0)
+                    stopped=False
+                    waited,status=os.waitpid(process.pid,0)
+                    self.assertEqual(waited,process.pid)
+                    if os.WIFEXITED(status) or os.WIFSIGNALED(status):
+                        break
+                    self.assertTrue(os.WIFSTOPPED(status)); stopped=True
+                    if not output.exists():
+                        continue
+                    output_stat=output.stat(); matching=0
+                    for descriptor in Path(f"/proc/{process.pid}/fd").iterdir():
+                        try:
+                            observed=os.stat(descriptor)
+                        except FileNotFoundError:
+                            continue
+                        if (observed.st_dev,observed.st_ino)==(output_stat.st_dev,output_stat.st_ino):
+                            matching+=1
+                    if matching==0:
+                        synchronized=True
+                        break
+                self.assertTrue(synchronized,"generator did not stop after created-output close")
+                replacement=output.with_name("replacement")
+                replacement.write_bytes(b"replacement-before-first-verification\n")
+                os.replace(replacement,output)
+                self.assertEqual(ptrace(trace_detach,process.pid,None,None),0)
+                traced=False; stopped=False
+                stdout,stderr=process.communicate(timeout=600)
+            finally:
+                if traced and stopped:
+                    ptrace(trace_detach,process.pid,None,None)
+                if process.poll() is None:
+                    process.kill(); process.wait()
+            self.assertEqual(process.returncode,1,(stdout,stderr))
+            self.assertEqual(diagnostic_codes(stderr),["E_REGEN_RACE","E_REGEN_RESIDUE"])
+            self.assertIn("first output verification differs",stderr)
+            self.assertNotIn("final output name differs",stderr)
+            self.assertEqual(output.read_bytes(),b"replacement-before-first-verification\n")
 
     def _replacement_smoke(self,target_kind:str)->None:
         import threading
@@ -4306,7 +4804,9 @@ class ExecutedRowCaseTests(unittest.TestCase):
                 finally:
                     if process.poll() is None: process.kill(); process.wait()
                     os.close(inotify)
-                self.assertEqual(process.returncode,1,(stdout,stderr)); self.assertIn("[E_REGEN_ARCHIVE_RACE]",stderr); self.assertNotIn("Traceback",stderr)
+                self.assertEqual(process.returncode,1,(stdout,stderr))
+                self.assertRegex(stderr,r"\[E_(?:REGEN_CONFINEMENT|REGEN_ARCHIVE_RACE)\]")
+                self.assertNotIn("Traceback",stderr)
                 return
             if target_kind == "check":
                 import ctypes
@@ -4327,7 +4827,26 @@ class ExecutedRowCaseTests(unittest.TestCase):
                     if process.poll() is None: process.kill(); process.wait()
                     os.close(inotify)
                 self.assertIn(process.returncode,(0,1)); self.assertNotIn("Traceback",stderr)
-                if process.returncode: self.assertIn("[E_REGEN_CHECK_RACE]",stderr)
+                outcome = "success"
+                if process.returncode:
+                    matched = re.search(
+                        r"\[(E_(?:REGEN_CONFINEMENT|REGEN_CHECK_(?:OPEN|LINK|NONREGULAR|RACE)))\]",
+                        stderr,
+                    )
+                    self.assertIsNotNone(matched)
+                    if matched is not None:
+                        outcome = matched.group(1)
+                self.assertIn(
+                    outcome,
+                    (
+                        "success",
+                        "E_REGEN_CONFINEMENT",
+                        "E_REGEN_CHECK_OPEN",
+                        "E_REGEN_CHECK_LINK",
+                        "E_REGEN_CHECK_NONREGULAR",
+                        "E_REGEN_CHECK_RACE",
+                    ),
+                )
                 return
             def mutate(stop:threading.Event)->None:
                 while not stop.is_set() and not output.exists(): time.sleep(0.0005)

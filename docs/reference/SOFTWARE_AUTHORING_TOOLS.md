@@ -97,51 +97,73 @@ lowering, execution, diagnostics, and repair use the canonical
 
 ## Source-located canonical errors (bounded EQ-06 / EQ-07)
 
-Unknown **object or relation-object carriers of relation roles**, including bases
-inside `indexed(...)` and `refined(...)`, now carry an optional diagnostic
-`location`. The compiler remains first-error/fail-fast, not an accumulating
-validator. Subtypes, generators, other semantic errors, parse/import-resolution
-failures, and unsupported or unverifiable source occurrences remain unlocated.
-Absent `location` explicitly means no token-location claim; legacy `path`/`line`
-fields alone do not establish token precision.
+Canonical compilation remains the fail-closed authority and still rejects at its
+first error. A separate diagnostic sidecar can collect independent failures. It
+never returns kernel IR and cannot make an invalid module executable. The hard
+collector ceilings are 64 retained items, 64 KiB of retained message text, and
+65,536 work units. The report records observed, returned, and omitted error
+counts, retained message bytes, work used, and work exhaustion. It deduplicates
+compact occurrence identities before it applies item or message-byte retention,
+so those limits do not change observed counts. It computes message sizes before
+it clones or formats diagnostic-owned text; omitted oversized messages are not
+rendered. Its aggregate order is the authoring pipeline order; canonical source
+errors within that order use import-closure and exact source order. Work units
+charge diagnostic-recovery import search entries and candidates after an
+authoritative import failure, plus modules, imports, schemas, namespace
+declarations, roles, and suggestion candidates. Successful canonical import
+resolution is not narrowed by the sidecar budget. Source files and
+individual names also retain their separate byte limits. Invalid or larger
+limit values reject instead of being clamped.
 
-The location contains the resolved absolute filename, module name, exact source
-`revision_digest`, and a **syntactic** schema/relation/role occurrence address
-(indices plus labels and object-versus-relation carrier kind). This is not a
-checked `KernelRef`, accepted snapshot, or promotion authority. It describes the
-same bounded byte image used by the compiler, including an unsaved root override
-or disk-backed import; no file is reopened for coordinates or excerpts.
+The collector walks the canonical import closure and then exact declaration
+order. It reports every unsupported object or relation-object role carrier that
+it can check independently, including carriers below `indexed(...)` and
+`refined(...)`. It also retains confirmed missing, ambiguous, and malformed
+named-import failures. If recovery work expires, unsearched imports are omitted
+rather than called missing. A known fail-fast compiler error outside the
+independent taxonomy is retained once as an explicit unlocated residual in
+deterministic compiler precedence. A malformed root receives one parser-owned line diagnostic when its
+message fits the byte ceiling; an oversized parser message is omitted and the
+report emits an unlocated bound blocker instead. One
+malformed file does not supply coordinates for another file and does not hide
+independent errors in other parsed imports.
+
+Each located diagnostic contains the resolved absolute filename, optional module
+name, exact source `revision_digest`, and a typed `subject`. Current failed-source
+subjects are syntactic parse-line, import-name, or role-carrier addresses. They
+are not checked `KernelRefV2` values. A module name is absent when parsing did not
+establish one. Successful compilation exposes checked refs separately through
+`stable_runtime_refs`; the collector never upgrades an invalid occurrence to a
+checked ref. Absent `location` means that no token-location claim is made.
 
 - `byte_start..byte_end`: zero-based, half-open UTF-8 bytes in that exact image.
 - `start` / `end`: one-based physical `line` and Unicode scalar `column`, plus
   zero-based `lsp_line` and UTF-16-code-unit `lsp_character`.
 - `excerpt`: at most 240 Unicode scalars of the original physical line, without
   CR/LF; `excerpt_byte_start` locates its start and `excerpt_truncated` declares
-  clipping. CRLF byte lengths are preserved in source ranges.
-- `suggested_name`: advisory only, or null. Suggestions consider the actual
-  failing schema's object or relation namespace, require a unique nearest name
-  within two edits, and refuse ties. Work is bounded to 4,096 declarations and
-  names/targets of at most 128 UTF-8 bytes (targets shorter than four are not
-  suggested). Suggestions never write, repair, or promote the source.
+  clipping. CRLF byte lengths remain part of source ranges.
+- `suggested_name`: advisory only, or null. Suggestions use only the failing
+  schema's object or relation namespace. They require one unique nearest name
+  within two edits and refuse ties, unsupported namespaces, stale images, more
+  than 4,096 declarations, and candidate names or targets outside the
+  4-to-128-byte policy. Suggestions never write, repair, validate, or promote
+  source.
 
-The parser captures carrier slices during its existing recursive parse and maps
-multiline declaration segments back to original byte ranges. A monotonic segment
-cursor bounds mapping work to O(carriers + segments), including ordinary parses
-that discard the map. Comments, repeated spellings and synthetic join spaces are
-not searched for a matching token.
-Source maps live outside accepted AST, kernel IR, semantic digests and checker
-or certificate serialization. Valid semantic identities and wire payloads are
-unchanged. Canonical-invalid full/compact reports retain failed validation and
-promotion blockers; failed closure compilation still issues no paging cursors.
+The parser records exact occurrences while it consumes the original bytes. The
+preserved role-carrier slice uses a monotonic O(carriers + segments) cursor.
+General occurrences use a deterministic sort plus bounded binary segment
+lookups. The diagnostic collector uses those addresses. It does not search comments,
+repeated spelling, or synthetic joined text for a likely token. Source maps stay
+outside accepted AST, kernel IR, semantic digests, and checker or certificate
+serialization. Canonical-invalid full and compact reports stay `ok=false`, keep
+validation and promotion blocked, and issue no failed-closure paging cursor even
+when the collector omits errors at a hard bound.
 
-Rust error consumers inspect `KernelCompileError::RoleCarrier.cause` directly
-for the original unknown-target leaf and its structured context. CLI consumers
-inspect `CanonicalSourceDiagnostic.cause` and `location`. These wrappers preserve
-the original Display text and do not repeat identical semantic messages through
-`Error::source()`; outer operation/filename contexts remain in pretty chains.
-Only these two leaf classes are wrapped. Unrelated compiler errors retain their
-original anyhow type and chains; generic source-chain downcasting is not the
-interface for accessing the supported role-carrier cause.
+Rust fail-fast consumers can still inspect `KernelCompileError` directly. The
+authoring path exposes `CanonicalSourceDiagnosticCollection` and its typed
+locations. The original compiler messages remain unchanged. The collection is
+operational review data, not a compiler result, checked receipt, or acceptance
+handle.
 
 LSP publishes located errors to their owning file URI using those UTF-16 ranges.
 Unlocated errors use an empty required LSP range with `data.sourceLocated=false`;
@@ -158,9 +180,10 @@ revision for that client URI and invalidates all precise session publications.
 A single sticky flag (not an unbounded rejected-URI map) then keeps diagnostics
 explicitly unlocated until the LSP session restarts. Compilation failures remain
 visible; this conservative fallback does not turn rejected editor text into an
-import overlay or a successful validation. New unsaved files, unsaved import
-overlays and broad multi-error/editor workflows remain unsupported; EQ-06/EQ-07
-are partial.
+import overlay or a successful validation. New unsaved files and unsaved import
+overlays remain unsupported. Multi-error collection covers the retained exact
+root and disk-backed import images only; it is not an incremental editor parser.
+EQ-06/EQ-07 remain partial.
 
 Runnable read-only Company/Compny error example (temporary workspace, no store):
 
@@ -170,9 +193,10 @@ bash examples/software_authoring/run_source_diagnostics.sh
 ```
 
 The existing CLI transport exits successfully when it emits the report; consumers
-must inspect `ok=false`, validation and promotion blockers. The example reports
-`Company.axi`, line 5, columns 32–38, the `Compny` token and advisory `Company`.
-It intentionally does not automatically correct the fixture.
+must inspect `ok=false`, validation, and promotion blockers. The example reports
+two `Base.axi` errors before one `Root.axi` error. It identifies each exact
+`Compny` or `Persn` token and provides the advisory `Company` or `Person`
+namespace-local candidate. It does not automatically correct the fixture.
 
 ## Compact presentation and follow-up pages
 
@@ -263,37 +287,58 @@ The nested collection names are:
 - `competency_questions`, `competency_evaluations`,
   `competency_unresolved`, `competency_prepared_kernel_refs`,
   `competency_prepared_refinement_handles`, and
-  `competency_refinement_candidates`.
+  `competency_refinement_candidates`;
+- `evolution_olog_primitives`, `evolution_olog_residual_obligations`, and
+  `evolution_olog_refinement_candidates` (from an `Olog`-kind evolution
+  preview's semantic delta and residuals);
+- `evolution_finite_kernel_changed_payloads`,
+  `evolution_finite_kernel_added_payloads`, and
+  `evolution_finite_kernel_removed_payloads` (from a `FiniteKernel`-kind
+  evolution preview's payload diff; multiple previews of the same kind
+  concatenate in report order);
+- `checked_olog_typed_holes` and `checked_olog_refinement_candidates` (from
+  `checked_olog`); and
+- `applied_olog_repair_refinement_candidates` and
+  `applied_query_repair_refinement_candidates` (from `applied_olog_repair`
+  and `applied_query_repair`, each present only when the corresponding
+  repair was actually applied).
 
-A nested page has a closed `authoring-nested-page-v1` envelope. It reports
-`total`, `offset`, `returned`, `omitted`, `truncated`, `entry_limit`,
-`byte_limit`, `returned_bytes`, `max_item_bytes`, `items`, and `next_cursor`.
-The entry limit is 1–100. The byte limit is 1–1 MiB and defaults to 256 KiB.
-Each serialized item envelope is limited to 256 KiB. A byte limit too small for
-the next indivisible item fails instead of returning a non-progressing page.
-The byte limit applies to the serialized item envelopes, not to the retained
-summary, source, trust, promotion, and next-action fields around the page.
-HTTP keeps its independent 16 MiB whole-response rejection.
+A nested page has a closed `authoring-nested-page-v1` envelope, distinct from
+the top-level section-page schema. It reports `input_identity`,
+`collection_identity`, `total`, `offset`, `returned`, `omitted`, `truncated`,
+`entry_limit`, `byte_limit`, `returned_bytes`, `max_item_bytes`, `items`, and
+`next_cursor`. The entry limit is 1–100. The byte limit is 1–1 MiB and defaults
+to 256 KiB. Each serialized item envelope is limited to 256 KiB. A byte limit
+too small for the next indivisible item fails instead of returning a
+non-progressing page. The byte limit applies to the serialized item envelopes,
+not to the retained summary, source, trust, promotion, and next-action fields
+around the page. HTTP keeps its independent 16 MiB whole-response rejection.
 
-Each item contains its collection, parent identity, canonical ordinal, item
-identity, exact canonical-item SHA-256 and byte count, media type, and the
-minified canonical JSON entry. The schema closes and types this envelope; the
-canonical domain entry remains lossless JSON, not a deserializable checker
-receipt or an SDK object. Concatenating and decoding all item strings reproduces
-the selected canonical full-report collection in order. Item and cursor bindings
-include exact source/request identity. Display mode, page limits, and cursors do
-not alter source, prepared-query, answer, or certificate identities. A source,
-import, CQ, baseline, query, collection, or workspace change invalidates the
-cursor. Existing `authoring-page-v1` top-level cursor behavior and ordering are
-unchanged; nested pages use the separate `authoring-nested-page-v1` version.
+Each item contains its collection, source-bound parent identity, canonical
+ordinal, item identity, exact canonical-item SHA-256 and byte count, media type,
+and the minified canonical JSON entry. The item identity binds the nested
+protocol version, exact input identity, collection type, parent, ordinal, and
+canonical item digest. `collection_identity` binds the exact ordered item
+identity list. The schema closes and types this envelope; the canonical domain
+entry remains lossless JSON, not a deserializable checker receipt or an SDK
+object. Concatenating and decoding all item strings reproduces the selected
+canonical full-report collection in order. Display mode, page limits, and
+cursors do not alter source, prepared-query, answer, or certificate identities.
+A source, import, CQ, baseline, query, collection, parent, item, order, or
+workspace change invalidates the cursor binding. Existing `authoring-page-v1`
+top-level cursor behavior and ordering are unchanged; nested pages use the
+separate `authoring-nested-page-v1` version.
 
 Measured pretty-printed full reports were 688,114 bytes for software authoring
 and 1,018,751 bytes for regulated shipment. Their largest indivisible runtime
 report entries were 265,112 and 304,129 bytes. A deterministic generated package
 with 180 relation/constraint/fact/CQ families produced a 22,826,008-byte full
 report: CQ evaluations used 8,245,621 bytes, one runtime report used 1,251,845
-bytes, and closure steps used 612,498 bytes. These measurements select the nested
-families above; they are not universal capacity, latency, or peak-memory claims.
+bytes, and closure steps used 612,498 bytes. That report had `ok=false` with two
+retained error diagnostics and promotion blockers because it exceeded the finite
+explanation bound. It is failure-preservation evidence, not a successful
+capacity claim. These measurements select the nested families above; they are
+not universal capacity, latency, or peak-memory claims.
 Generate that input with
 `examples/software_authoring/generate_high_cardinality_authoring.py` in a build
 or temporary directory. It is measurement evidence, not accepted ontology data.

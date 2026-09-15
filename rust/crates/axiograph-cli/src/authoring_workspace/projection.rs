@@ -99,6 +99,16 @@ pub(crate) enum AuthoringNestedCollectionV1 {
     CompetencyPreparedKernelRefs,
     CompetencyPreparedRefinementHandles,
     CompetencyRefinementCandidates,
+    EvolutionOlogPrimitives,
+    EvolutionOlogResidualObligations,
+    EvolutionOlogRefinementCandidates,
+    EvolutionFiniteKernelChangedPayloads,
+    EvolutionFiniteKernelAddedPayloads,
+    EvolutionFiniteKernelRemovedPayloads,
+    CheckedOlogTypedHoles,
+    CheckedOlogRefinementCandidates,
+    AppliedOlogRepairRefinementCandidates,
+    AppliedQueryRepairRefinementCandidates,
 }
 
 const NESTED_COLLECTIONS: &[AuthoringNestedCollectionV1] = &[
@@ -124,6 +134,16 @@ const NESTED_COLLECTIONS: &[AuthoringNestedCollectionV1] = &[
     AuthoringNestedCollectionV1::CompetencyPreparedKernelRefs,
     AuthoringNestedCollectionV1::CompetencyPreparedRefinementHandles,
     AuthoringNestedCollectionV1::CompetencyRefinementCandidates,
+    AuthoringNestedCollectionV1::EvolutionOlogPrimitives,
+    AuthoringNestedCollectionV1::EvolutionOlogResidualObligations,
+    AuthoringNestedCollectionV1::EvolutionOlogRefinementCandidates,
+    AuthoringNestedCollectionV1::EvolutionFiniteKernelChangedPayloads,
+    AuthoringNestedCollectionV1::EvolutionFiniteKernelAddedPayloads,
+    AuthoringNestedCollectionV1::EvolutionFiniteKernelRemovedPayloads,
+    AuthoringNestedCollectionV1::CheckedOlogTypedHoles,
+    AuthoringNestedCollectionV1::CheckedOlogRefinementCandidates,
+    AuthoringNestedCollectionV1::AppliedOlogRepairRefinementCandidates,
+    AuthoringNestedCollectionV1::AppliedQueryRepairRefinementCandidates,
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -273,6 +293,7 @@ struct ValidationSummary {
     runtime_theory_gate: AuthoringGateDecisionV1,
     diagnostic_errors: usize,
     diagnostic_warnings: usize,
+    diagnostic_collection: super::AuthoringDiagnosticCollectionV1,
     finite_coverage: Option<axiograph_kernel::FiniteTheoryCoverageIr>,
     finite_residuals: usize,
     dependent_residuals: usize,
@@ -319,6 +340,8 @@ struct AuthoringNestedItemV1 {
 struct AuthoringNestedPageV1 {
     version: &'static str,
     collection: AuthoringNestedCollectionV1,
+    input_identity: String,
+    collection_identity: String,
     total: usize,
     offset: usize,
     returned: usize,
@@ -365,7 +388,7 @@ impl AuthoringWorkspaceService {
             )));
         }
         let mut anchors = Vec::new();
-        let report = self.execute_bound(request.clone(), &mut anchors)?;
+        let report = self.execute_bound(request.clone(), &mut anchors, &BTreeMap::new())?;
         // A failed compiler cannot establish the complete import closure. No cursors
         // are issued in that case; full remains available to inspect failures.
         let expected_anchors = 2
@@ -401,7 +424,12 @@ impl AuthoringWorkspaceService {
                 0
             };
             let mut page = section_page(&report, section, is_selected, offset, presentation.limit)?;
-            if page.offset + page.returned < page.total && follow_up_available {
+            let pageable_total = if section == AuthoringSectionV1::Diagnostics {
+                report.diagnostics.len()
+            } else {
+                page.total
+            };
+            if page.offset + page.returned < pageable_total && follow_up_available {
                 page.next_cursor = Some(cursor(
                     &input_identity,
                     section,
@@ -423,11 +451,14 @@ impl AuthoringWorkspaceService {
             })
             .transpose()?;
         let omitted_items = sections.iter().map(|page| page.omitted).sum();
+        let truncated = sections.iter().any(|page| page.truncated)
+            || report.diagnostic_collection.work_exhausted;
         let errors = report
             .diagnostics
             .iter()
             .filter(|d| d.severity == AuthoringDiagnosticSeverityV1::Error)
-            .count();
+            .count()
+            .max(report.diagnostic_collection.observed_errors);
         let warnings = report
             .diagnostics
             .iter()
@@ -441,6 +472,7 @@ impl AuthoringWorkspaceService {
             runtime_theory_gate: report.validation.runtime_theory_gate,
             diagnostic_errors: errors,
             diagnostic_warnings: warnings,
+            diagnostic_collection: report.diagnostic_collection.clone(),
             finite_coverage: finite.map(|f| f.coverage.clone()),
             finite_residuals: finite.map_or(0, |f| f.residual_obligations.len()),
             dependent_residuals: report
@@ -483,7 +515,7 @@ impl AuthoringWorkspaceService {
                 if report.ok { "Runtime checks completed without error diagnostics" } else { "Runtime checks failed" },
                 report.promotion.protected_main_eligible, report.promotion.blockers.len()),
             validation, promotion: report.promotion, trust: report.trust, next_actions: report.next_actions,
-            follow_up_available, sections, nested_page, omitted_items, truncated: omitted_items > 0,
+            follow_up_available, sections, nested_page, omitted_items, truncated,
         })))
     }
 }
@@ -522,16 +554,18 @@ fn parse_cursor(token: &str, anchor: &str, section: AuthoringSectionV1) -> Resul
 fn nested_cursor(
     anchor: &str,
     collection: AuthoringNestedCollectionV1,
+    collection_identity: &str,
     offset: usize,
 ) -> Result<String> {
     let checksum = digest(&serde_json::to_vec(&(
         NESTED_CURSOR_VERSION,
         anchor,
         collection,
+        collection_identity,
         offset,
     ))?);
     Ok(format!(
-        "{NESTED_CURSOR_VERSION}:{anchor}:{offset}:{checksum}"
+        "{NESTED_CURSOR_VERSION}:{anchor}:{collection_identity}:{offset}:{checksum}"
     ))
 }
 
@@ -539,23 +573,25 @@ fn parse_nested_cursor(
     token: &str,
     anchor: &str,
     collection: AuthoringNestedCollectionV1,
+    collection_identity: &str,
 ) -> Result<usize> {
     if token.len() > MAX_CURSOR_BYTES {
         return Err(anyhow!("nested cursor exceeds byte limit"));
     }
     let fields: Vec<_> = token.split(':').collect();
-    if fields.len() != 4
+    if fields.len() != 5
         || fields[0] != NESTED_CURSOR_VERSION
         || fields[1] != anchor
-        || fields[3].len() != 64
-        || !fields[3].bytes().all(|byte| byte.is_ascii_hexdigit())
+        || fields[2] != collection_identity
+        || fields[4].len() != 64
+        || !fields[4].bytes().all(|byte| byte.is_ascii_hexdigit())
     {
         return Err(anyhow!("invalid or stale nested cursor binding"));
     }
-    let offset = fields[2]
+    let offset = fields[3]
         .parse::<usize>()
         .map_err(|_| anyhow!("invalid nested cursor offset"))?;
-    if token != nested_cursor(anchor, collection, offset)? {
+    if token != nested_cursor(anchor, collection, collection_identity, offset)? {
         return Err(anyhow!("invalid nested cursor consistency check"));
     }
     Ok(offset)
@@ -606,6 +642,70 @@ fn parent_identity<T: Serialize>(kind: &str, value: &T) -> Result<String> {
         kind,
         value,
     ))?))
+}
+
+fn bound_parent_identity(input_identity: &str, parent_identity: &str) -> Result<String> {
+    Ok(digest(&serde_json::to_vec(&(
+        NESTED_CURSOR_VERSION,
+        input_identity,
+        "parent",
+        parent_identity,
+    ))?))
+}
+
+fn bound_item_identity(
+    input_identity: &str,
+    collection: AuthoringNestedCollectionV1,
+    parent_identity: &str,
+    ordinal: usize,
+    canonical_item_sha256: &str,
+) -> Result<String> {
+    Ok(digest(&serde_json::to_vec(&(
+        NESTED_CURSOR_VERSION,
+        input_identity,
+        collection,
+        parent_identity,
+        ordinal,
+        canonical_item_sha256,
+    ))?))
+}
+
+fn nested_collection_identity(
+    input_identity: &str,
+    collection: AuthoringNestedCollectionV1,
+    item_identities: &[String],
+) -> Result<String> {
+    Ok(digest(&serde_json::to_vec(&(
+        NESTED_CURSOR_VERSION,
+        input_identity,
+        collection,
+        item_identities,
+    ))?))
+}
+
+fn bind_nested_items(
+    items: &mut [AuthoringNestedItemV1],
+    input_identity: &str,
+    collection: AuthoringNestedCollectionV1,
+) -> Result<String> {
+    for item in items.iter_mut() {
+        item.parent_identity = bound_parent_identity(input_identity, &item.parent_identity)?;
+        item.item_identity = bound_item_identity(
+            input_identity,
+            collection,
+            &item.parent_identity,
+            item.ordinal,
+            &item.canonical_item_sha256,
+        )?;
+    }
+    nested_collection_identity(
+        input_identity,
+        collection,
+        &items
+            .iter()
+            .map(|item| item.item_identity.clone())
+            .collect::<Vec<_>>(),
+    )
 }
 
 fn nested_collection_items(
@@ -836,6 +936,124 @@ fn nested_collection_items(
                 }
             }
         }
+        EvolutionOlogPrimitives
+        | EvolutionOlogResidualObligations
+        | EvolutionOlogRefinementCandidates => {
+            for preview in &report.evolution_previews {
+                if let crate::authoring_workspace::AuthoringEvolutionPreviewV1::Olog(olog_preview) =
+                    preview
+                {
+                    let parent =
+                        parent_identity("evolution_preview_olog", &olog_preview.candidate_label)?;
+                    match collection {
+                        EvolutionOlogPrimitives => {
+                            for item in &olog_preview.semantic_delta.primitives {
+                                push_nested_item(&mut items, collection, parent.clone(), item)?;
+                            }
+                        }
+                        EvolutionOlogResidualObligations => {
+                            for item in &olog_preview.residual_obligations {
+                                push_nested_item(&mut items, collection, parent.clone(), item)?;
+                            }
+                        }
+                        EvolutionOlogRefinementCandidates => {
+                            for item in &olog_preview.refinement_candidates {
+                                push_nested_item(&mut items, collection, parent.clone(), item)?;
+                            }
+                        }
+                        _ => {
+                            return Err(anyhow!(
+                            "internal nested evolution-olog-preview collection dispatch mismatch"
+                        ))
+                        }
+                    }
+                }
+            }
+        }
+        EvolutionFiniteKernelChangedPayloads
+        | EvolutionFiniteKernelAddedPayloads
+        | EvolutionFiniteKernelRemovedPayloads => {
+            for preview in &report.evolution_previews {
+                if let crate::authoring_workspace::AuthoringEvolutionPreviewV1::FiniteKernel(
+                    finite_preview,
+                ) = preview
+                {
+                    let parent = parent_identity(
+                        "evolution_preview_finite_kernel",
+                        &(
+                            &finite_preview.baseline_snapshot_id,
+                            &finite_preview.candidate_snapshot_id,
+                        ),
+                    )?;
+                    match collection {
+                        EvolutionFiniteKernelChangedPayloads => {
+                            for item in &finite_preview.changed_payloads {
+                                push_nested_item(&mut items, collection, parent.clone(), item)?;
+                            }
+                        }
+                        EvolutionFiniteKernelAddedPayloads => {
+                            for item in &finite_preview.added_payloads {
+                                push_nested_item(&mut items, collection, parent.clone(), item)?;
+                            }
+                        }
+                        EvolutionFiniteKernelRemovedPayloads => {
+                            for item in &finite_preview.removed_payloads {
+                                push_nested_item(&mut items, collection, parent.clone(), item)?;
+                            }
+                        }
+                        _ => {
+                            return Err(anyhow!(
+                                "internal nested evolution-finite-kernel-preview collection dispatch mismatch"
+                            ))
+                        }
+                    }
+                }
+            }
+        }
+        CheckedOlogTypedHoles | CheckedOlogRefinementCandidates => {
+            if let Some(checked) = &report.checked_olog {
+                let parent = parent_identity("checked_olog", &checked.lifecycle_state)?;
+                match collection {
+                    CheckedOlogTypedHoles => {
+                        for item in &checked.typed_holes {
+                            push_nested_item(&mut items, collection, parent.clone(), item)?;
+                        }
+                    }
+                    CheckedOlogRefinementCandidates => {
+                        for item in &checked.refinement_candidates {
+                            push_nested_item(&mut items, collection, parent.clone(), item)?;
+                        }
+                    }
+                    _ => {
+                        return Err(anyhow!(
+                            "internal nested checked-olog collection dispatch mismatch"
+                        ))
+                    }
+                }
+            }
+        }
+        AppliedOlogRepairRefinementCandidates => {
+            if let Some(applied) = &report.applied_olog_repair {
+                let parent = parent_identity(
+                    "applied_olog_repair",
+                    &applied.checked_fragment.lifecycle_state,
+                )?;
+                for item in &applied.checked_fragment.refinement_candidates {
+                    push_nested_item(&mut items, collection, parent.clone(), item)?;
+                }
+            }
+        }
+        AppliedQueryRepairRefinementCandidates => {
+            if let Some(applied) = &report.applied_query_repair {
+                let parent = parent_identity(
+                    "applied_query_repair",
+                    &applied.refined_prepared_query.prepared_query_id,
+                )?;
+                for item in &applied.refined_exploration.refinement_candidates {
+                    push_nested_item(&mut items, collection, parent.clone(), item)?;
+                }
+            }
+        }
     }
     Ok(items)
 }
@@ -845,11 +1063,19 @@ fn nested_page(
     input_identity: &str,
     request: &AuthoringNestedPageRequestV1,
 ) -> Result<AuthoringNestedPageV1> {
-    let items = nested_collection_items(report, request.collection)?;
+    let mut items = nested_collection_items(report, request.collection)?;
+    let collection_identity = bind_nested_items(&mut items, input_identity, request.collection)?;
     let offset = request
         .cursor
         .as_deref()
-        .map(|token| parse_nested_cursor(token, input_identity, request.collection))
+        .map(|token| {
+            parse_nested_cursor(
+                token,
+                input_identity,
+                request.collection,
+                &collection_identity,
+            )
+        })
         .transpose()?
         .unwrap_or(0);
     if offset > items.len() || (offset != 0 && offset == items.len()) {
@@ -873,11 +1099,20 @@ fn nested_page(
     }
     let returned = end - offset;
     let next_cursor = (end < items.len())
-        .then(|| nested_cursor(input_identity, request.collection, end))
+        .then(|| {
+            nested_cursor(
+                input_identity,
+                request.collection,
+                &collection_identity,
+                end,
+            )
+        })
         .transpose()?;
     Ok(AuthoringNestedPageV1 {
         version: NESTED_CURSOR_VERSION,
         collection: request.collection,
+        input_identity: input_identity.to_owned(),
+        collection_identity,
         total: items.len(),
         offset,
         returned,
@@ -938,7 +1173,16 @@ fn section_page(
     }
     use AuthoringSectionV1::*;
     match section {
-        Diagnostics => p!(&report.diagnostics),
+        Diagnostics => {
+            let mut page = p!(&report.diagnostics)?;
+            page.total = report
+                .diagnostics
+                .len()
+                .saturating_add(report.diagnostic_collection.omitted_observed_errors);
+            page.omitted = page.total.saturating_sub(page.returned);
+            page.truncated = page.omitted > 0 || report.diagnostic_collection.work_exhausted;
+            Ok(page)
+        }
         StableRuntimeRefs => p!(&report.stable_runtime_refs),
         Repairs => p!(&report.repairs),
         OlogHoles => p!(&report.typed_holes.olog),
@@ -1033,9 +1277,19 @@ pub(super) fn response_schema_object() -> JsonObject {
     let cq = object(
         object_properties!({"questions":count,"unresolved":count,"evaluated":boolean,"satisfied":count,"total":count,"promotion_gate":gate}),
     );
+    let diagnostic_collection_schema = object(object_properties!({"observed_errors":count,
+        "returned_errors":{"type":"integer","minimum":0,"maximum":axiograph_kernel::MAX_KERNEL_DIAGNOSTIC_ITEMS},
+        "omitted_observed_errors":count,
+        "message_bytes":{"type":"integer","minimum":0,"maximum":axiograph_kernel::MAX_KERNEL_DIAGNOSTIC_MESSAGE_BYTES},
+        "work_units":{"type":"integer","minimum":0,"maximum":axiograph_kernel::MAX_KERNEL_DIAGNOSTIC_WORK},
+        "work_exhausted":boolean,"truncated":boolean,
+        "max_items":{"const":axiograph_kernel::MAX_KERNEL_DIAGNOSTIC_ITEMS},
+        "max_message_bytes":{"const":axiograph_kernel::MAX_KERNEL_DIAGNOSTIC_MESSAGE_BYTES},
+        "max_work":{"const":axiograph_kernel::MAX_KERNEL_DIAGNOSTIC_WORK},
+        "order":{"const":AUTHORING_DIAGNOSTIC_ORDER_V1}}));
     let validation = object(
         object_properties!({"canonical_axi_valid":boolean,"compiled_kernel_ir_valid":boolean,"finite_category_fragment_valid":boolean,
-        "runtime_theory_gate":gate,"diagnostic_errors":count,"diagnostic_warnings":count,"finite_coverage":{"anyOf":[finite,{"type":"null"}]},
+        "runtime_theory_gate":gate,"diagnostic_errors":count,"diagnostic_warnings":count,"diagnostic_collection":diagnostic_collection_schema,"finite_coverage":{"anyOf":[finite,{"type":"null"}]},
         "finite_residuals":count,"dependent_residuals":count,"runtime_theory":{"anyOf":[runtime,{"type":"null"}]},
         "competency":{"anyOf":[cq,{"type":"null"}]},"scope":string,"non_claims":strings}),
     );
@@ -1049,8 +1303,15 @@ pub(super) fn response_schema_object() -> JsonObject {
         "truncated":boolean,"next_cursor":{"type":["string","null"],"maxLength":MAX_CURSOR_BYTES},
         "items":{"type":"array","maxItems":MAX_PAGE_LIMIT,"items":{"type":"object"}}}),
     );
+    let bounded_error_items = json!({
+        "type":"array",
+        "items":diagnostic,
+        "contains":{"type":"object","properties":{"severity":{"const":"error"}},"required":["severity"]},
+        "minContains":0,
+        "maxContains":axiograph_kernel::MAX_KERNEL_DIAGNOSTIC_ITEMS + 1
+    });
     page["allOf"] = json!([{"if":{"properties":{"section":{"const":"diagnostics"}}},
-        "then":{"properties":{"items":{"type":"array","items":diagnostic}}}}]);
+        "then":{"properties":{"items":bounded_error_items.clone()}}}]);
     let nested_item = object(object_properties!({
         "version":{"const":NESTED_CURSOR_VERSION},"collection":{"enum":NESTED_COLLECTIONS},
         "parent_identity":{"type":"string","pattern":"^[0-9a-f]{64}$"},"ordinal":count,
@@ -1062,6 +1323,8 @@ pub(super) fn response_schema_object() -> JsonObject {
     }));
     let nested_page = object(object_properties!({
         "version":{"const":NESTED_CURSOR_VERSION},"collection":{"enum":NESTED_COLLECTIONS},
+        "input_identity":{"type":"string","pattern":"^[0-9a-f]{64}$"},
+        "collection_identity":{"type":"string","pattern":"^[0-9a-f]{64}$"},
         "total":count,"offset":count,"returned":count,"omitted":count,"truncated":boolean,
         "entry_limit":{"type":"integer","minimum":1,"maximum":MAX_PAGE_LIMIT},
         "byte_limit":{"type":"integer","minimum":1,"maximum":MAX_NESTED_BYTE_LIMIT},
@@ -1080,10 +1343,10 @@ pub(super) fn response_schema_object() -> JsonObject {
     compact["properties"]["nested_page"] = nested_page;
     let artifact = json!({"type":"object"});
     let artifacts = json!({"type":"array","items":artifact});
-    let full = json!({"type":"object","additionalProperties":false,"required":["version","operation","workspace_root","ok","validation","promotion","trust","diagnostics","typed_holes","dependent_refinements","repairs","stable_runtime_refs","next_actions"],
+    let full = json!({"type":"object","additionalProperties":false,"required":["version","operation","workspace_root","ok","validation","promotion","trust","diagnostics","diagnostic_collection","typed_holes","dependent_refinements","repairs","stable_runtime_refs","next_actions"],
         "properties":{"version":{"const":AUTHORING_WORKSPACE_REPORT_VERSION_V1},"ok":boolean,"source":source,"promotion":promotion,"trust":trust,
         "operation":{"enum":["inspect","validate","apply_repair","promotion_review"]},"workspace_root":string,"validation":artifact,
-        "diagnostics":{"type":"array","items":diagnostic},"stable_runtime_refs":artifacts,"next_actions":strings,
+        "diagnostics":bounded_error_items,"diagnostic_collection":diagnostic_collection_schema,"stable_runtime_refs":artifacts,"next_actions":strings,
         "typed_holes":artifact,"dependent_refinements":artifacts,"repairs":artifacts,"competency_questions":artifact,
         "prepared_query":artifact,"query_explanation":artifact,"applied_query_repair":artifact,"checked_olog":artifact,
         "applied_olog_repair":artifact,"evolution_previews":artifacts},

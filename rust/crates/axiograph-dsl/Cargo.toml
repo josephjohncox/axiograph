@@ -14,8 +14,8 @@ workspace = true
 axiograph-security = { path = "../axiograph-security" }
 thiserror.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 nom.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
-serde_json.workspace = true

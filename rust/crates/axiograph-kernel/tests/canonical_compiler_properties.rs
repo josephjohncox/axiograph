@@ -2,6 +2,7 @@
 
 use std::{fs, path::Path};
 
+use axiograph_dsl::axi_v1::CanonicalSyntacticAddressV1 as Address;
 use axiograph_kernel::{
     validate_instance_model_ir, CanonicalCompiler, CanonicalModuleSource, KernelCompilationRequest,
     KernelCompileError, RepositoryIdV2, SchemaGeneratorKindIr, SnapshotIdV2,
@@ -50,13 +51,43 @@ fn role_carrier_error_preserves_first_structured_occurrence_and_source() {
     );
     assert_eq!(rendered, cause.to_string());
     assert!(matches!(
-        compile("module M\nschema S:\n  object Company\n  subtype Compny <: Company\n"),
+        compile("module M\nschema S:\n  object Company\n  subtype Compny < Company\n"),
         Err(KernelCompileError::UnknownObjectTarget { .. })
     ));
     let error = compile("module M\nschema S:\n  object Company\n  relation Employment(company: relation(Employmnt))\n").unwrap_err();
     assert!(
         matches!(error, KernelCompileError::RoleCarrier { cause, .. } if matches!(*cause, KernelCompileError::UnknownRelationTarget { .. }))
     );
+}
+
+#[test]
+fn canonical_source_retains_exact_bytes_import_order_and_typed_occurrences() {
+    let text = "module Root\r\nimport Base\r\nimport Other\r\n# Base Other 😀\r\nschema Root:\r\n  object Base\r\n";
+    let source = CanonicalModuleSource::parse(text.as_bytes().to_vec()).expect("canonical source");
+    assert_eq!(source.exact_text().as_bytes(), text.as_bytes());
+    assert_eq!(source.parsed().imports, ["Base", "Other"]);
+    for (address, expected) in [
+        (Address::ImportName { import_index: 0 }, "Base"),
+        (Address::ImportName { import_index: 1 }, "Other"),
+        (Address::SchemaName { schema_index: 0 }, "Root"),
+        (
+            Address::ObjectName {
+                schema_index: 0,
+                object_index: 0,
+            },
+            "Base",
+        ),
+    ] {
+        let occurrence = source
+            .source_map()
+            .occurrence(&address)
+            .expect("typed parser occurrence");
+        assert_eq!(&source.exact_text()[occurrence.bytes.clone()], expected);
+    }
+    assert!(source
+        .source_map()
+        .occurrence(&Address::ImportName { import_index: 2 })
+        .is_none());
 }
 
 fn atom_strategy() -> impl Strategy<Value = String> {

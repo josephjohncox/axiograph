@@ -1,7 +1,19 @@
 # Semantic Kernel + Semantic VCS Roadmap
 
-**Diataxis:** Roadmap  
+**Diataxis:** Roadmap
 **Audience:** contributors
+**Claim status:** `design_target` and `current_implementation`. See the
+[claim-status taxonomy](../reference/CLAIM_STATUS.md).
+
+Goal and task sections are design targets unless they explicitly say that a
+slice exists. Current-slice sections describe current implementation and point
+to source or executable gates. Checklist progress is not a trusted formal
+result or release decision.
+
+This roadmap predates several implemented slices. An unchecked broad marker can
+therefore contain a completed bounded subtask. The current references and the
+[engineering-quality roadmap](ROADMAP_ENGINEERING_QUALITY.md) control present
+status. Parent authorization is required before this unit changes old markers.
 
 This roadmap turns the current review conclusions into a concrete program of work.
 

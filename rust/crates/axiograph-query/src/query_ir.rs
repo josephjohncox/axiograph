@@ -487,8 +487,8 @@ pub fn query_ir_v1_json_schema() -> serde_json::Value {
 /// - paths are written as AxQL path expressions (e.g. `"rel_0/rel_1"`, `"(a|b)*"`)
 /// - disjunction is explicit via `disjuncts`, but a single `where_atoms` clause is also accepted
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct QueryIrV1 {
-    #[serde(default = "default_query_ir_v1_version")]
     pub version: u32,
 
     /// Optional explicit select list. Empty means “implicit select”.
@@ -519,10 +519,6 @@ pub struct QueryIrV1 {
     /// Optional context/world scoping for fact nodes.
     #[serde(default)]
     pub contexts: Vec<QueryContextIrV1>,
-}
-
-fn default_query_ir_v1_version() -> u32 {
-    QUERY_IR_V1_VERSION
 }
 
 impl QueryIrV1 {
@@ -2517,7 +2513,7 @@ pub enum QueryTermIrV1 {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum QueryTermObjIrV1 {
     Var { name: String },
     Name { value: String },
@@ -2568,7 +2564,7 @@ pub enum QueryContextIrV1 {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum QueryContextObjIrV1 {
     Name { name: String },
     EntityId { id: u32 },
