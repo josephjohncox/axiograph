@@ -32,6 +32,22 @@ from scripts.generate_no_unsafe_external_cache_manifest import (
 
 ROOT = Path(__file__).resolve().parents[1]
 MAX_CACHE_BYTES = 1024 * 1024
+MAX_PIN_BYTES = 16 * 1024
+PINNED_EVIDENCE = (
+    (
+        "scripts/fixtures/no_unsafe/REGRESSION_MATRIX.md",
+        "build/engineering-quality/roadmap-wave-01-six-finding-correction/"
+        "persist-terminal-handoff-20260909T130000Z/pins/REGRESSION_MATRIX.md",
+        "af9b894ee7eef8284a048327bee98cd3e0a41e62d70dcfaf9caea58ae7cad1f0",
+    ),
+    (
+        "scripts/fixtures/no_unsafe/FINAL_RECEIPT.json.txt",
+        "build/engineering-quality/hosted-capability-ci-import-fix/"
+        "persist-success-20260912T031727Z/immutable-handoff/inputs/history/"
+        "observe-hosted-0-complete/files/FINAL_RECEIPT.json.txt",
+        "9b8fa7fc7524c759183e9c06b038e06652fb346b97121d240d775f40a4fa9c3e",
+    ),
+)
 
 
 class FixtureError(ValueError):
@@ -62,6 +78,36 @@ def _parts(value: str) -> tuple[str, ...]:
     if not parts or any(part in ("", ".", "..") for part in parts) or "\\" in value:
         raise FixtureError("noncanonical cache fixture path")
     return parts
+
+
+def _read_pins(root: Path) -> list[tuple[str, bytes]]:
+    pinned: list[tuple[str, bytes]] = []
+    for source_name, destination, expected_sha256 in PINNED_EVIDENCE:
+        _parts(source_name)
+        _parts(destination)
+        descriptor = os.open(
+            root / source_name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC
+        )
+        try:
+            before = os.fstat(descriptor)
+            if not stat.S_ISREG(before.st_mode) or before.st_size > MAX_PIN_BYTES:
+                raise FixtureError("historical pin is not bounded regular input")
+            with os.fdopen(descriptor, "rb") as source:
+                descriptor = -1
+                raw = source.read(MAX_PIN_BYTES + 1)
+                after = os.fstat(source.fileno())
+            if (
+                len(raw) != before.st_size
+                or (before.st_dev, before.st_ino, before.st_mtime_ns)
+                != (after.st_dev, after.st_ino, after.st_mtime_ns)
+                or hashlib.sha256(raw).hexdigest() != expected_sha256
+            ):
+                raise FixtureError("historical pin differs from reviewed bytes")
+            pinned.append((destination, raw))
+        finally:
+            if descriptor != -1:
+                os.close(descriptor)
+    return pinned
 
 
 def _selected_archive_bytes(archive: Path, record: dict[str, Any]) -> dict[str, bytes]:
@@ -165,6 +211,7 @@ def prepare(root: Path) -> dict[str, Any]:
     record = manifest["records"][0]
     if record["cache_home_paths"] != list(CANDIDATE_HOMES):
         raise FixtureError("checked cache homes differ from scanner policy")
+    pins = _read_pins(root)
     selected = _selected_archive_bytes(root / ARCHIVE_REL, record)
     for home in record["cache_home_paths"]:
         parts = _parts(home)
@@ -184,7 +231,24 @@ def prepare(root: Path) -> dict[str, Any]:
                     output.write(selected[item["archive_member"]])
                 file_path.chmod(0o644)
             staged_home.rename(destination)
-    return {"homes": len(record["cache_home_paths"]), "files_per_home": len(record["files"])}
+    for name, data in pins:
+        parts = _parts(name)
+        parent = _ensure_directories(root, parts[:-1])
+        destination = parent / parts[-1]
+        if destination.exists() or destination.is_symlink():
+            raise FixtureError("historical pin destination already exists")
+        with tempfile.TemporaryDirectory(prefix=".axi-pin-fixture-", dir=parent) as staging:
+            staged = Path(staging) / parts[-1]
+            with staged.open("xb") as output:
+                output.write(data)
+            staged.chmod(0o644)
+            staged.rename(destination)
+    _ensure_directories(root, _parts("build/engineering-quality/roadmap-wave-01-full-loop"))
+    return {
+        "homes": len(record["cache_home_paths"]),
+        "files_per_home": len(record["files"]),
+        "pins": len(pins),
+    }
 
 
 if __name__ == "__main__":
