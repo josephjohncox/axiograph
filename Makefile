@@ -349,7 +349,7 @@ verify-lean-certificates: lean
 
 verify-lean-certificate-rejections: lean-exe
 	@echo "━━━ Running approved-checker adversarial rejection tests ━━━"
-	python3 scripts/run_required_query_tests.py --cargo "$(CARGO)" --package axiograph-query --filter verifier_bridge::tests
+	python3 scripts/run_required_query_tests.py --cargo "$(CARGO)" --package axiograph-query --filter verifier_bridge::tests --serial
 	@echo "✓ Approved checker accepted exact V4 and rejected malformed, altered-digest, forged, extra, missing, duplicate, and truncated inputs"
 
 verify-lean-theory: dirs

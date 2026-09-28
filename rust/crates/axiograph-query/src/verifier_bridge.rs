@@ -478,7 +478,10 @@ printf '%s\n' '{"version":"axiograph-verifier-stdio-v2","nonce":"not-a-uuid","ch
             verify_certificate_with_lean(&config, module_axi, &certificate, &prepared, &answer)
                 .err()
                 .ok_or_else(|| anyhow!("malformed verifier receipt was accepted"))?;
-        assert!(err.to_string().contains("valid V2 receipt"));
+        assert!(
+            err.to_string().contains("valid V2 receipt"),
+            "unexpected malformed-receipt rejection: {err:#}"
+        );
         Ok(())
     }
 
