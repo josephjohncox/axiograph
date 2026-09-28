@@ -850,8 +850,12 @@ class ScannerCliTests(unittest.TestCase):
         decoy = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, decoy)
         environment = dict(os.environ)
+        # Isolate Git discovery and HOME without making rustup bootstrap a new
+        # toolchain under the decoy HOME (which writes to cargo metadata stderr).
         environment.update(
             {
+                "RUSTUP_HOME": environment.get("RUSTUP_HOME", str(Path.home() / ".rustup")),
+                "CARGO_HOME": environment.get("CARGO_HOME", str(Path.home() / ".cargo")),
                 "GIT_DIR": decoy,
                 "GIT_WORK_TREE": decoy,
                 "GIT_INDEX_FILE": str(Path(decoy) / "index"),
