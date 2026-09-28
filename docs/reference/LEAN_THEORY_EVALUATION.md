@@ -2,6 +2,12 @@
 
 **Diataxis:** Reference
 **Audience:** contributors, verifier/tooling implementers
+**Claim status:** `trusted_formal_result`, `current_implementation`, and
+`design_target`. See [Documentation Claim Status](CLAIM_STATUS.md).
+
+The boundary and status-matrix sections classify current formal and runtime
+implementation. Feasibility and roadmap sections are design targets. A result
+outside the `VerifyMain` import closure is not a trusted product result.
 
 This document evaluates how much of Axiograph's ontology/type theory is encoded
 in Lean today, what is feasible to certify next, and where the system must keep

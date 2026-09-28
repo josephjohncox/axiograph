@@ -43,6 +43,8 @@ export function initContextMenu(ctx: ContextMenuContext) {
 
   function hideContextMenu() {
     menu.style.display = "none";
+    // EQ-02-U03 reviewed sink: bare empty-string literal clear, not markup
+    // construction. See frontend/viz/tests/html-sink-inventory.test.mjs.
     menu.innerHTML = "";
   }
 
@@ -188,6 +190,8 @@ export function initContextMenu(ctx: ContextMenuContext) {
 
   function showContextMenu(opts: ContextMenuRequest | null | undefined): void {
     if (!opts) return;
+    // EQ-02-U03 reviewed sink: bare empty-string literal clear, not markup
+    // construction. See frontend/viz/tests/html-sink-inventory.test.mjs.
     menu.innerHTML = "";
     if (opts.kind === "node") {
       showNodeMenu(opts.nodeId, opts.x, opts.y);

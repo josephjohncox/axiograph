@@ -211,7 +211,7 @@ instance ProductCatalog of OntologyMeta:
      proof=IsoProof),
     (s1=ProductV3_alt, s2=ProductV3_alt,
      forward=IdentityMigration, backward=IdentityMigration,
-     proof=IsoProof),
+     proof=IsoProof)
 
     -- AddCategories has inverse MergeCategories
     -- So V1 ≃ V2 (if we don't care about category info)

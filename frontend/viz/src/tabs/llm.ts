@@ -1,5 +1,9 @@
 import { UNSUPPORTED } from "../server/read-only-client";
-import { isRecord, type LlmHistoryEntry } from "../types";
+import {
+  parseLlmHistoryJson,
+  validateLlmHistoryEnvelope,
+  type LlmHistoryEntry,
+} from "../types";
 
 interface LlmContext {
   llmStatusEl: HTMLElement;
@@ -16,7 +20,6 @@ interface LlmContext {
   llmDebugEl: HTMLElement;
   rerender: () => void;
   clearHighlights: () => void;
-  highlightFromToolLoop: (outcome: unknown) => void;
 }
 
 export function initLlmTab(ctx: LlmContext) {
@@ -34,7 +37,6 @@ export function initLlmTab(ctx: LlmContext) {
     llmCitationsEl,
     llmDebugEl,
     rerender,
-    highlightFromToolLoop,
   } = ctx;
   function setLlmStatus(text: string): void {
     if (!llmStatusEl) return;
@@ -42,9 +44,8 @@ export function initLlmTab(ctx: LlmContext) {
   }
 
   function llmHistoryStorageKey() {
-    // Retain the existing local history key for inspection only. Cached legacy
-    // snapshot strings are not authenticated identity and are never migrated
-    // from server status or used in requests.
+    // Local history is display-only. Cached snapshot strings are not
+    // authenticated identity and are never used in requests.
     const host =
       window.location && window.location.host
         ? window.location.host
@@ -79,25 +80,7 @@ export function initLlmTab(ctx: LlmContext) {
     try {
       const raw = localStorage.getItem(key) || "";
       if (!raw.trim()) return [];
-      const parsed: unknown = JSON.parse(raw);
-      if (!Array.isArray(parsed)) return [];
-      return parsed
-        .filter(isRecord)
-        .map((message) => ({
-          role: String(message.role || ""),
-          content: String(message.content || ""),
-          public_rationale: String(message.public_rationale || ""),
-          citations: Array.isArray(message.citations)
-            ? message.citations.map((item) => String(item))
-            : [],
-          queries: Array.isArray(message.queries)
-            ? message.queries.map((item) => String(item))
-            : [],
-          notes: Array.isArray(message.notes)
-            ? message.notes.map((item) => String(item))
-            : [],
-        }))
-        .filter((message) => Boolean(message.role && message.content));
+      return parseLlmHistoryJson(raw).entries;
     } catch (_e) {
       return [];
     }
@@ -105,7 +88,11 @@ export function initLlmTab(ctx: LlmContext) {
 
   function saveLlmHistory() {
     try {
-      localStorage.setItem(llmHistoryKey, JSON.stringify(llmHistory));
+      const envelope = validateLlmHistoryEnvelope({
+        format: "axiograph_llm_history_v2",
+        entries: llmHistory,
+      });
+      localStorage.setItem(llmHistoryKey, JSON.stringify(envelope));
     } catch {
       return;
     }
@@ -117,7 +104,10 @@ export function initLlmTab(ctx: LlmContext) {
   }
 
   function setLlmHistory(next: LlmHistoryEntry[]): void {
-    llmHistory = next || [];
+    llmHistory = validateLlmHistoryEnvelope({
+      format: "axiograph_llm_history_v2",
+      entries: next,
+    }).entries;
   }
 
   function setLlmCitations(obj: unknown): void {
@@ -370,6 +360,5 @@ export function initLlmTab(ctx: LlmContext) {
     setLlmHistoryKey,
     setLlmDebug,
     setLlmCitations,
-    highlightFromToolLoop,
   };
 }

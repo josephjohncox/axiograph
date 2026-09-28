@@ -407,7 +407,7 @@
       ],
       "risk": "ordinary",
       "catalogOrder": 8,
-      "wave01Selected": false,
+      "wave01Selected": true,
       "status": "pending_parent"
     },
     {
@@ -510,7 +510,7 @@
       ],
       "risk": "trust-boundary",
       "catalogOrder": 10,
-      "wave01Selected": false,
+      "wave01Selected": true,
       "status": "pending_parent"
     },
     {
@@ -564,7 +564,7 @@
       ],
       "risk": "trust-boundary",
       "catalogOrder": 11,
-      "wave01Selected": false,
+      "wave01Selected": true,
       "status": "pending_parent"
     },
     {
@@ -607,7 +607,7 @@
       ],
       "risk": "ordinary",
       "catalogOrder": 12,
-      "wave01Selected": false,
+      "wave01Selected": true,
       "status": "pending_parent"
     },
     {
@@ -800,7 +800,7 @@
       ],
       "risk": "trust-boundary",
       "catalogOrder": 16,
-      "wave01Selected": false,
+      "wave01Selected": true,
       "status": "pending_parent"
     },
     {
@@ -844,7 +844,7 @@
       ],
       "risk": "trust-boundary",
       "catalogOrder": 17,
-      "wave01Selected": false,
+      "wave01Selected": true,
       "status": "pending_parent"
     },
     {
@@ -895,7 +895,7 @@
       ],
       "risk": "ordinary",
       "catalogOrder": 18,
-      "wave01Selected": false,
+      "wave01Selected": true,
       "status": "pending_parent"
     },
     {
@@ -945,7 +945,7 @@
       ],
       "risk": "trust-boundary",
       "catalogOrder": 19,
-      "wave01Selected": false,
+      "wave01Selected": true,
       "status": "pending_parent"
     },
     {

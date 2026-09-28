@@ -2294,8 +2294,8 @@ schema S:
   object Employee
   object Contractor
   object Task
-  subtype Employee <: Person
-  subtype Contractor <: Person
+  subtype Employee < Person
+  subtype Contractor < Person
   relation Assigned(worker: Person, task: Task)
 
 instance I of S:

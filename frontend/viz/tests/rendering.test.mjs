@@ -607,9 +607,19 @@ test("production status and draft review render rich literal text, filter/select
     [{ ok: false }, "invalid"],
     [undefined, "unvalidated"],
   ]) {
-    ctx.setDraftOverlay({ ...overlay(), validation });
+    const candidate = overlay();
+    if (validation !== undefined) candidate.validation = validation;
+    else delete candidate.validation;
+    ctx.setDraftOverlay(candidate);
     assert.equal(byClass(ctx.reviewStatusEl, "chip")[0].textContent, label);
   }
+  const prototypeKeyCandidate = overlay();
+  prototypeKeyCandidate.validation = JSON.parse('{"__proto__":{"ok":true}}');
+  assert.equal(ctx.setDraftOverlay(prototypeKeyCandidate), true);
+  assert.equal(Object.hasOwn(ctx.ui.draft.overlay.validation, "__proto__"), true);
+  assert.equal(Object.hasOwn(ctx.ui.draft.overlay.validation, "ok"), false);
+  assert.equal(byClass(ctx.reviewStatusEl, "chip")[0].textContent, "unvalidated");
+  assert.match(ctx.addStatusEl.textContent, /\(review before commit\)$/);
   await ctx.reviewClearBtn.fire("click");
   assert.equal(ctx.currentDraftFiltered(), null);
   assert.equal(ctx.reviewStatusEl.textContent, "(no draft overlay)");
@@ -632,7 +642,8 @@ test("production tool-loop prefill uses the initialized draft callback without a
     true,
   );
   assert.equal(setOverlay.mock.calls.length, 1);
-  assert.equal(ctx.ui.draft.overlay, draft);
+  assert.notEqual(ctx.ui.draft.overlay, draft);
+  assert.deepEqual(ctx.ui.draft.overlay, draft);
   assert.equal(ctx.ui.draft.selected.size, 2);
   assert.deepEqual(ctx.tabs, ["review"]);
   assert.equal(ctx.reviewCommitOutputEl.textContent, "");
@@ -647,7 +658,8 @@ test("production tool-loop prefill uses the initialized draft callback without a
     }),
     true,
   );
-  assert.equal(ctx.ui.draft.overlay, latest);
+  assert.notEqual(ctx.ui.draft.overlay, latest);
+  assert.deepEqual(ctx.ui.draft.overlay, latest);
   assert.equal(setOverlay.mock.calls.length, 2);
   assert.equal(ctx.prefillAddFromToolLoop(null), false);
   assert.equal(
@@ -702,6 +714,18 @@ test("persisted and tool-loop malformed drafts never enter loaded state", (t) =>
     assert.equal(toolLoop.setDraftOverlay(malformed), false);
     assert.equal(toolLoop.ui.draft.kind, "empty");
   }
+  const retained = reviewContext();
+  const valid = overlay();
+  assert.equal(retained.setDraftOverlay(valid), true);
+  assert.equal(retained.setDraftOverlay({ ...valid, extra: true }), false);
+  assert.notEqual(retained.ui.draft.overlay, valid);
+  assert.deepEqual(retained.ui.draft.overlay, valid);
+  valid.proposals_json.proposals = null;
+  valid.chunks[0].text = "caller mutation";
+  valid.validation.ok = "caller mutation";
+  assert.equal(retained.ui.draft.overlay.proposals_json.proposals.length, 2);
+  assert.equal(retained.ui.draft.overlay.chunks[0].text, hostile);
+  assert.equal(retained.ui.draft.overlay.validation.ok, true);
 });
 
 function llmAskContext(t) {
@@ -735,6 +759,31 @@ function llmAskContext(t) {
   return ctx;
 }
 
+test("production LLM persistence ignores the retired key and loads only the closed envelope", (t) => {
+  const stored = environment(t);
+  const retiredKey = "axiograph_llm_history_v1:fixture.invalid:fixture";
+  const key = "axiograph_llm_history_v2:fixture.invalid:fixture";
+  const entry = { role: "user", content: hostile, public_rationale: "", citations: [], queries: [], notes: [] };
+  stored.set(retiredKey, JSON.stringify({ format: "axiograph_llm_history_v1", entries: [entry] }));
+  stored.set(key, JSON.stringify([{ role: "user", content: "unversioned" }]));
+  let ctx = llmAskContext(t);
+  assert.equal(ctx.getLlmHistoryKey(), key);
+  assert.deepEqual(ctx.getLlmHistory(), []);
+  stored.set(key, JSON.stringify({ format: "axiograph_llm_history_v1", entries: [entry] }));
+  ctx = llmAskContext(t);
+  assert.deepEqual(ctx.getLlmHistory(), []);
+  stored.set(key, JSON.stringify({ format: "axiograph_llm_history_v2", entries: [entry] }));
+  ctx = llmAskContext(t);
+  assert.equal(ctx.getLlmHistory().length, 1);
+  assert.equal(ctx.getLlmHistory()[0].content, hostile);
+  const retained = ctx.getLlmHistory();
+  assert.throws(() => ctx.setLlmHistory([{ role: "tool", content: "bad", public_rationale: "", citations: [], queries: [], notes: [] }]));
+  assert.equal(ctx.getLlmHistory(), retained);
+  ctx.saveLlmHistory();
+  assert.equal(JSON.parse(stored.get(key)).format, "axiograph_llm_history_v2");
+  assert.equal(JSON.parse(stored.get(retiredKey)).format, "axiograph_llm_history_v1");
+});
+
 test("production LLM callbacks and keyboard cannot call unsupported endpoints or mutate local draft/highlights", async (t) => {
   const stored = environment(t);
   stored.set("axiograph_llm_auto_commit", "true");
@@ -749,7 +798,8 @@ test("production LLM callbacks and keyboard cannot call unsupported endpoints or
   await ctx.llmAskBtn.fire("click");
   await ctx.llmQuestionEl.fire("keydown", { key: "Enter" });
   assert.match(ctx.llmStatusEl.textContent, /Unavailable.*read-only/);
-  assert.equal(ctx.ui.draft.overlay, draft);
+  assert.notEqual(ctx.ui.draft.overlay, draft);
+  assert.deepEqual(ctx.ui.draft.overlay, draft);
   assert.deepEqual([...ctx.ui.highlightIds], [99]);
   assert.deepEqual(ctx.continuation, []);
 });

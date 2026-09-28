@@ -4,6 +4,8 @@ import { selectDraft } from "./draft-selection";
 import {
   isDraftOverlay,
   isRecord,
+  parseDraftOverlayJson,
+  validateDraftOverlay,
   type DraftOverlay,
   type DraftProposal,
   type VizUiState,
@@ -47,6 +49,13 @@ type ReviewActionName =
   | "commitGeneratedOverlay"
   | "draftAxiFromGeneratedOverlay"
   | "promoteDraftAxiText";
+
+function draftValidationStatus(overlay: DraftOverlay): unknown {
+  const validation = overlay.validation;
+  return validation !== undefined && Object.prototype.hasOwnProperty.call(validation, "ok")
+    ? validation.ok
+    : undefined;
+}
 
 export function initDraft(ctx: DraftContext) {
   const {
@@ -116,8 +125,7 @@ export function initDraft(ctx: DraftContext) {
     try {
       const raw = localStorage.getItem(key) || "";
       if (!raw.trim()) return null;
-      const parsed: unknown = JSON.parse(raw);
-      return isDraftOverlay(parsed) ? parsed : null;
+      return parseDraftOverlayJson(raw);
     } catch (_e) {
       return null;
     }
@@ -147,8 +155,12 @@ export function initDraft(ctx: DraftContext) {
     overlay: unknown,
     opts?: { notePrefix?: string },
   ): boolean {
-    if (!isDraftOverlay(overlay)) return false;
-    const r = overlay;
+    let r: DraftOverlay;
+    try {
+      r = validateDraftOverlay(overlay);
+    } catch {
+      return false;
+    }
     const props = r.proposals_json.proposals;
     ui.draft = {
       kind: "loaded",
@@ -173,8 +185,9 @@ export function initDraft(ctx: DraftContext) {
 
     const notePrefix =
       opts && opts.notePrefix ? String(opts.notePrefix) : "draft overlay ready";
-    const ok = r.validation && r.validation.ok === true;
-    const bad = r.validation && r.validation.ok === false;
+    const validationStatus = draftValidationStatus(r);
+    const ok = validationStatus === true;
+    const bad = validationStatus === false;
     if (bad)
       setAddStatus(`${notePrefix} (validation failed; review before commit)`);
     else if (ok)
@@ -271,8 +284,9 @@ export function initDraft(ctx: DraftContext) {
     const props = r.proposals_json.proposals;
     const selected = state.selected;
 
-    const ok = r.validation && r.validation.ok === true;
-    const bad = r.validation && r.validation.ok === false;
+    const validationStatus = draftValidationStatus(r);
+    const ok = validationStatus === true;
+    const bad = validationStatus === false;
     function setSelectionStatus() {
       const chip = element(
         "span",
@@ -301,41 +315,23 @@ export function initDraft(ctx: DraftContext) {
         : "";
 
     function proposalLine(p: DraftProposal): string {
-      const kind = String((p && p.kind) || "");
-      const conf = p && p.confidence != null ? Number(p.confidence) : null;
-      const confText =
-        conf != null && Number.isFinite(conf) ? ` conf=${conf.toFixed(2)}` : "";
-      if (kind.toLowerCase() === "entity") {
-        const ty = p.entity_type || "Entity";
-        const name = p.name || "";
-        return `Entity ${ty} "${name}"${confText}`;
+      const confText = ` conf=${p.confidence.toFixed(2)}`;
+      if (p.kind === "Entity") {
+        return `Entity ${p.entity_type} "${p.name}"${confText}`;
       }
-      if (kind.toLowerCase() === "relation") {
-        const rt = p.rel_type || "Relation";
-        const src = p.source || "?";
-        const dst = p.target || "?";
-        return `Relation ${rt}(${src} -> ${dst})${confText}`;
-      }
-      return `${kind || "Proposal"}${confText}`;
+      return `Relation ${p.rel_type}(${p.source} -> ${p.target})${confText}`;
     }
 
     function proposalMatches(p: DraftProposal): boolean {
       if (!filter) return true;
-      const parts: string[] = [];
-      for (const k of [
-        "kind",
-        "proposal_id",
-        "schema_hint",
-        "entity_type",
-        "name",
-        "entity_id",
-        "rel_type",
-        "relation_id",
-        "source",
-        "target",
-      ]) {
-        if (p && p[k] != null) parts.push(String(p[k]));
-      }
+      const parts = [
+        p.kind,
+        p.proposal_id,
+        p.schema_hint ?? "",
+        ...(p.kind === "Entity"
+          ? [p.entity_type, p.name, p.entity_id]
+          : [p.rel_type, p.relation_id, p.source, p.target]),
+      ];
       const evs = p.evidence ?? [];
       for (const ev of evs.slice(0, 4)) {
         if (ev && ev.chunk_id) parts.push(String(ev.chunk_id));

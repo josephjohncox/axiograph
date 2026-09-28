@@ -153,6 +153,79 @@ fn canonical_nested_collection(
                 }
             }
         }
+        EvolutionOlogPrimitives
+        | EvolutionOlogResidualObligations
+        | EvolutionOlogRefinementCandidates => {
+            for preview in &full.evolution_previews {
+                if let AuthoringEvolutionPreviewV1::Olog(olog_preview) = preview {
+                    let source = match collection {
+                        EvolutionOlogPrimitives => {
+                            serde_json::to_value(&olog_preview.semantic_delta.primitives)?
+                        }
+                        EvolutionOlogResidualObligations => {
+                            serde_json::to_value(&olog_preview.residual_obligations)?
+                        }
+                        EvolutionOlogRefinementCandidates => {
+                            serde_json::to_value(&olog_preview.refinement_candidates)?
+                        }
+                        _ => {
+                            return Err(anyhow!("test evolution-olog-preview collection mismatch"))
+                        }
+                    };
+                    values.extend(source.as_array().expect("array").iter().cloned());
+                }
+            }
+        }
+        EvolutionFiniteKernelChangedPayloads
+        | EvolutionFiniteKernelAddedPayloads
+        | EvolutionFiniteKernelRemovedPayloads => {
+            for preview in &full.evolution_previews {
+                if let AuthoringEvolutionPreviewV1::FiniteKernel(finite_preview) = preview {
+                    let source = match collection {
+                        EvolutionFiniteKernelChangedPayloads => {
+                            serde_json::to_value(&finite_preview.changed_payloads)?
+                        }
+                        EvolutionFiniteKernelAddedPayloads => {
+                            serde_json::to_value(&finite_preview.added_payloads)?
+                        }
+                        EvolutionFiniteKernelRemovedPayloads => {
+                            serde_json::to_value(&finite_preview.removed_payloads)?
+                        }
+                        _ => {
+                            return Err(anyhow!(
+                                "test evolution-finite-kernel-preview collection mismatch"
+                            ))
+                        }
+                    };
+                    values.extend(source.as_array().expect("array").iter().cloned());
+                }
+            }
+        }
+        CheckedOlogTypedHoles | CheckedOlogRefinementCandidates => {
+            if let Some(checked) = &full.checked_olog {
+                let source = match collection {
+                    CheckedOlogTypedHoles => serde_json::to_value(&checked.typed_holes)?,
+                    CheckedOlogRefinementCandidates => {
+                        serde_json::to_value(&checked.refinement_candidates)?
+                    }
+                    _ => return Err(anyhow!("test checked-olog collection mismatch")),
+                };
+                values.extend(source.as_array().expect("array").iter().cloned());
+            }
+        }
+        AppliedOlogRepairRefinementCandidates => {
+            if let Some(applied) = &full.applied_olog_repair {
+                let source = serde_json::to_value(&applied.checked_fragment.refinement_candidates)?;
+                values.extend(source.as_array().expect("array").iter().cloned());
+            }
+        }
+        AppliedQueryRepairRefinementCandidates => {
+            if let Some(applied) = &full.applied_query_repair {
+                let source =
+                    serde_json::to_value(&applied.refined_exploration.refinement_candidates)?;
+                values.extend(source.as_array().expect("array").iter().cloned());
+            }
+        }
     }
     Ok(values)
 }
@@ -274,24 +347,60 @@ fn nested_page_unions_losslessly_match_canonical_full_collections() -> Result<()
         let mut request = nested_request(collection);
         request.presentation.nested.as_mut().unwrap().limit = 1;
         let mut actual: Vec<Value> = Vec::new();
+        let mut item_identities = Vec::new();
+        let mut seen_item_identities = BTreeSet::new();
+        let mut expected_input_identity = None;
+        let mut expected_collection_identity = None;
         loop {
             let response = compact(&service, request.clone())?;
             assert_eq!(response.source, full.source);
             assert_eq!(response.promotion, full.promotion);
             assert_eq!(response.trust, full.trust);
             assert!(validator.is_valid(&serde_json::to_value(&response)?));
+            let input_identity = response.input_identity.clone();
             let page = response.nested_page.expect("requested nested page");
             assert_eq!(page.collection, collection);
+            assert_eq!(page.input_identity, input_identity);
+            assert_eq!(
+                expected_input_identity.get_or_insert(input_identity.clone()),
+                &input_identity
+            );
+            assert_eq!(
+                expected_collection_identity.get_or_insert(page.collection_identity.clone()),
+                &page.collection_identity
+            );
             assert_eq!(page.total, expected.len());
             assert_eq!(page.offset, actual.len());
             assert_eq!(page.returned + page.omitted, page.total);
             assert!(page.returned <= page.entry_limit);
             assert!(page.returned_bytes <= page.byte_limit);
+            assert_eq!(page.returned, page.items.len());
+            assert_eq!(
+                page.returned_bytes,
+                page.items
+                    .iter()
+                    .map(|item| serde_json::to_vec(item).map(|bytes| bytes.len()))
+                    .sum::<std::result::Result<usize, _>>()?
+            );
             for item in &page.items {
                 let bytes = item.canonical_item_json.as_bytes();
+                assert_eq!(item.version, NESTED_CURSOR_VERSION);
+                assert_eq!(item.collection, collection);
                 assert_eq!(item.canonical_item_bytes, bytes.len());
                 assert_eq!(item.canonical_item_sha256, digest(bytes));
                 assert_eq!(item.ordinal, actual.len());
+                assert_eq!(
+                    item.item_identity,
+                    bound_item_identity(
+                        &input_identity,
+                        collection,
+                        &item.parent_identity,
+                        item.ordinal,
+                        &item.canonical_item_sha256,
+                    )?
+                );
+                assert!(seen_item_identities.insert(item.item_identity.clone()));
+                item_identities.push(item.item_identity.clone());
                 actual.push(serde_json::from_str(&item.canonical_item_json)?);
             }
             request.presentation.nested.as_mut().unwrap().cursor = page.next_cursor;
@@ -303,11 +412,72 @@ fn nested_page_unions_losslessly_match_canonical_full_collections() -> Result<()
                 .cursor
                 .is_none()
             {
+                assert_eq!(
+                    page.collection_identity,
+                    nested_collection_identity(&input_identity, collection, &item_identities,)?
+                );
                 break;
             }
         }
         assert_eq!(actual, expected, "{collection:?}");
     }
+    Ok(())
+}
+
+#[test]
+fn nested_item_and_collection_identities_bind_source_parent_type_bytes_and_order() -> Result<()> {
+    let input = "a".repeat(64);
+    let other_input = "b".repeat(64);
+    let parent = "c".repeat(64);
+    let other_parent = "d".repeat(64);
+    let bytes = br#"{"name":"first"}"#;
+    let other_bytes = br#"{"name":"second"}"#;
+    let item_hash = digest(bytes);
+    let other_hash = digest(other_bytes);
+    let collection = AuthoringNestedCollectionV1::PreparedKernelRefs;
+    let other_collection = AuthoringNestedCollectionV1::PreparedRefinementHandles;
+    let identity = bound_item_identity(&input, collection, &parent, 0, &item_hash)?;
+
+    assert_ne!(
+        identity,
+        bound_item_identity(&other_input, collection, &parent, 0, &item_hash)?
+    );
+    assert_ne!(
+        identity,
+        bound_item_identity(&input, other_collection, &parent, 0, &item_hash)?
+    );
+    assert_ne!(
+        identity,
+        bound_item_identity(&input, collection, &other_parent, 0, &item_hash)?
+    );
+    assert_ne!(
+        identity,
+        bound_item_identity(&input, collection, &parent, 1, &item_hash)?
+    );
+    assert_ne!(
+        identity,
+        bound_item_identity(&input, collection, &parent, 0, &other_hash)?
+    );
+    assert_ne!(
+        bound_parent_identity(&input, &parent)?,
+        bound_parent_identity(&other_input, &parent)?
+    );
+
+    let identities = vec![identity.clone(), "e".repeat(64)];
+    let reversed = identities.iter().rev().cloned().collect::<Vec<_>>();
+    let collection_identity = nested_collection_identity(&input, collection, &identities)?;
+    assert_ne!(
+        collection_identity,
+        nested_collection_identity(&other_input, collection, &identities)?
+    );
+    assert_ne!(
+        collection_identity,
+        nested_collection_identity(&input, other_collection, &identities)?
+    );
+    assert_ne!(
+        collection_identity,
+        nested_collection_identity(&input, collection, &reversed)?
+    );
     Ok(())
 }
 
@@ -332,7 +502,10 @@ fn nested_pages_enforce_n_n_plus_one_byte_entry_and_large_item_bounds() -> Resul
     let item_bytes = serde_json::to_vec(&nested_collection_items(&full, collection)?[0])?.len();
     request.presentation.nested.as_mut().unwrap().limit = 1;
     request.presentation.nested.as_mut().unwrap().byte_limit = item_bytes - 1;
-    assert!(service.execute_response(request.clone()).is_err());
+    let no_progress = service
+        .execute_response(request.clone())
+        .expect_err("an indivisible first item must not yield an empty cursor page");
+    assert!(no_progress.to_string().contains("nested item requires"));
     request.presentation.nested.as_mut().unwrap().byte_limit = item_bytes;
     let exact = compact(&service, request)?.nested_page.unwrap();
     assert_eq!((exact.returned, exact.returned_bytes), (1, item_bytes));
@@ -385,20 +558,40 @@ fn nested_pages_cover_empty_singleton_and_fail_closed_inputs() -> Result<()> {
     }
 
     let mut request = nested_request(AuthoringNestedCollectionV1::PreparedKernelRefs);
-    let first = compact(&service, request.clone())?.nested_page.unwrap();
-    request.presentation.nested.as_mut().unwrap().cursor = first.next_cursor;
-    let token = request
-        .presentation
-        .nested
-        .as_ref()
-        .unwrap()
-        .cursor
-        .clone()
-        .unwrap();
+    let first_response = compact(&service, request.clone())?;
+    let input_identity = first_response.input_identity.clone();
+    let first = first_response.nested_page.unwrap();
+    request.presentation.nested.as_mut().unwrap().cursor = first.next_cursor.clone();
+    let token = first.next_cursor.unwrap();
+    let terminal_offset = first.total;
+    let wrong_collection = AuthoringNestedCollectionV1::PreparedRefinementHandles;
     for malformed in [
         "x".to_string(),
         token.replace(NESTED_CURSOR_VERSION, "authoring-nested-page-v2"),
         "x".repeat(MAX_CURSOR_BYTES + 1),
+        nested_cursor(
+            &input_identity,
+            wrong_collection,
+            &first.collection_identity,
+            first.returned,
+        )?,
+        nested_cursor(
+            &input_identity,
+            first.collection,
+            &"f".repeat(64),
+            first.returned,
+        )?,
+        nested_cursor(
+            &input_identity,
+            first.collection,
+            &first.collection_identity,
+            terminal_offset,
+        )?,
+        format!(
+            "{NESTED_CURSOR_VERSION}:{input_identity}:{}:184467440737095516160:{}",
+            first.collection_identity,
+            "0".repeat(64)
+        ),
     ] {
         request.presentation.nested.as_mut().unwrap().cursor = Some(malformed);
         assert!(service.execute_response(request.clone()).is_err());
@@ -780,14 +973,41 @@ fn nested_pages_have_cli_mcp_http_and_lsp_service_parity() -> Result<()> {
     let validator = jsonschema::validator_for(&response_schema())?;
     assert!(validator.is_valid(&expected));
     for pointer in [
+        "/nested_page/input_identity",
+        "/nested_page/collection_identity",
         "/nested_page/returned_bytes",
+        "/nested_page/items/0/parent_identity",
         "/nested_page/items/0/canonical_item_bytes",
         "/nested_page/items/0/item_identity",
+        "/nested_page/items/0/media_type",
     ] {
         let mut malformed = expected.clone();
         *malformed.pointer_mut(pointer).expect("nested schema field") = json!(false);
         assert!(!validator.is_valid(&malformed), "{pointer}");
     }
+    let mut nested_as_top_level = expected.clone();
+    nested_as_top_level["sections"][0]["entry_limit"] = json!(1);
+    assert!(!validator.is_valid(&nested_as_top_level));
+    let mut top_level_as_nested = expected.clone();
+    top_level_as_nested["nested_page"]["section"] = json!("diagnostics");
+    assert!(!validator.is_valid(&top_level_as_nested));
+    let mut open_nested_item = expected.clone();
+    open_nested_item["nested_page"]["items"][0]["unexpected"] = json!(true);
+    assert!(!validator.is_valid(&open_nested_item));
+
+    let page = expected["nested_page"].as_object().expect("nested page");
+    assert_eq!(page["input_identity"], expected["input_identity"]);
+    let item = page["items"][0].as_object().expect("nested item");
+    assert_eq!(
+        item["item_identity"],
+        bound_item_identity(
+            expected["input_identity"].as_str().expect("input identity"),
+            AuthoringNestedCollectionV1::PreparedKernelRefs,
+            item["parent_identity"].as_str().expect("parent identity"),
+            item["ordinal"].as_u64().expect("ordinal") as usize,
+            item["canonical_item_sha256"].as_str().expect("item digest"),
+        )?
+    );
     let value = serde_json::to_value(&request)?;
     let mcp = execute_mcp_payload(
         &service,
@@ -918,5 +1138,196 @@ fn authoring_workspace_real_fixture_compact_byte_budget() -> Result<()> {
         r.presentation.detail = AuthoringDetailV1::Full;
         assert_eq!(serde_json::to_vec(&service.execute_response(r)?)?, full);
     }
+    Ok(())
+}
+
+fn works_for_olog_fragment(bind_employer: bool) -> crate::typed_authoring::OlogFragmentV1 {
+    let mut role_bindings = vec![crate::typed_authoring::OlogRoleBindingV1 {
+        role: "employee".to_string(),
+        target_box: "employee".to_string(),
+    }];
+    if bind_employer {
+        role_bindings.push(crate::typed_authoring::OlogRoleBindingV1 {
+            role: "employer".to_string(),
+            target_box: "team".to_string(),
+        });
+    }
+    crate::typed_authoring::OlogFragmentV1 {
+        boxes: vec![
+            crate::typed_authoring::OlogBoxV1 {
+                box_id: "employee".to_string(),
+                object_type: "Person".to_string(),
+                label: None,
+            },
+            crate::typed_authoring::OlogBoxV1 {
+                box_id: "team".to_string(),
+                object_type: "Team".to_string(),
+                label: None,
+            },
+        ],
+        relation_boxes: vec![crate::typed_authoring::OlogRelationBoxV1 {
+            box_id: "works_for_fact".to_string(),
+            relation: "WorksFor".to_string(),
+            role_bindings,
+        }],
+        aspects: Vec::new(),
+        path_equations: Vec::new(),
+    }
+}
+
+/// Real negative-then-positive fixture: an olog fragment missing the `employer`
+/// role binding produces a typed hole and an accompanying refinement candidate.
+/// Nested paging over `checked_olog`, `evolution_previews` (Olog variant), and,
+/// after applying the emitted refinement handle, `applied_olog_repair` must all
+/// losslessly reproduce the exact canonical collections -- not just report
+/// non-empty pages.
+#[test]
+fn nested_checked_and_applied_olog_and_evolution_collections_cover_real_repair_flow() -> Result<()>
+{
+    let (_temp, service) = write_workspace()?;
+    let mut base_request = request();
+    base_request.olog_fragment = Some(works_for_olog_fragment(false));
+    let full = service.execute(base_request.clone())?;
+
+    // Negative: the fragment is genuinely incomplete, so checking must fail closed
+    // with a concrete typed hole rather than silently accepting a partial mapping.
+    let checked = full
+        .checked_olog
+        .as_ref()
+        .expect("checked_olog present when olog_fragment is set");
+    assert!(
+        !checked.ok,
+        "expected an incomplete olog fragment to fail checking"
+    );
+    assert!(!checked.typed_holes.is_empty());
+    assert!(
+        !checked.refinement_candidates.is_empty(),
+        "an emitted refinement handle is required to drive the repair flow"
+    );
+    assert!(full
+        .evolution_previews
+        .iter()
+        .any(|preview| matches!(preview, AuthoringEvolutionPreviewV1::Olog(_))));
+
+    for collection in [
+        AuthoringNestedCollectionV1::CheckedOlogTypedHoles,
+        AuthoringNestedCollectionV1::CheckedOlogRefinementCandidates,
+        AuthoringNestedCollectionV1::EvolutionOlogPrimitives,
+        AuthoringNestedCollectionV1::EvolutionOlogResidualObligations,
+        AuthoringNestedCollectionV1::EvolutionOlogRefinementCandidates,
+    ] {
+        let expected = canonical_nested_collection(&full, collection)?;
+        let mut nested_req = base_request.clone();
+        nested_req.presentation.nested = Some(AuthoringNestedPageRequestV1 {
+            collection,
+            limit: 1,
+            byte_limit: MAX_NESTED_BYTE_LIMIT,
+            cursor: None,
+        });
+        let mut actual = Vec::new();
+        loop {
+            let response = compact(&service, nested_req.clone())?;
+            let page = response.nested_page.expect("requested nested page");
+            assert_eq!(page.collection, collection);
+            for item in &page.items {
+                actual.push(serde_json::from_str::<Value>(&item.canonical_item_json)?);
+            }
+            let next_cursor = page.next_cursor;
+            nested_req.presentation.nested.as_mut().unwrap().cursor = next_cursor.clone();
+            if next_cursor.is_none() {
+                break;
+            }
+        }
+        assert_eq!(actual, expected, "{collection:?}");
+    }
+
+    // Positive: apply the emitted handle. The repaired fragment must check clean,
+    // and `applied_olog_repair`'s refinement candidates must page losslessly too.
+    let handle_id = checked.refinement_candidates[0].handle.id.clone();
+    let mut applied_request = base_request.clone();
+    applied_request.query_ir_v1 = None;
+    applied_request.focus_variable = None;
+    applied_request.apply_refinement_handle_id = Some(handle_id);
+    let applied_full = service.execute(applied_request.clone())?;
+    let applied = applied_full
+        .applied_olog_repair
+        .as_ref()
+        .expect("applied_olog_repair present after apply_refinement_handle_id");
+    assert!(
+        applied.checked_fragment.ok
+            || !applied.checked_fragment.typed_holes.iter().any(|hole| {
+                hole.kind == crate::typed_authoring::OlogTypedHoleKindV1::MissingRelationRoleBinding
+            }),
+        "applying the emitted handle must resolve the missing role binding"
+    );
+
+    let expected = canonical_nested_collection(
+        &applied_full,
+        AuthoringNestedCollectionV1::AppliedOlogRepairRefinementCandidates,
+    )?;
+    let mut nested_req = applied_request.clone();
+    nested_req.presentation.nested = Some(AuthoringNestedPageRequestV1 {
+        collection: AuthoringNestedCollectionV1::AppliedOlogRepairRefinementCandidates,
+        limit: 1,
+        byte_limit: MAX_NESTED_BYTE_LIMIT,
+        cursor: None,
+    });
+    let mut actual = Vec::new();
+    loop {
+        let response = compact(&service, nested_req.clone())?;
+        let page = response.nested_page.expect("requested nested page");
+        for item in &page.items {
+            actual.push(serde_json::from_str::<Value>(&item.canonical_item_json)?);
+        }
+        let next_cursor = page.next_cursor;
+        nested_req.presentation.nested.as_mut().unwrap().cursor = next_cursor.clone();
+        if next_cursor.is_none() {
+            break;
+        }
+    }
+    assert_eq!(actual, expected);
+    Ok(())
+}
+
+/// Real negative test: requesting a nested collection with an oversized byte_limit
+/// or a stale/foreign cursor must fail closed with an explicit error, not silently
+/// truncate or return another collection's page.
+#[test]
+fn nested_evolution_and_checked_olog_collections_reject_invalid_requests() -> Result<()> {
+    let (_temp, service) = write_workspace()?;
+    let mut req = request();
+    req.olog_fragment = Some(works_for_olog_fragment(false));
+
+    // Oversized byte_limit must be rejected before any items are computed.
+    req.presentation.nested = Some(AuthoringNestedPageRequestV1 {
+        collection: AuthoringNestedCollectionV1::CheckedOlogTypedHoles,
+        limit: 1,
+        byte_limit: MAX_NESTED_BYTE_LIMIT + 1,
+        cursor: None,
+    });
+    assert!(service.execute_response(req.clone()).is_err());
+
+    // A cursor issued for one collection must not validate against another.
+    req.presentation.nested = Some(AuthoringNestedPageRequestV1 {
+        collection: AuthoringNestedCollectionV1::CheckedOlogTypedHoles,
+        limit: 1,
+        byte_limit: MAX_NESTED_BYTE_LIMIT,
+        cursor: None,
+    });
+    let response = compact(&service, req.clone())?;
+    let stray_cursor = response
+        .nested_page
+        .and_then(|page| page.next_cursor)
+        .unwrap_or_else(|| "not-a-real-cursor".to_string());
+    req.presentation.nested = Some(AuthoringNestedPageRequestV1 {
+        collection: AuthoringNestedCollectionV1::EvolutionOlogPrimitives,
+        limit: 1,
+        byte_limit: MAX_NESTED_BYTE_LIMIT,
+        cursor: Some(stray_cursor),
+    });
+    assert!(
+        service.execute_response(req).is_err(),
+        "a cursor bound to one collection must not validate against a different collection"
+    );
     Ok(())
 }

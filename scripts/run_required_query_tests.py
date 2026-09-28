@@ -27,6 +27,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--cargo", default="cargo")
     parser.add_argument("--package", required=True)
     parser.add_argument("--filter", required=True)
+    parser.add_argument("--serial", action="store_true")
     args = parser.parse_args(argv)
     if not args.package.strip() or not args.filter.strip():
         parser.error("package and filter must be nonempty")
@@ -45,6 +46,8 @@ def main(argv: list[str] | None = None) -> int:
         "--color",
         "never",
     ]
+    if args.serial:
+        command.append("--test-threads=1")
     try:
         result = run_bounded(
             command,

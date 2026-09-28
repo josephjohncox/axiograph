@@ -2,6 +2,8 @@
 
 # Summary
 
+**Claim status:** `current_implementation`.
+
 [Welcome](index.md)
 
 # I. The System
@@ -23,7 +25,9 @@
 
 # III. Proof-Carrying Claims
 
+- [Documentation claim status](reference/CLAIM_STATUS.md)
 - [The trusted kernel](reference/TRUSTED_KERNEL.md)
+- [Canonical `.axi` V1 contract](reference/CANONICAL_AXI_V1_CONTRACT.md)
 - [Compiled kernel IR](reference/KERNEL_IR.md)
 - [Certificates](reference/CERTIFICATES.md)
 - [Runtime theory checking](reference/RUNTIME_THEORY_CHECKER.md)
@@ -69,6 +73,7 @@
 - [Query language](reference/QUERY_LANG.md)
 - [Canonical `.axi` style](reference/AXI_STYLE.md)
 - [Rust architecture](reference/RUST_ARCHITECTURE_CLEANUP.md)
+- [Agent context](reference/AGENT_CONTEXT.md)
 - [Applied category and type theory](research/APPLIED_CATEGORY_TYPE_THEORY_FOR_AXIograph.md)
 - [Production-readiness roadmap](roadmaps/ROADMAP_PRODUCTION_READINESS.md)
 - [Engineering quality baseline audit (70c568b)](reference/ENGINEERING_AUDIT_70C568B.md)

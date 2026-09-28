@@ -9,6 +9,16 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize, Serializer};
 
+trait CanonicalSyntaxTrim {
+    fn trim_axi(&self) -> &str;
+}
+
+impl CanonicalSyntaxTrim for str {
+    fn trim_axi(&self) -> &str {
+        self.trim_matches(|c| matches!(c, ' ' | '\t' | '\n' | '\r'))
+    }
+}
+
 use axiograph_dsl::schema_v1::{
     parse_path_expr_v3, CarrierFieldsV1, ConstraintV1, PathExprV3, RewriteRuleV1, RewriteVarTypeV1,
     SchemaV1Instance, SchemaV1Module, SchemaV1Schema, SchemaV1Theory, SetItemV1,
@@ -998,6 +1008,12 @@ impl RuntimeSchemaIndex {
 
     pub fn has_object_type(&self, name: &str) -> bool {
         self.object_types.contains(name)
+    }
+
+    /// Equation endpoint values can be declared object types or relation objects.
+    /// Subtyping remains defined only between declared object types.
+    pub fn has_value_type(&self, name: &str) -> bool {
+        self.has_object_type(name) || self.relations.contains_key(name)
     }
 
     pub fn type_matches_or_subtypes(&self, actual: &str, expected: &str) -> bool {
@@ -2081,8 +2097,8 @@ fn variable_ref_for_rewrite_declaration(
     declaration: &str,
 ) -> Option<TheoryVariableRefIr> {
     let (name, raw_ty) = declaration.split_once(':')?;
-    let name = name.trim();
-    let ty = raw_ty.trim();
+    let name = name.trim_axi();
+    let ty = raw_ty.trim_axi();
     if let Some(inner) = ty
         .strip_prefix("Path(")
         .and_then(|value| value.strip_suffix(')'))
@@ -2093,8 +2109,8 @@ fn variable_ref_for_rewrite_declaration(
             name,
             TheoryVariableKindIr::Path,
             None,
-            Some(from.trim().to_string()),
-            Some(to.trim().to_string()),
+            Some(from.trim_axi().to_string()),
+            Some(to.trim_axi().to_string()),
         ));
     }
 
@@ -3029,7 +3045,7 @@ pub fn derive_runtime_theory_index(
     let mut path_equations = Vec::new();
     let mut opaque_equations = Vec::new();
     for equation in &theory.equations {
-        if equation.name.trim().is_empty() {
+        if equation.name.trim_axi().is_empty() {
             return Err(format!(
                 "theory `{}` has an equation with an empty name",
                 theory.name
@@ -3220,7 +3236,7 @@ fn derive_rewrite_rule_index(
     rule: &RewriteRuleV1,
     rewrite_rule_names: &mut HashSet<String>,
 ) -> Result<RewriteRuleIr, String> {
-    if rule.name.trim().is_empty() {
+    if rule.name.trim_axi().is_empty() {
         return Err(format!(
             "theory `{}` has a rewrite rule with an empty name",
             theory.name
@@ -3392,10 +3408,11 @@ fn rewrite_typing_env(
         object_vars: HashMap::new(),
         path_vars: HashMap::new(),
     };
+    let mut seen_variable_names = HashSet::new();
     let mut pending_paths = Vec::new();
 
     for var in &rule.vars {
-        if env.object_vars.contains_key(&var.name) || env.path_vars.contains_key(&var.name) {
+        if !seen_variable_names.insert(var.name.as_str()) {
             return Err(format!(
                 "theory `{}` rewrite `{}` reuses variable name `{}`",
                 theory.name, rule.name, var.name
@@ -3639,7 +3656,7 @@ fn constraint_field_refs(
             ))
         }
         ConstraintV1::Typing { rule, .. } => {
-            if rule.trim().is_empty() {
+            if rule.trim_axi().is_empty() {
                 return Err(format!(
                     "theory `{}` typing constraint on relation `{}` has an empty rule name",
                     theory.name, relation_name
@@ -3826,13 +3843,13 @@ fn infer_equation_expr_endpoints(
                     rel, compiled_schema.schema_id
                 )
             })?;
-            unify_object_requirement(
+            unify_equation_value_requirement(
                 compiled_schema,
                 &mut env.object_vars,
                 from,
                 &src_role.target_type,
             )?;
-            unify_object_requirement(
+            unify_equation_value_requirement(
                 compiled_schema,
                 &mut env.object_vars,
                 to,
@@ -3857,15 +3874,15 @@ fn infer_equation_expr_endpoints(
     }
 }
 
-fn unify_object_requirement(
+fn unify_equation_value_requirement(
     compiled_schema: &RuntimeSchemaIndex,
     object_vars: &mut HashMap<String, String>,
     variable: &str,
     expected_type: &str,
 ) -> Result<(), String> {
-    if !compiled_schema.has_object_type(expected_type) {
+    if !compiled_schema.has_value_type(expected_type) {
         return Err(format!(
-            "unknown object type `{}` in schema `{}`",
+            "unknown value type `{}` in schema `{}`",
             expected_type, compiled_schema.schema_id
         ));
     }

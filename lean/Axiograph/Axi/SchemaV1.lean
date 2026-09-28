@@ -38,7 +38,7 @@ abbrev Name : Type := String
 inductive RefinementPredicateV1 where
   | equals (value : Name)
   | memberOf (values : Array Name)
-  | cardinality (min max : Nat)
+  | cardinality (min max : UInt32)
   | key (roles : Array Name)
   | enum (values : Array Name)
   | predicate (name : Name) (args : Array Name)
@@ -136,7 +136,7 @@ deriving Repr, DecidableEq
 
 inductive ConstraintV1 where
   | functional (relation srcField dstField : Name)
-  | atMost (relation srcField dstField : Name) (max : Nat) (params : Option (Array Name))
+  | atMost (relation srcField dstField : Name) (max : UInt32) (params : Option (Array Name))
   /-- A first-class typing rule annotation for a relation (metadata today). -/
   | typing (relation : Name) (rule : Name)
   /-- Conditional symmetry: only enforce symmetry for tuples whose `field` value is in `values`. -/
@@ -274,17 +274,68 @@ currentSection : Section
 moduleHeaderLine : Option Nat
 deriving Repr
 
+def maxCanonicalSyntaxDepth : Nat := 64
+
+def validateAxiDelimiters (text : String) : Except ParseError Unit := do
+  let mut stack : List Char := []
+  let mut quote : Option Char := none
+  let mut escaped := false
+  let mut comment := false
+  let mut previousUnquotedDash := false
+  let mut line : Nat := 1
+  for c in text.toList do
+    if c == '\n' then
+      line := line + 1
+      comment := false
+      previousUnquotedDash := false
+      continue
+    if comment then
+      continue
+    match quote with
+    | some activeQuote =>
+        previousUnquotedDash := false
+        if escaped then
+          escaped := false
+        else if c == '\\' then
+          escaped := true
+        else if c == activeQuote then
+          quote := none
+        continue
+    | none => pure ()
+    if c == '-' && previousUnquotedDash then
+      comment := true
+      previousUnquotedDash := false
+      continue
+    previousUnquotedDash := c == '-'
+    if c == '#' then
+      comment := true
+      previousUnquotedDash := false
+    else if c == '\"' || c == '\'' then
+      quote := some c
+    else if c == '(' || c == '[' || c == '{' then
+      stack := c :: stack
+      if stack.length > maxCanonicalSyntaxDepth then
+        throw { line, message := s!"syntax nesting exceeds {maxCanonicalSyntaxDepth} delimiters" }
+    else if c == ')' then
+      match stack with
+      | '(' :: rest => stack := rest
+      | _ => throw { line, message := "unbalanced syntax delimiter" }
+    else if c == ']' then
+      match stack with
+      | '[' :: rest => stack := rest
+      | _ => throw { line, message := "unbalanced syntax delimiter" }
+    else if c == '}' then
+      match stack with
+      | '{' :: rest => stack := rest
+      | _ => throw { line, message := "unbalanced syntax delimiter" }
+  if quote.isSome || escaped || !stack.isEmpty then
+    throw { line, message := "unbalanced quoted string or syntax delimiter" }
+
 def emptyModule : SchemaV1Module :=
 { moduleName := "Unnamed", imports := #[], schemas := #[], theories := #[], instances := #[] }
 
 def failAt {α : Type} (line : Nat) (message : String) : Except ParseError α :=
   throw { line, message }
-
-def trimTrailingColon (s : String) : String :=
-  let trimmed := s.trimAscii.toString
-  match trimmed.toList.reverse with
-  | ':' :: restRev => String.ofList restRev.reverse
-  | _ => trimmed
 
 def findCommentIndex (chars : List Char) : Option Nat :=
   let rec go (i : Nat) : List Char → Option Nat
@@ -349,20 +400,60 @@ def dropOffsetPrefix (s : String) : String :=
   | [_] => s
   | _prefix :: rest => String.intercalate ": " rest
 
+def isAsciiSyntaxWhitespace (c : Char) : Bool :=
+  c.toNat == 9 || c.toNat == 10 || c.toNat == 13 || c.toNat == 32
+
+def startsWithSyntaxKeyword (text keyword : String) : Bool :=
+  if text == keyword then
+    true
+  else
+    match stripPrefix? text keyword with
+    | some rest =>
+        match rest.toList.head? with
+        | some first => isAsciiSyntaxWhitespace first
+        | none => false
+    | none => false
+
+def isNoncanonicalSyntaxWhitespace (c : Char) : Bool :=
+  let codepoint := c.toNat
+  codepoint == 11 || codepoint == 12 || codepoint == 133 || codepoint == 160 ||
+    codepoint == 5760 || (8192 ≤ codepoint && codepoint ≤ 8202) ||
+    codepoint == 8232 || codepoint == 8233 || codepoint == 8239 ||
+    codepoint == 8287 || codepoint == 12288
+
+def startsWithNoncanonicalKeywordWhitespace (text keyword : String) : Bool :=
+  match stripPrefix? text keyword with
+  | some rest =>
+      match rest.toList.head? with
+      | some first => isNoncanonicalSyntaxWhitespace first
+      | none => false
+  | none => false
+
+def asciiWs : LineParser Unit := do
+  let _ ← many (satisfy isAsciiSyntaxWhitespace)
+  pure ()
+
 def runLineParser (p : LineParser α) (input : String) : Except String α :=
-  match Parser.run (p <* ws <* eof) input with
+  match Parser.run (p <* asciiWs <* eof) input with
   | .ok v => .ok v
   | .error err => .error (dropOffsetPrefix err)
 
 def ws1 : LineParser Unit := do
-  let _ ← many1 (satisfy (fun c => c.isWhitespace))
+  let _ ← many1 (satisfy isAsciiSyntaxWhitespace)
   pure ()
 
+def isAsciiAlpha (c : Char) : Bool :=
+  ('A'.toNat ≤ c.toNat && c.toNat ≤ 'Z'.toNat) ||
+    ('a'.toNat ≤ c.toNat && c.toNat ≤ 'z'.toNat)
+
+def isAsciiDigit (c : Char) : Bool :=
+  '0'.toNat ≤ c.toNat && c.toNat ≤ '9'.toNat
+
 def isIdentStart (c : Char) : Bool :=
-  c.isAlpha || c == '_'
+  isAsciiAlpha c || c == '_'
 
 def isIdentContinue (c : Char) : Bool :=
-  c.isAlphanum || c == '_'
+  isAsciiAlpha c || isAsciiDigit c || c == '_'
 
 def identifier : LineParser Name := do
   let first ← satisfy isIdentStart
@@ -371,16 +462,25 @@ def identifier : LineParser Name := do
 
 def valueAtom : LineParser Name := do
   let chars ← many1 (satisfy (fun c =>
-    !c.isWhitespace && c != ',' && c != '(' && c != ')' && c != '{' &&
+    !isAsciiSyntaxWhitespace c && c != ',' && c != '(' && c != ')' && c != '{' &&
       c != '}' && c != '=' && c != ':'))
   pure <| String.ofList chars.toList
 
 def natLiteral : LineParser Nat := do
-  let digits ← many1 (satisfy Char.isDigit)
+  let digits ← many1 (satisfy isAsciiDigit)
   let s := String.ofList digits.toList
   match s.toNat? with
   | some n => pure n
   | none => fail "expected a natural number"
+
+def maxCanonicalUInt32 : Nat := 4294967295
+
+def uint32Literal (overflowMessage : String) : LineParser UInt32 := do
+  let value ← natLiteral
+  if value ≤ maxCanonicalUInt32 then
+    pure (UInt32.ofNat value)
+  else
+    fail overflowMessage
 
 partial def sepBy1Core (p : LineParser α) (sep : LineParser Unit) (acc : Array α) : LineParser (Array α) :=
   (attempt do
@@ -399,33 +499,50 @@ def sepBy (p : LineParser α) (sep : LineParser Unit) : LineParser (Array α) :=
 -- Header parsers
 -- =============================================================================
 
+def parseOptionalSingleColonHeaderPayload (rest what : String) : Except String String := do
+  let trimmed := rest.trimAscii.toString
+  let payload :=
+    match trimmed.toList.reverse with
+    | ':' :: remaining => String.ofList remaining.reverse |>.trimAscii.toString
+    | _ => trimmed
+  if payload.isEmpty || payload.endsWith ":" then
+    throw s!"{what} header expects canonical content and at most one trailing `:`"
+  pure payload
+
+def parseOptionalColonNameHeader (rest what : String) : Except String Name := do
+  let payload ← parseOptionalSingleColonHeaderPayload rest what
+  match runLineParser identifier payload with
+  | .ok value => pure value
+  | .error _ => throw s!"{what} header expects one identifier and at most one trailing `:`"
+
+def parseSchemaHeader (rest : String) : Except String Name :=
+  parseOptionalColonNameHeader rest "schema"
+
 def parseTheoryHeader (rest : String) : Except String (Name × Name) := do
+  let payload ← parseOptionalSingleColonHeaderPayload rest "theory"
   let p : LineParser (Name × Name) := do
-    ws
+    asciiWs
     let name ← identifier
     ws1
     skipString "on"
     ws1
     let schema ← identifier
-    ws
-    ((skipChar ':' *> pure ()) <|> pure ())
     pure (name, schema)
-  match runLineParser p rest with
+  match runLineParser p payload with
   | .ok v => pure v
   | .error _ => throw "theory header expects: `theory <Name> on <Schema>:`"
 
 def parseInstanceHeader (rest : String) : Except String (Name × Name) := do
+  let payload ← parseOptionalSingleColonHeaderPayload rest "instance"
   let p : LineParser (Name × Name) := do
-    ws
+    asciiWs
     let name ← identifier
     ws1
     skipString "of"
     ws1
     let schema ← identifier
-    ws
-    ((skipChar ':' *> pure ()) <|> pure ())
     pure (name, schema)
-  match runLineParser p rest with
+  match runLineParser p payload with
   | .ok v => pure v
   | .error _ => throw "instance header expects: `instance <Name> of <Schema>:`"
 
@@ -435,10 +552,10 @@ def parseInstanceHeader (rest : String) : Except String (Name × Name) := do
 
 def parseSubtypeDecl (rest : String) : Except String SubtypeDeclV1 := do
   let p : LineParser SubtypeDeclV1 := do
-    ws
+    asciiWs
     let sub ← identifier
     ws1
-    (skipString "<:" <|> (skipChar '<' *> pure ()))
+    skipChar '<'
     ws1
     let sup ← identifier
     let inclusion ←
@@ -453,52 +570,64 @@ def parseSubtypeDecl (rest : String) : Except String SubtypeDeclV1 := do
   | .error msg => throw msg
 
 def commaParser : LineParser Unit := do
-  ws
+  asciiWs
   skipChar ','
-  ws
+  asciiWs
 
 def pipeParser : LineParser Unit := do
-  ws
+  asciiWs
   skipChar '|'
-  ws
+  asciiWs
 
 def semicolonParser : LineParser Unit := do
-  ws
+  asciiWs
   skipChar ';'
-  ws
+  asciiWs
 
 partial def refinementPredicateParser : LineParser RefinementPredicateV1 :=
   (attempt do
     skipString "eq("
+    asciiWs
     let value ← identifier
+    asciiWs
     skipChar ')'
     pure (.equals value)) <|>
   (attempt do
     skipString "in("
+    asciiWs
     let values ← sepBy1 identifier pipeParser
+    asciiWs
     skipChar ')'
     pure (.memberOf values)) <|>
   (attempt do
     skipString "enum("
+    asciiWs
     let values ← sepBy1 identifier pipeParser
+    asciiWs
     skipChar ')'
     pure (.enum values)) <|>
   (attempt do
     skipString "key("
+    asciiWs
     let roles ← sepBy1 identifier pipeParser
+    asciiWs
     skipChar ')'
     pure (.key roles)) <|>
   (attempt do
     skipString "cardinality("
-    let min ← natLiteral
+    asciiWs
+    let min ← uint32Literal "cardinality minimum must be a u32"
     pipeParser
-    let max ← natLiteral
+    let max ← uint32Literal "cardinality maximum must be a u32"
+    asciiWs
     skipChar ')'
     if min ≤ max then pure (.cardinality min max)
     else fail "cardinality minimum exceeds maximum") <|>
   (attempt do
     skipString "predicate("
+    asciiWs
     let names ← sepBy1 identifier pipeParser
+    asciiWs
     skipChar ')'
     match names[0]? with
     | none => fail "predicate must name a supported predicate"
@@ -507,21 +636,27 @@ partial def refinementPredicateParser : LineParser RefinementPredicateV1 :=
 partial def typeExprParser : LineParser TypeExprV1 :=
   (attempt do
     skipString "relation("
+    asciiWs
     let relation ← identifier
+    asciiWs
     skipChar ')'
     pure (.relationObject relation)) <|>
   (attempt do
     skipString "indexed("
+    asciiWs
     let base ← typeExprParser
     semicolonParser
     let roles ← sepBy1 identifier pipeParser
+    asciiWs
     skipChar ')'
     pure (.indexed base roles)) <|>
   (attempt do
     skipString "refined("
+    asciiWs
     let base ← typeExprParser
     semicolonParser
     let predicates ← sepBy1 refinementPredicateParser semicolonParser
+    asciiWs
     skipChar ')'
     pure (.refined base predicates)) <|>
   (.object <$> identifier)
@@ -540,24 +675,24 @@ def roleKindParser : LineParser RoleKindV1 := do
 
 def parseRelationDecl (line : String) : Except String RelationDeclV1 := do
   let fieldDecl : LineParser FieldDeclV1 := do
-    ws
+    asciiWs
     let field ← identifier
-    ws
+    asciiWs
     skipChar ':'
-    ws
+    asciiWs
     let ty ← typeExprParser
     let kind ← (attempt (ws1 *> roleKindParser)) <|> pure .data
     pure { field, ty, kind }
 
   let p : LineParser RelationDeclV1 := do
-    ws
+    asciiWs
     skipString "relation"
     ws1
     let name ← identifier
-    ws
+    asciiWs
     skipChar '('
     let fields ← sepBy1 fieldDecl commaParser
-    ws
+    asciiWs
     skipChar ')'
     pure { name, fields }
 
@@ -567,19 +702,19 @@ def parseRelationDecl (line : String) : Except String RelationDeclV1 := do
 
 def parseGeneratorDecl (line : String) : Except String GeneratorDeclV1 := do
   let p : LineParser GeneratorDeclV1 := do
-    ws
+    asciiWs
     let kind ←
       (skipString "aspect" *> pure GeneratorKindV1.aspect) <|>
       (skipString "function" *> pure GeneratorKindV1.function)
     ws1
     let name ← identifier
-    ws
+    asciiWs
     skipChar ':'
-    ws
+    asciiWs
     let source ← identifier
-    ws
+    asciiWs
     skipString "->"
-    ws
+    asciiWs
     let target ← identifier
     let reversible ←
       (attempt do ws1; skipString "@reversible"; pure true) <|> pure false
@@ -592,6 +727,9 @@ def parseGeneratorDecl (line : String) : Except String GeneratorDeclV1 := do
 
 def parseConstraint (rest : String) : Except String ConstraintV1 := do
   let trimmed := rest.trimAscii.toString
+  let families := ["functional", "at_most", "typing", "symmetric", "transitive", "key"]
+  if families.any (startsWithNoncanonicalKeywordWhitespace trimmed) then
+    throw "constraint family keyword requires canonical ASCII separating whitespace"
 
   let relField : LineParser (Name × Name) := do
     let rel ← identifier
@@ -599,98 +737,83 @@ def parseConstraint (rest : String) : Except String ConstraintV1 := do
     let field ← identifier
     pure (rel, field)
 
-  if startsWith trimmed "functional " then
+  if startsWithSyntaxKeyword trimmed "functional" then
     let p : LineParser ConstraintV1 := do
       skipString "functional"
       ws1
       let (rel1, srcField) ← relField
-      ws
+      asciiWs
       skipString "->"
-      ws
+      asciiWs
       let (rel2, dstField) ← relField
       if rel1 == rel2 then
         pure (.functional rel1 srcField dstField)
       else
-        -- Keep parsing robust across dialect variations. Rust treats mismatched
-        -- relation references as an unknown constraint instead of failing the
-        -- entire module parse.
-        pure (.unknown trimmed)
+        fail "functional expects both fields to use one relation"
     match runLineParser p trimmed with
     | .ok v => return v
     | .error _msg =>
-        -- Some non-canonical `.axi` sources use more declarative forms like:
-        --
-        --   `constraint functional Rel(field0, field1, ...)`
-        --   `constraint functional Rel(field0, ...) -> Rel.someOutput`
-        --
-        -- These are *not canonical* in axi_v1 today. Prefer:
-        -- - `constraint functional Rel.field -> Rel.field` for unary FDs, and
-        -- - `constraint key Rel(field0, field1, ...)` for multi-field determinism.
-        --
-        -- For now we keep parsing robust (and keep the text visible) without
-        -- making these dialect forms part of the trusted core.
-        return (.unknown trimmed)
-  else if startsWith trimmed "at_most " then
+        throw "functional expects: `functional Rel.field -> Rel.field` on one relation"
+  else if startsWithSyntaxKeyword trimmed "at_most" then
     let comma : LineParser Unit := do
-      ws
+      asciiWs
       skipChar ','
-      ws
+      asciiWs
       pure ()
     let paramClauseP : LineParser (Array Name) := do
       ws1
       skipString "param"
       ws1
       skipChar '('
-      ws
+      asciiWs
       let xs ← sepBy1 identifier comma
-      ws
+      asciiWs
       skipChar ')'
       pure xs
     let p : LineParser ConstraintV1 := do
       skipString "at_most"
       ws1
-      let max ← natLiteral
+      let max ← uint32Literal "at_most expects a non-negative integer bound within u32"
       ws1
       let (rel1, srcField) ← relField
-      ws
+      asciiWs
       skipString "->"
-      ws
+      asciiWs
       let (rel2, dstField) ← relField
       let params ← (attempt (some <$> paramClauseP)) <|> pure none
       if rel1 == rel2 then
         pure (.atMost rel1 srcField dstField max params)
       else
-        pure (.unknown trimmed)
+        fail "at_most expects both fields to use one relation"
     match runLineParser p trimmed with
     | .ok v => return v
     | .error _msg =>
-        return (.unknown trimmed)
-  else if startsWith trimmed "typing " then
+        throw "at_most expects a non-negative integer bound and `Rel.field -> Rel.field` on one relation"
+  else if startsWithSyntaxKeyword trimmed "typing" then
     let p : LineParser ConstraintV1 := do
       skipString "typing"
       ws1
       let relation ← identifier
-      ws
+      asciiWs
       skipChar ':'
-      ws
+      asciiWs
       let rule ← identifier
       pure (.typing relation rule)
     match runLineParser p trimmed with
     | .ok v => return v
     | .error _msg =>
-        -- Keep parsing robust across dialect variations.
-        return (.unknown trimmed)
-  else if startsWith trimmed "symmetric " then
+        throw "typing expects: `typing Relation: rule_name`"
+  else if startsWithSyntaxKeyword trimmed "symmetric" then
     let comma : LineParser Unit := do
-      ws
+      asciiWs
       skipChar ','
-      ws
+      asciiWs
       pure ()
     let nameSet : LineParser (Array Name) := do
       skipChar '{'
-      ws
+      asciiWs
       let xs ← sepBy1 identifier comma
-      ws
+      asciiWs
       skipChar '}'
       pure xs
     let onClauseP : LineParser CarrierFieldsV1 := do
@@ -698,13 +821,13 @@ def parseConstraint (rest : String) : Except String ConstraintV1 := do
       skipString "on"
       ws1
       skipChar '('
-      ws
+      asciiWs
       let left ← identifier
-      ws
+      asciiWs
       skipChar ','
-      ws
+      asciiWs
       let right ← identifier
-      ws
+      asciiWs
       skipChar ')'
       pure { leftField := left, rightField := right }
     let paramClauseP : LineParser (Array Name) := do
@@ -712,9 +835,9 @@ def parseConstraint (rest : String) : Except String ConstraintV1 := do
       skipString "param"
       ws1
       skipChar '('
-      ws
+      asciiWs
       let xs ← sepBy1 identifier comma
-      ws
+      asciiWs
       skipChar ')'
       pure xs
     let closureClausesP : LineParser (Option CarrierFieldsV1 × Option (Array Name)) := do
@@ -733,6 +856,8 @@ def parseConstraint (rest : String) : Except String ConstraintV1 := do
         | .inl on =>
             if carriers.isSome then
               fail "duplicate `on (...)` clause in constraint"
+            if params.isSome then
+              fail "closure clauses must use canonical `on (...) param (...)` order"
             carriers := some on
         | .inr ps =>
             if params.isSome then
@@ -744,18 +869,14 @@ def parseConstraint (rest : String) : Except String ConstraintV1 := do
       skipString "symmetric"
       ws1
       let relation ← identifier
-      -- Optional guard:
-      --   `where Rel.field in {A, B, ...}` (canonical)
-      --   `where field in {A, B, ...}` (shorthand; formatter expands)
+      -- Optional canonical guard: `where Rel.field in {A, B, ...}`.
       let guarded : LineParser ConstraintV1 := do
         ws1
         skipString "where"
         ws1
-        let (rel2, field) ← (attempt relField) <|> (do
-          let field ← identifier
-          pure (relation, field))
+        let (rel2, field) ← relField
         if rel2 != relation then
-          pure (.unknown trimmed)
+          fail "symmetric guard must use the declared relation"
         else
           ws1
           skipString "in"
@@ -772,26 +893,25 @@ def parseConstraint (rest : String) : Except String ConstraintV1 := do
     match runLineParser p trimmed with
     | .ok v => return v
     | .error _msg =>
-        -- Keep parsing robust across dialect variations.
-        return (.unknown trimmed)
-  else if startsWith trimmed "transitive " then
+        throw "symmetric expects a relation name and optional canonical `where ... in {...}` guard"
+  else if startsWithSyntaxKeyword trimmed "transitive" then
     let comma : LineParser Unit := do
-      ws
+      asciiWs
       skipChar ','
-      ws
+      asciiWs
       pure ()
     let onClauseP : LineParser CarrierFieldsV1 := do
       ws1
       skipString "on"
       ws1
       skipChar '('
-      ws
+      asciiWs
       let left ← identifier
-      ws
+      asciiWs
       skipChar ','
-      ws
+      asciiWs
       let right ← identifier
-      ws
+      asciiWs
       skipChar ')'
       pure { leftField := left, rightField := right }
     let paramClauseP : LineParser (Array Name) := do
@@ -799,9 +919,9 @@ def parseConstraint (rest : String) : Except String ConstraintV1 := do
       skipString "param"
       ws1
       skipChar '('
-      ws
+      asciiWs
       let xs ← sepBy1 identifier comma
-      ws
+      asciiWs
       skipChar ')'
       pure xs
     let closureClausesP : LineParser (Option CarrierFieldsV1 × Option (Array Name)) := do
@@ -820,6 +940,8 @@ def parseConstraint (rest : String) : Except String ConstraintV1 := do
         | .inl on =>
             if carriers.isSome then
               fail "duplicate `on (...)` clause in constraint"
+            if params.isSome then
+              fail "closure clauses must use canonical `on (...) param (...)` order"
             carriers := some on
         | .inr ps =>
             if params.isSome then
@@ -835,31 +957,26 @@ def parseConstraint (rest : String) : Except String ConstraintV1 := do
     match runLineParser p trimmed with
     | .ok v => return v
     | .error _msg =>
-        -- Keep parsing robust across dialect variations like:
-        --
-        --   `constraint transitive Rel where ...`
-        --
-        -- We keep the text visible as an unknown constraint so downstream tools
-        -- can surface/repair it, without failing the entire module parse.
-        return (.unknown trimmed)
-  else if startsWith trimmed "key " then
+        throw "transitive expects one relation name and optional canonical closure clauses"
+  else if startsWithSyntaxKeyword trimmed "key" then
     let comma : LineParser Unit := do
-      ws
+      asciiWs
       skipChar ','
-      ws
+      asciiWs
     let p : LineParser ConstraintV1 := do
       skipString "key"
       ws1
       let relation ← identifier
-      ws
+      asciiWs
       skipChar '('
+      asciiWs
       let fieldNames ← sepBy1 identifier comma
-      ws
+      asciiWs
       skipChar ')'
       pure (.key relation fieldNames)
     match runLineParser p trimmed with
     | .ok v => return v
-    | .error msg => throw msg
+    | .error _msg => throw "key expects: `key Relation(field, ...)`"
   else
     pure (.unknown trimmed)
 
@@ -917,24 +1034,24 @@ def parseRewriteOrientation (s : String) : Except String RewriteOrientationV1 :=
   match s.trimAscii.toString with
   | "forward" => pure .forward
   | "backward" => pure .backward
-  | "bidirectional" | "both" => pure .bidirectional
+  | "bidirectional" => pure .bidirectional
   | other => throw s!"unknown rewrite orientation `{other}` (expected forward|backward|bidirectional)"
 
 def parseRewriteVarDeclList (line : String) : Except String (Array RewriteVarDeclV1) := do
   let comma : LineParser Unit := do
-    ws
+    asciiWs
     skipChar ','
-    ws
+    asciiWs
 
   let pathTypeParens : LineParser (Name × Name) := do
     skipChar '('
-    ws
+    asciiWs
     let srcName ← identifier
-    ws
+    asciiWs
     skipChar ','
-    ws
+    asciiWs
     let dstName ← identifier
-    ws
+    asciiWs
     skipChar ')'
     pure (srcName, dstName)
 
@@ -948,23 +1065,23 @@ def parseRewriteVarDeclList (line : String) : Except String (Array RewriteVarDec
   let varType : LineParser RewriteVarTypeV1 :=
     (attempt do
       skipString "Path"
-      ws
-      let (srcName, dstName) ← (attempt pathTypeParens) <|> pathTypeWords
+      let (srcName, dstName) ←
+        (attempt (asciiWs *> pathTypeParens)) <|> pathTypeWords
       pure (.path srcName dstName)) <|> do
         let ty ← identifier
         pure (.object ty)
 
   let varDecl : LineParser RewriteVarDeclV1 := do
-    ws
+    asciiWs
     let name ← identifier
-    ws
+    asciiWs
     skipChar ':'
-    ws
+    asciiWs
     let ty ← varType
     pure { name, ty }
 
   let p : LineParser (Array RewriteVarDeclV1) := do
-    ws
+    asciiWs
     let decls ← sepBy1 varDecl comma <|> pure #[]
     pure decls
 
@@ -973,12 +1090,12 @@ def parseRewriteVarDeclList (line : String) : Except String (Array RewriteVarDec
   | .error msg => throw msg
 
 def commaWs : LineParser Unit := do
-  ws
+  asciiWs
   skipChar ','
-  ws
+  asciiWs
 
 partial def pathExprV3Parser : LineParser PathExprV3 := do
-  ws
+  asciiWs
   (attempt reflExpr) <|> (attempt stepExpr) <|> (attempt transExpr) <|> (attempt invExpr) <|> varExpr
 where
   varExpr : LineParser PathExprV3 := do
@@ -986,46 +1103,46 @@ where
     pure (.var name)
 
   reflExpr : LineParser PathExprV3 := do
-    (skipString "refl" <|> skipString "id")
-    ws
+    skipString "refl"
+    asciiWs
     skipChar '('
-    ws
+    asciiWs
     let entity ← identifier
-    ws
+    asciiWs
     skipChar ')'
     pure (.reflexive entity)
 
   stepExpr : LineParser PathExprV3 := do
     skipString "step"
-    ws
+    asciiWs
     skipChar '('
-    ws
+    asciiWs
     let src ← identifier
     let _ ← commaWs
     let rel ← identifier
     let _ ← commaWs
     let dst ← identifier
-    ws
+    asciiWs
     skipChar ')'
     pure (.step src rel dst)
 
   transExpr : LineParser PathExprV3 := do
     skipString "trans"
-    ws
+    asciiWs
     skipChar '('
     let left ← pathExprV3Parser
     let _ ← commaWs
     let right ← pathExprV3Parser
-    ws
+    asciiWs
     skipChar ')'
     pure (.trans left right)
 
   invExpr : LineParser PathExprV3 := do
     skipString "inv"
-    ws
+    asciiWs
     skipChar '('
     let p ← pathExprV3Parser
-    ws
+    asciiWs
     skipChar ')'
     pure (.inv p)
 
@@ -1048,6 +1165,10 @@ def parseRewriteRuleBlock (ruleName : Name) (lines : Array String) : Except Stri
   let mut lhsLines : Array String := #[]
   let mut rhsLines : Array String := #[]
   let mut orientation? : Option RewriteOrientationV1 := none
+  let mut seenVars := false
+  let mut seenLhs := false
+  let mut seenRhs := false
+  let mut seenOrientation := false
 
   for raw in lines do
     let line := raw.trimAscii.toString
@@ -1055,6 +1176,11 @@ def parseRewriteRuleBlock (ruleName : Name) (lines : Array String) : Except Stri
       continue
 
     if let some rest := stripPrefix? line "vars:" then
+      if current == .orientation then
+        throw s!"rewrite `{ruleName}`: missing orientation value"
+      if seenVars then
+        throw s!"rewrite `{ruleName}`: duplicate `vars:` field"
+      seenVars := true
       current := .vars
       let rest := rest.trimAscii.toString
       if !rest.isEmpty then
@@ -1062,6 +1188,11 @@ def parseRewriteRuleBlock (ruleName : Name) (lines : Array String) : Except Stri
       continue
 
     if let some rest := stripPrefix? line "lhs:" then
+      if current == .orientation then
+        throw s!"rewrite `{ruleName}`: missing orientation value"
+      if seenLhs then
+        throw s!"rewrite `{ruleName}`: duplicate `lhs:` field"
+      seenLhs := true
       current := .lhs
       let rest := rest.trimAscii.toString
       if !rest.isEmpty then
@@ -1069,6 +1200,11 @@ def parseRewriteRuleBlock (ruleName : Name) (lines : Array String) : Except Stri
       continue
 
     if let some rest := stripPrefix? line "rhs:" then
+      if current == .orientation then
+        throw s!"rewrite `{ruleName}`: missing orientation value"
+      if seenRhs then
+        throw s!"rewrite `{ruleName}`: duplicate `rhs:` field"
+      seenRhs := true
       current := .rhs
       let rest := rest.trimAscii.toString
       if !rest.isEmpty then
@@ -1076,6 +1212,11 @@ def parseRewriteRuleBlock (ruleName : Name) (lines : Array String) : Except Stri
       continue
 
     if let some rest := stripPrefix? line "orientation:" then
+      if current == .orientation then
+        throw s!"rewrite `{ruleName}`: missing orientation value"
+      if seenOrientation then
+        throw s!"rewrite `{ruleName}`: duplicate `orientation:` field"
+      seenOrientation := true
       current := .orientation
       let rest := rest.trimAscii.toString
       if !rest.isEmpty then
@@ -1092,6 +1233,11 @@ def parseRewriteRuleBlock (ruleName : Name) (lines : Array String) : Except Stri
         current := .none
     | .none =>
         throw s!"rewrite `{ruleName}`: unexpected line (expected vars/lhs/rhs): `{line}`"
+
+  if current == .orientation then
+    throw s!"rewrite `{ruleName}`: missing orientation value"
+  if !seenVars then
+    throw s!"rewrite `{ruleName}`: missing `vars:`"
 
   let mut vars : Array RewriteVarDeclV1 := #[]
   for vLine in varsLines do
@@ -1212,32 +1358,31 @@ partial def collectBalancedBraces (lines : Array String) (startIndex : Nat) (fir
 
 def parseSetLiteral (text : String) : Except String SetLiteralV1 := do
   let comma : LineParser Unit := do
-    ws
+    asciiWs
     skipChar ','
-    ws
+    asciiWs
 
   let tupleField : LineParser (Name × Name) := do
-    ws
+    asciiWs
     let key ← identifier
-    ws
+    asciiWs
     skipChar '='
-    ws
+    asciiWs
     let value ← valueAtom
     pure (key, value)
 
   let tupleBody : LineParser (Array (Name × Name)) := do
     skipChar '('
     let fields ← sepBy1 tupleField comma
-    ((attempt comma) <|> pure ())
-    ws
+    asciiWs
     skipChar ')'
     pure fields
 
   let labeledTupleItem : LineParser SetItemV1 := do
     let label ← identifier
-    ws
+    asciiWs
     skipChar ':'
-    ws
+    asciiWs
     let fields ← tupleBody
     pure (.tuple (some label) fields)
 
@@ -1246,18 +1391,16 @@ def parseSetLiteral (text : String) : Except String SetLiteralV1 := do
     pure (.tuple none fields)
 
   let setItem : LineParser SetItemV1 :=
-    (attempt labeledTupleItem) <|> (attempt tupleItem) <|>
-    (attempt do let value ← natLiteral; pure (.ident (toString value))) <|> do
+    (attempt labeledTupleItem) <|> (attempt tupleItem) <|> do
       let name ← valueAtom
       pure (.ident name)
 
   let p : LineParser SetLiteralV1 := do
-    ws
+    asciiWs
     skipChar '{'
-    ws
+    asciiWs
     let items ← sepBy setItem comma
-    ((attempt comma) <|> pure ())
-    ws
+    asciiWs
     skipChar '}'
     pure { items }
 
@@ -1270,6 +1413,7 @@ def parseSetLiteral (text : String) : Except String SetLiteralV1 := do
 -- =============================================================================
 
 partial def parseSchemaV1 (text : String) : Except ParseError SchemaV1Module := do
+  validateAxiDelimiters text
   let lines : Array String := text.splitOn "\n" |>.toArray
   let mut state : ParseState := {
     moduleAst := emptyModule
@@ -1298,6 +1442,9 @@ partial def parseSchemaV1 (text : String) : Except ParseError SchemaV1Module := 
       | some firstLine =>
           return (← failAt lineNo s!"canonical .axi input requires exactly one module header; first header was on line {firstLine}")
       | none =>
+          if !state.moduleAst.schemas.isEmpty || !state.moduleAst.theories.isEmpty ||
+              !state.moduleAst.instances.isEmpty then
+            return (← failAt lineNo "the module header must be the first canonical header")
           state := {
             state with
             moduleAst := { state.moduleAst with moduleName }
@@ -1306,6 +1453,9 @@ partial def parseSchemaV1 (text : String) : Except ParseError SchemaV1Module := 
           }
       i := i + 1
       continue
+
+    if state.moduleHeaderLine.isNone then
+      return (← failAt lineNo "the module header must be the first canonical header")
 
     if let some importText := stripPrefix? line "import " then
       if state.moduleHeaderLine.isNone || state.currentSection != .none then
@@ -1321,9 +1471,10 @@ partial def parseSchemaV1 (text : String) : Except ParseError SchemaV1Module := 
       continue
 
     if let some rest := stripPrefix? line "schema " then
-      let schemaName := trimTrailingColon rest
-      if schemaName.isEmpty then
-        return (← failAt lineNo "schema name missing")
+      let schemaName ←
+        match parseSchemaHeader rest with
+        | .ok value => pure value
+        | .error msg => return (← failAt lineNo msg)
       let schema : SchemaV1Schema := { name := schemaName, objects := #[], subtypes := #[], relations := #[], generators := #[] }
       let newIndex := state.moduleAst.schemas.size
       state :=
@@ -1370,9 +1521,10 @@ partial def parseSchemaV1 (text : String) : Except ParseError SchemaV1Module := 
 
     | .schema schemaIndex =>
         if let some name := stripPrefix? line "object " then
-          let objectName := name.trimAscii.toString
-          if objectName.isEmpty then
-            return (← failAt lineNo "object name missing")
+          let objectName ←
+            match runLineParser identifier name with
+            | .ok value => pure value
+            | .error _ => return (← failAt lineNo "object name expects exactly one ASCII identifier")
           let some schemas :=
             updateAt? state.moduleAst.schemas schemaIndex (fun s =>
               { s with objects := s.objects.push objectName })
@@ -1429,10 +1581,20 @@ partial def parseSchemaV1 (text : String) : Except ParseError SchemaV1Module := 
     | .theory theoryIndex =>
         if let some rest := stripPrefix? line "constraint " then
           let restTrim := rest.trimAscii.toString
-          if restTrim.endsWith ":" then
-            let name := trimTrailingColon restTrim
-            if name.isEmpty then
-              return (← failAt lineNo "constraint name missing")
+          let recognizedFamily :=
+            startsWithSyntaxKeyword restTrim "functional" ||
+            startsWithSyntaxKeyword restTrim "at_most" ||
+            startsWithSyntaxKeyword restTrim "typing" ||
+            startsWithSyntaxKeyword restTrim "symmetric" ||
+            startsWithSyntaxKeyword restTrim "transitive" ||
+            startsWithSyntaxKeyword restTrim "key"
+          let namedHeaderCandidate := !recognizedFamily &&
+            (restTrim.toList.contains ':' || !restTrim.toList.any isAsciiSyntaxWhitespace)
+          if namedHeaderCandidate then
+            let name ←
+              match parseOptionalColonNameHeader restTrim "constraint" with
+              | .ok value => pure value
+              | .error msg => return (← failAt lineNo msg)
             let (bodyLines, nextIndex) := collectIndentedBlockLines lines (i + 1)
             let constraint : ConstraintV1 := .namedBlock name bodyLines
             let some theories :=
@@ -1460,9 +1622,10 @@ partial def parseSchemaV1 (text : String) : Except ParseError SchemaV1Module := 
           continue
 
         if let some rest := stripPrefix? line "equation " then
-          let equationName := trimTrailingColon rest
-          if equationName.isEmpty then
-            return (← failAt lineNo "equation name missing")
+          let equationName ←
+            match parseOptionalColonNameHeader rest "equation" with
+            | .ok value => pure value
+            | .error msg => return (← failAt lineNo msg)
           let (equationText, nextIndex) := collectIndentedBlock lines (i + 1)
           let (lhs, rhs) ←
             match splitEquation equationText with
@@ -1478,9 +1641,10 @@ partial def parseSchemaV1 (text : String) : Except ParseError SchemaV1Module := 
           continue
 
         if let some rest := stripPrefix? line "rewrite " then
-          let ruleName := trimTrailingColon rest
-          if ruleName.isEmpty then
-            return (← failAt lineNo "rewrite rule name missing")
+          let ruleName ←
+            match parseOptionalColonNameHeader rest "rewrite" with
+            | .ok value => pure value
+            | .error msg => return (← failAt lineNo msg)
           let (blockLines, nextIndex) := collectIndentedBlockLines lines (i + 1)
           let rule ←
             match parseRewriteRuleBlock ruleName blockLines with
@@ -1499,6 +1663,10 @@ partial def parseSchemaV1 (text : String) : Except ParseError SchemaV1Module := 
     | .instance instanceIndex =>
         match splitAssignment line with
         | some (lhs, rhs) =>
+            let assignmentName ←
+              match runLineParser identifier lhs with
+              | .ok value => pure value
+              | .error _ => return (← failAt lineNo "assignment name expects exactly one ASCII identifier")
             let (setText, nextIndex) ←
               match collectBalancedBraces lines i rhs with
               | .ok v => pure v
@@ -1507,7 +1675,7 @@ partial def parseSchemaV1 (text : String) : Except ParseError SchemaV1Module := 
               match parseSetLiteral setText with
               | .ok v => pure v
               | .error msg => return (← failAt lineNo msg)
-            let assignment : InstanceAssignmentV1 := { name := lhs, value := setLiteral }
+            let assignment : InstanceAssignmentV1 := { name := assignmentName, value := setLiteral }
             let some instances :=
               updateAt? state.moduleAst.instances instanceIndex (fun inst =>
                 { inst with assignments := inst.assignments.push assignment })

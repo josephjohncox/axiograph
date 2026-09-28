@@ -109,9 +109,13 @@ export function initAddTab(ctx: AddContext) {
       setReviewStatus(message);
       return;
     }
+    const validation = ui.draft.kind === "loaded"
+      ? ui.draft.overlay.validation
+      : undefined;
     if (
-      ui.draft.kind === "loaded" &&
-      ui.draft.overlay.validation?.ok === false
+      validation !== undefined &&
+      Object.prototype.hasOwnProperty.call(validation, "ok") &&
+      validation.ok === false
     ) {
       const message = `commit blocked: validation failed; fix proposals first. ${cliGuidance}`;
       setAddStatus(message);

@@ -10,7 +10,13 @@ import scripts.run_required_query_tests as gate
 
 
 class RequiredQueryTests(unittest.TestCase):
-    def run_gate(self, output: str, status: int = 0, selector: str = "prepared_query"):
+    def run_gate(
+        self,
+        output: str,
+        status: int = 0,
+        selector: str = "prepared_query",
+        serial: bool = False,
+    ):
         stdout, stderr = io.StringIO(), io.StringIO()
         result = subprocess.CompletedProcess(
             [], status, output.encode(), b"diagnostic\n"
@@ -20,7 +26,10 @@ class RequiredQueryTests(unittest.TestCase):
             contextlib.redirect_stdout(stdout),
             contextlib.redirect_stderr(stderr),
         ):
-            code = gate.main(["--package", "axiograph-query", "--filter", selector])
+            args = ["--package", "axiograph-query", "--filter", selector]
+            if serial:
+                args.append("--serial")
+            code = gate.main(args)
         return code, stdout.getvalue(), stderr.getvalue(), run
 
     def test_nonempty_selection_runs_library_and_reports_actual_passes(self):
@@ -54,6 +63,18 @@ class RequiredQueryTests(unittest.TestCase):
         self.assertEqual(run.call_args.kwargs["timeout_seconds"], 600)
         self.assertEqual(run.call_args.kwargs["max_stdout_bytes"], 8 * 1024 * 1024)
         self.assertEqual(run.call_args.kwargs["max_stderr_bytes"], 8 * 1024 * 1024)
+
+    def test_serial_verifier_selection_preserves_actual_pass_checks(self):
+        code, stdout, _, run = self.run_gate(
+            "test verifier_bridge::tests::malformed_receipt_is_rejected ... ok\n"
+            "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; "
+            "110 filtered out; finished in 0.01s\n",
+            selector="verifier_bridge::tests",
+            serial=True,
+        )
+        self.assertEqual(code, 0)
+        self.assertIn("passed=1", stdout)
+        self.assertEqual(run.call_args.args[0][-1], "--test-threads=1")
 
     def test_zero_and_all_ignored_selections_reject(self):
         for ignored in (0, 2):

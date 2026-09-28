@@ -109,6 +109,7 @@ impl Default for VizOptions {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VizGraph {
+    pub format: String,
     pub nodes: Vec<VizNode>,
     pub edges: Vec<VizEdge>,
     pub truncated: bool,
@@ -1030,6 +1031,7 @@ pub fn extract_viz_graph_with_meta(
     contexts.sort_by(|a, b| a.name.cmp(&b.name));
 
     Ok(VizGraph {
+        format: "axiograph_viz_graph_v1".to_string(),
         nodes: node_views,
         edges,
         truncated,

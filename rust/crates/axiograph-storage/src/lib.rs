@@ -515,7 +515,7 @@ impl UnifiedStorage {
                         }
                         for subtype in &schema.subtypes {
                             constraints
-                                .insert(format!("subtype {} <: {}", subtype.sub, subtype.sup));
+                                .insert(format!("subtype {} < {}", subtype.sub, subtype.sup));
                         }
                     }
 

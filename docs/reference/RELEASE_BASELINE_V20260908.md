@@ -2,6 +2,12 @@
 
 **Diataxis:** Reference
 **Audience:** contributors
+**Claim status:** `operational_evidence` and `historical_baseline`. See
+[Documentation Claim Status](CLAIM_STATUS.md).
+
+This page records immutable operational evidence for one released source state.
+It is also a historical baseline for later work. It is not a current-tree test
+result or a trusted semantic result.
 
 The parent accepted release `v20260908.0.0` as the engineering-quality baseline.
 Use this release as the start point for later roadmap work.

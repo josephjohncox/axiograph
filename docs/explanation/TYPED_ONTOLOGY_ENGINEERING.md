@@ -359,7 +359,7 @@ From an ontology-engineering perspective, they matter because:
 From a user perspective, this makes exploration materially more useful. The
 system should be able to say:
 
-- "introduce `Pump <: RotatingEquipment`"
+- "introduce `Pump < RotatingEquipment`"
 - "generalize this maintenance rule from `BoilerPump` to `Pump`"
 - "push the `requires_certification` role down from `Equipment` to
   `PressureVessel`"

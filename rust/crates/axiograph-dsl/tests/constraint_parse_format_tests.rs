@@ -30,19 +30,12 @@ fn parses_transitive_with_on_and_param_clause() {
 }
 
 #[test]
-fn parses_param_before_on_even_if_noncanonical() {
-    // Parser should accept either suffix order; formatter will canonicalize.
-    let c = parse_constraint_v1("symmetric R param (ctx) on (a, b)").expect("parse");
-    assert_eq!(
-        c,
-        ConstraintV1::Symmetric {
-            relation: "R".to_string(),
-            carriers: Some(CarrierFieldsV1 {
-                left_field: "a".to_string(),
-                right_field: "b".to_string(),
-            }),
-            params: Some(vec!["ctx".to_string()]),
-        }
+fn rejects_noncanonical_param_before_on_order() {
+    let err = parse_constraint_v1("symmetric R param (ctx) on (a, b)")
+        .expect_err("noncanonical closure-clause order must reject");
+    assert!(
+        err.contains("canonical `on (...) param (...)` order"),
+        "err={err}"
     );
 }
 
@@ -71,34 +64,19 @@ fn rejects_duplicate_on_clause() {
 #[test]
 fn rejects_empty_param_list() {
     let err = parse_constraint_v1("symmetric R param ()").expect_err("should error");
-    assert!(err.contains("param fields clause expects"), "err={err}");
+    assert!(
+        err.contains("param fields must not contain empty"),
+        "err={err}"
+    );
 }
 
 #[test]
-fn parses_where_shorthand_and_formats_to_canonical() {
-    let c = parse_constraint_v1("symmetric Relationship where relType in {Friend, Sibling}")
-        .expect("parse");
-    match &c {
-        ConstraintV1::SymmetricWhereIn {
-            relation,
-            field,
-            values,
-            carriers,
-            params,
-        } => {
-            assert_eq!(relation, "Relationship");
-            assert_eq!(field, "relType");
-            assert_eq!(values, &vec!["Friend".to_string(), "Sibling".to_string()]);
-            assert!(carriers.is_none());
-            assert!(params.is_none());
-        }
-        other => panic!("unexpected constraint: {other:?}"),
-    }
-
-    let formatted = axiograph_dsl::schema_v1::format_constraint_v1(&c).expect("format");
+fn rejects_bare_symmetric_guard_field_shorthand() {
+    let err = parse_constraint_v1("symmetric Relationship where relType in {Friend, Sibling}")
+        .expect_err("bare guard fields are not canonical");
     assert!(
-        formatted.contains("where Relationship.relType in {Friend, Sibling}"),
-        "formatted={formatted}"
+        err.contains("canonical qualified `Relation.field`"),
+        "err={err}"
     );
 }
 
@@ -112,9 +90,8 @@ fn rejects_on_clause_wrong_arity() {
 }
 
 #[test]
-fn formats_suffix_clauses_in_canonical_order() {
-    // Parser should accept either order; formatter should emit `on` then `param`.
-    let c = parse_constraint_v1("symmetric R param (ctx) on (a, b)").expect("parse");
+fn preserves_canonical_suffix_clause_order() {
+    let c = parse_constraint_v1("symmetric R on (a, b) param (ctx)").expect("parse");
     let formatted = axiograph_dsl::schema_v1::format_constraint_v1(&c).expect("format");
     assert_eq!(formatted, "constraint symmetric R on (a, b) param (ctx)");
 }

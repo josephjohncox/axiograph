@@ -294,7 +294,8 @@ async fn handle_request(request: Request<Incoming>, state: Arc<ServerState>) -> 
 }
 
 // Shared, mechanically checked transport profile; no receipt constructors or
-// semantic authority are described here. Query schema remains descriptive.
+// semantic authority are described here. The schema and Serde DTO both close
+// object fields; compilation validates field combinations and semantics.
 fn read_only_capabilities(ui_available: bool) -> Result<serde_json::Value> {
     Ok(serde_json::json!({
         "api": serde_json::from_str::<serde_json::Value>(include_str!(
@@ -399,7 +400,7 @@ instance I of S:
     }
 
     #[test]
-    fn read_only_descriptor_and_descriptive_query_profile_are_checked() -> Result<()> {
+    fn read_only_descriptor_and_closed_query_transport_are_checked() -> Result<()> {
         let caps = read_only_capabilities(false)?;
         assert_eq!(caps["api"]["limits"]["request_bytes"], MAX_QUERY_BODY_BYTES);
         assert_eq!(
@@ -420,6 +421,7 @@ instance I of S:
             assert!(serde_json::from_value::<crate::query_ir::QueryIrV1>(query.clone()).is_ok());
             query["where_atoms"][0]["term"]["extra"] = true.into();
             assert!(!validator.is_valid(&query));
+            assert!(serde_json::from_value::<crate::query_ir::QueryIrV1>(query).is_err());
         }
         for context in [
             serde_json::json!({"kind":"name","name":"world"}),
@@ -430,14 +432,14 @@ instance I of S:
             assert!(serde_json::from_value::<crate::query_ir::QueryIrV1>(query.clone()).is_ok());
             query["contexts"][0]["extra"] = true.into();
             assert!(!validator.is_valid(&query));
+            assert!(serde_json::from_value::<crate::query_ir::QueryIrV1>(query).is_err());
         }
         for query in [
             serde_json::json!({"where_atoms":[]}),
             serde_json::json!({"version":1,"where_atoms":[],"extra":true}),
         ] {
-            // Intentionally NOT claiming schema/deserializer equivalence.
             assert!(!validator.is_valid(&query));
-            assert!(serde_json::from_value::<crate::query_ir::QueryIrV1>(query).is_ok());
+            assert!(serde_json::from_value::<crate::query_ir::QueryIrV1>(query).is_err());
         }
         for request in [
             serde_json::json!({"query":"select ?x where ..."}),

@@ -1,5 +1,9 @@
 # Documentation
 
+**Claim status:** `current_implementation`. Use the
+[claim-status taxonomy](reference/CLAIM_STATUS.md) to interpret current,
+planned, runtime, release, formal, and historical statements.
+
 Axiograph docs are organized around the current canonical semantic spine:
 
 ```text
@@ -34,7 +38,9 @@ of truth.
 
 | Need | Start Here |
 | --- | --- |
+| Canonical `.axi` parser, AST, and exact-byte contract | `docs/reference/CANONICAL_AXI_V1_CONTRACT.md` |
 | Canonical semantic input and compiled IR | `docs/reference/KERNEL_IR.md` |
+| Documentation claim labels and evidence classes | `docs/reference/CLAIM_STATUS.md` |
 | Trusted verification boundary | `docs/reference/TRUSTED_KERNEL.md` |
 | Untrusted I/O and resource-security boundary | `docs/reference/SECURITY_BOUNDARIES.md` |
 | Certificate/report formats | `docs/reference/CERTIFICATES.md` |
@@ -88,8 +94,10 @@ Repo-wide language rule:
 
 ## Reference
 
-- [Engineering audit at 70c568b](reference/ENGINEERING_AUDIT_70C568B.md) — baseline findings, measurements, limits, and linked remediation.
+- [Documentation claim status](reference/CLAIM_STATUS.md) — required labels for design, implementation, runtime, release, formal, and historical claims.
+- [Engineering audit at 70c568b](reference/ENGINEERING_AUDIT_70C568B.md) — historical baseline findings, measurements, limits, and linked remediation.
 - [Released baseline v20260908.0.0](reference/RELEASE_BASELINE_V20260908.md) — accepted release identity, publication evidence, and scope.
+- `docs/reference/CANONICAL_AXI_V1_CONTRACT.md` — canonical AST, exact-byte identity, parser stages, limits, and rejection classes.
 - `docs/reference/CERTIFICATES.md` — current certificate families and Lean validation.
 - `docs/reference/TRUSTED_KERNEL.md` — exact trusted boundary and non-claims.
 - `docs/reference/SECURITY_BOUNDARIES.md` — bounded filesystem, process, network, parser, server, and storage surfaces.

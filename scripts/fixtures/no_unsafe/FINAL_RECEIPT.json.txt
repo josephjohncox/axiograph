@@ -1,0 +1,111 @@
+{
+  "schema": "axiograph.hosted-capability-final-receipt.v1",
+  "task": "observe-hosted-0",
+  "status": "pass",
+  "scope": [
+    "TYPE-05 real-device production-CLI behavior at commit 3824a36c266b8819b79fea391eeb4dc17f70e49e",
+    "CHECK-03 real-bind-mount production-CLI behavior at commit 3824a36c266b8819b79fea391eeb4dc17f70e49e"
+  ],
+  "run": {
+    "id": 34669241286,
+    "attempt": 1,
+    "run_number": 2,
+    "event": "push",
+    "branch": "ci/no-unsafe-capability-tests-20260909-0",
+    "head_sha": "3824a36c266b8819b79fea391eeb4dc17f70e49e",
+    "workflow_path": ".github/workflows/no-unsafe-capability-tests.yml",
+    "status": "completed",
+    "conclusion": "success",
+    "url": "https://github.com/josephjohncox/axiograph/actions/runs/34669241286",
+    "exact_matches": 1,
+    "duplicate_dispatch": false,
+    "polling": "The first exact query found the run completed; one final read-only confirmation was made. No busy polling or dispatch occurred."
+  },
+  "source": {
+    "commit": "3824a36c266b8819b79fea391eeb4dc17f70e49e",
+    "tree": "306442b443ba11e2582805c559a4ccabc74da76f",
+    "workflow_sha256": "6c17d33c7d9e9ba91166db30071d24c54068682500294eea6a77ad4adc547b07",
+    "helper_sha256": "05a734c52659254e98d764967f7c6f0e2b9424ebe2f69cb6b78cb2afe4d06c6f",
+    "local_branch": "engineering-quality/after-v20260908.0.0",
+    "local_source_status": "clean",
+    "local_index": "empty",
+    "remote_test_ref": "3824a36c266b8819b79fea391eeb4dc17f70e49e",
+    "source_index_refs_modified_during_observation": false
+  },
+  "jobs": {
+    "amd64": {
+      "id": 103487307180,
+      "name": "Real device and mount (amd64)",
+      "runner_name": "GitHub Actions 1000013307",
+      "runner_label": "ubuntu-24.04",
+      "runner_version": "2.337.0",
+      "image": "ubuntu-24.04 20260907.300.1",
+      "architecture": "x86_64",
+      "runner_uid": 1001,
+      "setup_uid": 0,
+      "device": "real character device; major=1 minor=3 mode=0o0 owner_uid=0 st_rdev=259",
+      "mount": "real hardened bind mount; mount_id=261; source and target identities match; target pre-identity differs",
+      "scanner": "ordinary-user production CLI exit 1 with sole exact leaf E_FS_NONREGULAR",
+      "generator": "ordinary-user production CLI exit 1 with sole exact leaf E_REGEN_CONFINEMENT and Errno 18",
+      "cleanup": "mount unmounted-recorded; device removed-recorded; cleanup exit 0 and status clean",
+      "artifact_id": 10290381530,
+      "artifact_bytes": 6860,
+      "artifact_sha256": "1b8745670e72786bc3df2aa417997ea0576783fde1e7cc1e295b9390d3f137b1"
+    },
+    "arm64": {
+      "id": 103487307334,
+      "name": "Real device and mount (arm64)",
+      "runner_name": "GitHub Actions 1000013308",
+      "runner_label": "ubuntu-24.04-arm",
+      "runner_version": "2.337.0",
+      "image": "ubuntu-24.04-arm 20260907.118.1",
+      "architecture": "aarch64",
+      "runner_uid": 1001,
+      "setup_uid": 0,
+      "device": "real character device; major=1 minor=3 mode=0o0 owner_uid=0 st_rdev=259",
+      "mount": "real hardened bind mount; mount_id=95; source and target identities match; target pre-identity differs",
+      "scanner": "ordinary-user production CLI exit 1 with sole exact leaf E_FS_NONREGULAR",
+      "generator": "ordinary-user production CLI exit 1 with sole exact leaf E_REGEN_CONFINEMENT and Errno 18",
+      "cleanup": "mount unmounted-recorded; device removed-recorded; cleanup exit 0 and status clean",
+      "artifact_id": 10290990115,
+      "artifact_bytes": 6866,
+      "artifact_sha256": "bc26c5095dbcfedf47d4b21ba9657fd817367cd3cbc607ff2f8206d982003972"
+    }
+  },
+  "proofs": {
+    "helper_imported": true,
+    "module_form_executed_in_all_six_call_sites": true,
+    "archive_prerequisite": "137826806 bytes with SHA-256 974128f44dd43618a06d21e5fe6d9ff67188de5986fe0bc57b534b0e4639efb9; parser completed; payload not executed",
+    "cargo_git_fixture_prerequisites": "prepare completed on both jobs; helper would fail before emitting its contract if locked Cargo/Git setup failed",
+    "production_source_hashes_match": true,
+    "uid_separation": true,
+    "exact_device_cause_on_both": true,
+    "exact_mount_cause_on_both": true,
+    "no_earlier_or_substitute_leaf": true,
+    "no_architecture_skip": true,
+    "teardown_on_both": true,
+    "safe_artifacts": "Both downloaded ZIPs match upload size/SHA-256, contain exactly seven allowlisted regular bounded text files, have internally verified manifests, and contain no fixture tree.",
+    "partial_failure_controls": "The evidence directory initialization, always-run cleanup, always-run safety validation, bounded allowlist, and semantic/upload separation all completed on both jobs. No failure was injected in this successful attempt, so this is not a claim of a hosted injected-failure experiment.",
+    "mechanical_analysis": "78 checks passed with zero findings"
+  },
+  "evidence": {
+    "semantic_report": "HOSTED_OBSERVATION.json.txt",
+    "full_combined_log": "commands/full-run-log.stdout.txt",
+    "amd64_full_log": "commands/amd64-job-log.stdout.txt",
+    "arm64_full_log": "commands/arm64-job-log.stdout.txt",
+    "run_api": "commands/exact-run.stdout.txt",
+    "jobs_api": "commands/final-jobs-confirmation.stdout.txt",
+    "artifact_api": "commands/exact-artifacts.stdout.txt",
+    "safe_artifacts": "artifacts/",
+    "command_records": "commands/"
+  },
+  "analysis_history": "The first local evidence analyzer incorrectly required the early marker to remain in the success-path prepare.log, but that log is intentionally replaced when preparation begins. Its failed command record is preserved. The corrected artifact-only analyzer checks the successful initialization step and full job log; no repository source was changed.",
+  "findings": [],
+  "non_claims": [
+    "not the full scanner or generator gate",
+    "not 81-row completeness or the 127-assignment row-runner claim",
+    "not F4 through F6 completion",
+    "not freeze, review, fresh runtime verification, EQ03, AE-01, RG-U01, EQ16-U01, integration, or full catalog completion",
+    "not roadmap acceptance, merge, main update, PR, tag, release, container publication, docs/Pages publication, or deployment"
+  ]
+}

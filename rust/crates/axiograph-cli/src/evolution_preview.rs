@@ -827,7 +827,7 @@ fn exploration_next_actions_from_primitives(primitives: &[EvolutionPrimitiveV1])
                 push_unique_note(
                     &mut next_actions,
                     format!(
-                        "rerun subtype-sensitive CQs and rule applicability for `{sub} <: {sup}`"
+                        "rerun subtype-sensitive CQs and rule applicability for `{sub} < {sup}`"
                     ),
                 );
                 push_unique_note(
@@ -3071,7 +3071,7 @@ mod tests {
             preview
                 .exploration_next_actions
                 .iter()
-                .any(|action| action.contains("`Pump <: PlantAsset`")),
+                .any(|action| action.contains("`Pump < PlantAsset`")),
             "expected subtype evolution to produce directed exploration guidance"
         );
         assert!(
@@ -3773,8 +3773,8 @@ schema Plant:
   object Process
   object Context
   object Time
-  subtype Pump <: PlantAsset
-  subtype Compressor <: PlantAsset
+  subtype Pump < PlantAsset
+  subtype Compressor < PlantAsset
   relation Certification(asset: Pump, batch: Batch, ctx: Context @context, time: Time @temporal)
   relation Maintenance(asset: Compressor, batch: Batch, ctx: Context @context, time: Time @temporal)
   relation ProcessEquiv(lhs: Process, rhs: Process)

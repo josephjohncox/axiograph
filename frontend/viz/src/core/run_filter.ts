@@ -37,6 +37,8 @@ export function initRunFilter(ctx: RunFilterContext) {
 
   function rebuildRunFilter() {
     if (!runFilterEl) return;
+    // EQ-02-U03 reviewed sink: bare empty-string literal clear, not markup
+    // construction. See frontend/viz/tests/html-sink-inventory.test.mjs.
     runFilterEl.innerHTML = "";
     ui.runMap = new Map<string, number[]>();
     for (const n of (graph.nodes || [])) {

@@ -303,6 +303,23 @@ struct StoredAuthoringPromotionV1 {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[allow(dead_code)]
+struct StoredAuthoringDiagnosticCollectionV1 {
+    observed_errors: usize,
+    returned_errors: usize,
+    omitted_observed_errors: usize,
+    message_bytes: usize,
+    work_units: usize,
+    work_exhausted: bool,
+    truncated: bool,
+    max_items: usize,
+    max_message_bytes: usize,
+    max_work: usize,
+    order: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[allow(dead_code)]
 struct StoredAuthoringWorkspaceReportV1 {
     version: String,
     operation: String,
@@ -312,6 +329,7 @@ struct StoredAuthoringWorkspaceReportV1 {
     source: Option<StoredAuthoringSourceAnchorV1>,
     #[serde(default)]
     diagnostics: Vec<serde_json::Value>,
+    diagnostic_collection: StoredAuthoringDiagnosticCollectionV1,
     validation: StoredAuthoringValidationV1,
     #[serde(default)]
     typed_holes: serde_json::Value,
@@ -1746,6 +1764,19 @@ print(json.dumps({
                     "runtime_ir_ref_count": compiled.ir().refs().len()
                 },
                 "diagnostics": [],
+                "diagnostic_collection": {
+                    "observed_errors": 0,
+                    "returned_errors": 0,
+                    "omitted_observed_errors": 0,
+                    "message_bytes": 0,
+                    "work_units": 0,
+                    "work_exhausted": false,
+                    "truncated": false,
+                    "max_items": 64,
+                    "max_message_bytes": 65536,
+                    "max_work": 65536,
+                    "order": "authoring_pipeline_order_with_canonical_import_closure_source_suborder"
+                },
                 "validation": {
                     "canonical_axi_valid": true,
                     "compiled_kernel_ir_valid": true,

@@ -178,9 +178,16 @@ function renderGraph(selectedId: number): void {
 
   // Preserve any user pan/zoom state (viewBox is managed by handlers below).
   if (!svg.getAttribute("viewBox")) svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  // EQ-02-U03 reviewed sink: clears the whole SVG subtree before rebuild.
+  // The assignment is a bare empty-string literal, not markup construction.
   svg.innerHTML = "";
 
   const defs = document.createElementNS("http://www.w3.org/2000/svg", "defs");
+  // EQ-02-U03 reviewed sink: fully static arrowhead marker markup with no
+  // interpolated expression, so no production data flow (node/edge labels,
+  // evidence text, or locators) can ever reach it. See
+  // frontend/viz/tests/html-sink-inventory.test.mjs and
+  // docs/howto/TESTING.md ("Remaining rendering-sink data-flow closure").
   defs.innerHTML = `
     <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
       <path d="M 0 0 L 10 5 L 0 10 z" fill="#666"></path>

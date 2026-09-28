@@ -1,5 +1,11 @@
 import { initApp } from "./app";
-import { isGraphPayload, type GraphPayload } from "./types";
+import { readBoundedJsonResponse } from "./json-boundary";
+import {
+  GRAPH_JSON_BUDGET,
+  parseGraphPayloadJson,
+  validateGraphPayload,
+  type GraphPayload,
+} from "./types";
 
 declare global {
   interface Window {
@@ -17,28 +23,35 @@ function setHeaderCounts(graph: GraphPayload) {
 }
 
 function loadGraphFromEmbedded(): GraphPayload | null {
-  if (isGraphPayload(window.__AXIOGRAPH_GRAPH)) {
-    return window.__AXIOGRAPH_GRAPH;
-  }
-  const el = document.getElementById("axiograph_graph");
-  if (el && el.textContent) {
-    try {
-      const parsed: unknown = JSON.parse(el.textContent);
-      return isGraphPayload(parsed) ? parsed : null;
-    } catch (_e) {
-      return null;
+  try {
+    if (window.__AXIOGRAPH_GRAPH !== undefined) {
+      return validateGraphPayload(window.__AXIOGRAPH_GRAPH);
     }
+    const el = document.getElementById("axiograph_graph");
+    return el?.textContent ? parseGraphPayloadJson(el.textContent) : null;
+  } catch (error) {
+    console.error(`Axiograph viz: rejected embedded graph: ${String(error)}`);
+    return null;
   }
-  return null;
 }
 
 async function loadGraphFromUrl(url: string): Promise<GraphPayload | null> {
   try {
-    const resp = await fetch(url, { cache: "no-store" });
-    if (!resp.ok) return null;
-    const parsed: unknown = await resp.json();
-    return isGraphPayload(parsed) ? parsed : null;
-  } catch (_e) {
+    const target = new URL(url, window.location.href);
+    if (target.origin !== window.location.origin) {
+      throw new Error("graph URL must be same-origin");
+    }
+    const response = await fetch(target, {
+      cache: "no-store",
+      credentials: "same-origin",
+      redirect: "error",
+      signal: AbortSignal.timeout(30_000),
+    });
+    const parsed = await readBoundedJsonResponse(response, GRAPH_JSON_BUDGET, "graph response");
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    return validateGraphPayload(parsed);
+  } catch (error) {
+    console.error(`Axiograph viz: rejected fetched graph: ${String(error)}`);
     return null;
   }
 }
