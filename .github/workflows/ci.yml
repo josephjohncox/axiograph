@@ -24,6 +24,12 @@ jobs:
             if [ -f .git/config.worktree ] &&
                [ ! -L .git/config.worktree ]; then
               git config --file .git/config.worktree --name-only --list
+              for key in \
+                core.sparsecheckout core.sparsecheckoutcone index.sparse; do
+                value="$(git config --file .git/config.worktree \
+                  --get --bool "$key")"
+                printf '%s=%s\n' "$key" "$value"
+              done
             fi
           else
             echo 'config.worktree: absent after checkout'
