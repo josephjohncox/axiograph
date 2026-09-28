@@ -737,7 +737,9 @@ check-release-version:
 
 verify-release-packaging:
 	@echo "━━━ Testing deterministic manifests, archives, corruption rejection, and publication ordering ━━━"
-	python3 -m unittest discover -s scripts/tests -p 'test_*.py' -v
+	@# The Git-decoy test changes HOME; keep rustup's installed toolchain independent of it.
+	RUSTUP_HOME="$${RUSTUP_HOME:-$${HOME}/.rustup}" CARGO_HOME="$${CARGO_HOME:-$${HOME}/.cargo}" \
+		python3 -m unittest discover -s scripts/tests -p 'test_*.py' -v
 	@echo "✓ Release manifests, bundles, corruption checks, and local publication rehearsal passed"
 
 rehearse-release-publication:
