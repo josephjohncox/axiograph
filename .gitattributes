@@ -7,3 +7,6 @@
 *.onnx binary
 *.png binary
 *.woff2 binary
+
+# This fixture deliberately tests byte-distinct CRLF source revisions.
+fixtures/canonical/contract/exact_crlf.axi -text -eol whitespace=cr-at-eol
