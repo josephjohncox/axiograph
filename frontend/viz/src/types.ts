@@ -149,7 +149,7 @@ export interface LlmHistoryEntry {
 }
 
 export interface LlmHistoryEnvelope {
-  format: "axiograph_llm_history_v1";
+  format: "axiograph_llm_history_v2";
   entries: LlmHistoryEntry[];
 }
 
@@ -258,22 +258,21 @@ function stringMap(value: unknown, label: string): Record<string, string> {
   return validated;
 }
 
-function detachJsonRecord(value: Record<string, unknown>): Record<string, unknown> {
-  const detached: Record<string, unknown> = {};
+type DetachedJsonValue = string | number | boolean | null | unknown[] | Record<string, unknown>;
+
+function detachJsonRecord(value: Record<string, unknown>): Record<string, DetachedJsonValue> {
+  const detached: Record<string, DetachedJsonValue> = {};
   for (const [key, item] of Object.entries(value)) {
-    let detachedItem: unknown;
-    if (Array.isArray(item)) detachedItem = item.map(detachJsonValue);
-    else if (isRecord(item)) detachedItem = detachJsonRecord(item);
-    else detachedItem = item;
-    setOwnDataProperty(detached, key, detachedItem);
+    setOwnDataProperty(detached, key, detachJsonValue(item));
   }
   return detached;
 }
 
-function detachJsonValue(value: unknown): unknown {
+function detachJsonValue(value: unknown): DetachedJsonValue {
   if (Array.isArray(value)) return value.map(detachJsonValue);
   if (isRecord(value)) return detachJsonRecord(value);
-  return value;
+  if (value === null || typeof value === "string" || typeof value === "number" || typeof value === "boolean") return value;
+  throw new Error("draft opaque value: expected JSON");
 }
 
 function booleanValue(value: unknown, label: string): boolean {
@@ -489,7 +488,7 @@ export function validateLlmHistoryEnvelope(value: unknown): LlmHistoryEnvelope {
   assertSerializedJsonBytes(value, LLM_HISTORY_JSON_BUDGET, "LLM history boundary");
   const envelope = record(value, "LLM history");
   requireExactKeys(envelope, ["format", "entries"], [], "LLM history");
-  if (envelope.format !== "axiograph_llm_history_v1") throw new Error("LLM history: unsupported format");
+  if (envelope.format !== "axiograph_llm_history_v2") throw new Error("LLM history: unsupported format");
   if (!Array.isArray(envelope.entries) || envelope.entries.length > 1024) throw new Error("LLM history.entries: invalid count");
   const entries = envelope.entries.map((item, index): LlmHistoryEntry => {
     const entry = record(item, `LLM history.entries[${index}]`);
@@ -502,7 +501,7 @@ export function validateLlmHistoryEnvelope(value: unknown): LlmHistoryEnvelope {
     };
     return { role: entry.role, content: text(entry.content, `LLM history.entries[${index}].content`, true), public_rationale: text(entry.public_rationale, `LLM history.entries[${index}].public_rationale`), citations: stringArray("citations"), queries: stringArray("queries"), notes: stringArray("notes") };
   });
-  return { format: "axiograph_llm_history_v1", entries };
+  return { format: "axiograph_llm_history_v2", entries };
 }
 
 export function parseLlmHistoryJson(source: string): LlmHistoryEnvelope {

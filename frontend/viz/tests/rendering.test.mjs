@@ -759,19 +759,29 @@ function llmAskContext(t) {
   return ctx;
 }
 
-test("production LLM persistence loads only the closed versioned envelope", (t) => {
+test("production LLM persistence ignores the retired key and loads only the closed envelope", (t) => {
   const stored = environment(t);
-  const key = "axiograph_llm_history_v1:fixture.invalid:fixture";
-  stored.set(key, JSON.stringify([{ role: "user", content: "legacy" }]));
+  const retiredKey = "axiograph_llm_history_v1:fixture.invalid:fixture";
+  const key = "axiograph_llm_history_v2:fixture.invalid:fixture";
+  const entry = { role: "user", content: hostile, public_rationale: "", citations: [], queries: [], notes: [] };
+  stored.set(retiredKey, JSON.stringify({ format: "axiograph_llm_history_v1", entries: [entry] }));
+  stored.set(key, JSON.stringify([{ role: "user", content: "unversioned" }]));
   let ctx = llmAskContext(t);
+  assert.equal(ctx.getLlmHistoryKey(), key);
   assert.deepEqual(ctx.getLlmHistory(), []);
-  stored.set(key, JSON.stringify({ format: "axiograph_llm_history_v1", entries: [{ role: "user", content: hostile, public_rationale: "", citations: [], queries: [], notes: [] }] }));
+  stored.set(key, JSON.stringify({ format: "axiograph_llm_history_v1", entries: [entry] }));
+  ctx = llmAskContext(t);
+  assert.deepEqual(ctx.getLlmHistory(), []);
+  stored.set(key, JSON.stringify({ format: "axiograph_llm_history_v2", entries: [entry] }));
   ctx = llmAskContext(t);
   assert.equal(ctx.getLlmHistory().length, 1);
   assert.equal(ctx.getLlmHistory()[0].content, hostile);
   const retained = ctx.getLlmHistory();
   assert.throws(() => ctx.setLlmHistory([{ role: "tool", content: "bad", public_rationale: "", citations: [], queries: [], notes: [] }]));
   assert.equal(ctx.getLlmHistory(), retained);
+  ctx.saveLlmHistory();
+  assert.equal(JSON.parse(stored.get(key)).format, "axiograph_llm_history_v2");
+  assert.equal(JSON.parse(stored.get(retiredKey)).format, "axiograph_llm_history_v1");
 });
 
 test("production LLM callbacks and keyboard cannot call unsupported endpoints or mutate local draft/highlights", async (t) => {

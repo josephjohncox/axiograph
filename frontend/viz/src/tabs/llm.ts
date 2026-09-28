@@ -44,9 +44,8 @@ export function initLlmTab(ctx: LlmContext) {
   }
 
   function llmHistoryStorageKey() {
-    // Retain the existing local history key for inspection only. Cached legacy
-    // snapshot strings are not authenticated identity and are never migrated
-    // from server status or used in requests.
+    // Local history is display-only. Cached snapshot strings are not
+    // authenticated identity and are never used in requests.
     const host =
       window.location && window.location.host
         ? window.location.host
@@ -65,7 +64,7 @@ export function initLlmTab(ctx: LlmContext) {
       key = (params.get("snapshot") || "").trim();
     }
     if (!key) key = "default";
-    return `axiograph_llm_history_v1:${host}:${key}`;
+    return `axiograph_llm_history_v2:${host}:${key}`;
   }
 
   let llmHistoryKey = llmHistoryStorageKey();
@@ -90,7 +89,7 @@ export function initLlmTab(ctx: LlmContext) {
   function saveLlmHistory() {
     try {
       const envelope = validateLlmHistoryEnvelope({
-        format: "axiograph_llm_history_v1",
+        format: "axiograph_llm_history_v2",
         entries: llmHistory,
       });
       localStorage.setItem(llmHistoryKey, JSON.stringify(envelope));
@@ -106,7 +105,7 @@ export function initLlmTab(ctx: LlmContext) {
 
   function setLlmHistory(next: LlmHistoryEntry[]): void {
     llmHistory = validateLlmHistoryEnvelope({
-      format: "axiograph_llm_history_v1",
+      format: "axiograph_llm_history_v2",
       entries: next,
     }).entries;
   }

@@ -201,13 +201,14 @@ test("validated draft state is isolated from post-validation caller mutation", (
 
 test("persisted LLM history uses one closed versioned envelope", () => {
   const accepted = {
-    format: "axiograph_llm_history_v1",
+    format: "axiograph_llm_history_v2",
     entries: [{ role: "assistant", content: "literal <img>", public_rationale: "", citations: [], queries: [], notes: [] }],
   };
   assert.deepEqual(validateLlmHistoryEnvelope(accepted), accepted);
   assert.deepEqual(parseLlmHistoryJson(JSON.stringify(accepted)), accepted);
   for (const value of [
     accepted.entries,
+    { ...accepted, format: "axiograph_llm_history_v1" },
     { ...accepted, format: "future" },
     { ...accepted, extra: true },
     { ...accepted, entries: [{ ...accepted.entries[0], extra: true }] },
