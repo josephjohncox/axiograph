@@ -46,6 +46,26 @@ jobs:
               test "$?" -eq 1
             fi
           done
+      - name: Prepare exact no-unsafe scanner fixtures
+        timeout-minutes: 12
+        run: |
+          set -euo pipefail
+          archive='build/engineering-quality/release-roadmap/prepare-compatible-release-20260908T035930Z/tools/kani-home/kani-0.67.0-aarch64-unknown-linux-gnu.tar.gz'
+          downloaded="$RUNNER_TEMP/kani-0.67.0-aarch64-unknown-linux-gnu.tar.gz"
+          test ! -e "$downloaded" && test ! -L "$downloaded"
+          curl --proto '=https' --tlsv1.2 --fail --location \
+            --retry 3 --retry-all-errors --max-time 540 \
+            --max-filesize 137826806 --output "$downloaded" \
+            'https://github.com/model-checking/kani/releases/download/kani-0.67.0/kani-0.67.0-aarch64-unknown-linux-gnu.tar.gz'
+          test "$(stat -c %s "$downloaded")" = 137826806
+          printf '%s  %s\n' \
+            '974128f44dd43618a06d21e5fe6d9ff67188de5986fe0bc57b534b0e4639efb9' \
+            "$downloaded" | sha256sum --check --strict
+          mkdir -p "$(dirname "$archive")"
+          test ! -e "$archive" && test ! -L "$archive"
+          mv "$downloaded" "$archive"
+          python3 -m scripts.prepare_no_unsafe_ci_fixtures
+          mkdir -p build/engineering-quality/roadmap-wave-01-full-loop
       # actions/setup-node pinned to an immutable commit.
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
