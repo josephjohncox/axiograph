@@ -1050,11 +1050,16 @@ pub fn parse_schema_v1_with_source_map(
             let segments = line_segments(text, line);
             source_map.push(
                 CanonicalSyntacticAddressV1::ModuleDeclaration,
-                original_range(&segments, 0..line.len()).expect("line source range"),
+                required_original_range(&segments, 0..line.len(), line_no, "module")?,
             );
             source_map.push(
                 CanonicalSyntacticAddressV1::ModuleName,
-                original_range(&segments, relative_range(line, rest)).expect("module name range"),
+                required_original_range(
+                    &segments,
+                    relative_range(line, rest),
+                    line_no,
+                    "module name",
+                )?,
             );
             if !module.schemas.is_empty()
                 || !module.theories.is_empty()
@@ -1100,11 +1105,16 @@ pub fn parse_schema_v1_with_source_map(
             let segments = line_segments(text, line);
             source_map.push(
                 CanonicalSyntacticAddressV1::ImportDeclaration { import_index },
-                original_range(&segments, 0..line.len()).expect("line source range"),
+                required_original_range(&segments, 0..line.len(), line_no, "import")?,
             );
             source_map.push(
                 CanonicalSyntacticAddressV1::ImportName { import_index },
-                original_range(&segments, relative_range(line, rest)).expect("import name range"),
+                required_original_range(
+                    &segments,
+                    relative_range(line, rest),
+                    line_no,
+                    "import name",
+                )?,
             );
             module.imports.push(import);
             i += 1;
@@ -1120,11 +1130,16 @@ pub fn parse_schema_v1_with_source_map(
             let segments = line_segments(text, line);
             source_map.push(
                 CanonicalSyntacticAddressV1::SchemaDeclaration { schema_index },
-                original_range(&segments, 0..line.len()).expect("line source range"),
+                required_original_range(&segments, 0..line.len(), line_no, "schema")?,
             );
             source_map.push(
                 CanonicalSyntacticAddressV1::SchemaName { schema_index },
-                original_range(&segments, relative_range(line, name)).expect("schema name range"),
+                required_original_range(
+                    &segments,
+                    relative_range(line, name),
+                    line_no,
+                    "schema name",
+                )?,
             );
             module.schemas.push(SchemaV1Schema {
                 name: name.to_string(),
@@ -1149,23 +1164,25 @@ pub fn parse_schema_v1_with_source_map(
             let segments = line_segments(text, line);
             source_map.push(
                 CanonicalSyntacticAddressV1::TheoryDeclaration { theory_index },
-                original_range(&segments, 0..line.len()).expect("line source range"),
+                required_original_range(&segments, 0..line.len(), line_no, "theory")?,
             );
             source_map.push(
                 CanonicalSyntacticAddressV1::TheoryName { theory_index },
-                original_range(
+                required_original_range(
                     &segments,
                     (rest_start + name_range.start)..(rest_start + name_range.end),
-                )
-                .expect("theory name range"),
+                    line_no,
+                    "theory name",
+                )?,
             );
             source_map.push(
                 CanonicalSyntacticAddressV1::TheorySchema { theory_index },
-                original_range(
+                required_original_range(
                     &segments,
                     (rest_start + schema_range.start)..(rest_start + schema_range.end),
-                )
-                .expect("theory schema range"),
+                    line_no,
+                    "theory schema",
+                )?,
             );
             module.theories.push(SchemaV1Theory {
                 name,
@@ -1190,23 +1207,25 @@ pub fn parse_schema_v1_with_source_map(
             let segments = line_segments(text, line);
             source_map.push(
                 CanonicalSyntacticAddressV1::InstanceDeclaration { instance_index },
-                original_range(&segments, 0..line.len()).expect("line source range"),
+                required_original_range(&segments, 0..line.len(), line_no, "instance")?,
             );
             source_map.push(
                 CanonicalSyntacticAddressV1::InstanceName { instance_index },
-                original_range(
+                required_original_range(
                     &segments,
                     (rest_start + name_range.start)..(rest_start + name_range.end),
-                )
-                .expect("instance name range"),
+                    line_no,
+                    "instance name",
+                )?,
             );
             source_map.push(
                 CanonicalSyntacticAddressV1::InstanceSchema { instance_index },
-                original_range(
+                required_original_range(
                     &segments,
                     (rest_start + schema_range.start)..(rest_start + schema_range.end),
-                )
-                .expect("instance schema range"),
+                    line_no,
+                    "instance schema",
+                )?,
             );
             module.instances.push(SchemaV1Instance {
                 name,
@@ -1237,15 +1256,19 @@ pub fn parse_schema_v1_with_source_map(
                             schema_index,
                             object_index,
                         },
-                        original_range(&segments, 0..line.len()).expect("line source range"),
+                        required_original_range(&segments, 0..line.len(), line_no, "object")?,
                     );
                     source_map.push(
                         CanonicalSyntacticAddressV1::ObjectName {
                             schema_index,
                             object_index,
                         },
-                        original_range(&segments, relative_range(line, name))
-                            .expect("object name range"),
+                        required_original_range(
+                            &segments,
+                            relative_range(line, name),
+                            line_no,
+                            "object name",
+                        )?,
                     );
                     module.schemas[schema_index].objects.push(name.to_string());
                     i += 1;
@@ -1264,32 +1287,33 @@ pub fn parse_schema_v1_with_source_map(
                     let rest_start = relative_range(line, rest).start;
                     let segments = line_segments(text, line);
                     let map_rest = |range: Range<usize>| {
-                        original_range(
+                        required_original_range(
                             &segments,
                             (rest_start + range.start)..(rest_start + range.end),
+                            line_no,
+                            "subtype",
                         )
-                        .expect("subtype source range")
                     };
                     source_map.push(
                         CanonicalSyntacticAddressV1::SubtypeDeclaration {
                             schema_index,
                             subtype_index,
                         },
-                        original_range(&segments, 0..line.len()).expect("line source range"),
+                        required_original_range(&segments, 0..line.len(), line_no, "subtype")?,
                     );
                     source_map.push(
                         CanonicalSyntacticAddressV1::SubtypeSub {
                             schema_index,
                             subtype_index,
                         },
-                        map_rest(metadata.sub),
+                        map_rest(metadata.sub)?,
                     );
                     source_map.push(
                         CanonicalSyntacticAddressV1::SubtypeSuper {
                             schema_index,
                             subtype_index,
                         },
-                        map_rest(metadata.sup),
+                        map_rest(metadata.sup)?,
                     );
                     if let Some(inclusion) = metadata.inclusion {
                         source_map.push(
@@ -1297,7 +1321,7 @@ pub fn parse_schema_v1_with_source_map(
                                 schema_index,
                                 subtype_index,
                             },
-                            map_rest(inclusion),
+                            map_rest(inclusion)?,
                         );
                     }
                     module.schemas[schema_index].subtypes.push(subtype);
@@ -1486,7 +1510,7 @@ pub fn parse_schema_v1_with_source_map(
                             schema_index,
                             generator_index,
                         },
-                        original_range(&segments, 0..line.len()).expect("line source range"),
+                        required_original_range(&segments, 0..line.len(), line_no, "generator")?,
                     );
                     let mut generator_events = vec![
                         (
@@ -1522,7 +1546,7 @@ pub fn parse_schema_v1_with_source_map(
                     for (address, range) in generator_events {
                         source_map.push(
                             address,
-                            original_range(&segments, range).expect("generator source range"),
+                            required_original_range(&segments, range, line_no, "generator field")?,
                         );
                     }
                     if let Some(range) = metadata.reversible {
@@ -1531,8 +1555,12 @@ pub fn parse_schema_v1_with_source_map(
                                 schema_index,
                                 generator_index,
                             },
-                            original_range(&segments, range)
-                                .expect("generator reversible source range"),
+                            required_original_range(
+                                &segments,
+                                range,
+                                line_no,
+                                "generator reversible",
+                            )?,
                         );
                     }
                     module.schemas[schema_index].generators.push(generator);
@@ -1585,8 +1613,12 @@ pub fn parse_schema_v1_with_source_map(
                                 theory_index,
                                 constraint_index,
                             },
-                            original_range(&segments, relative_range(line, name))
-                                .expect("named constraint range"),
+                            required_original_range(
+                                &segments,
+                                relative_range(line, name),
+                                line_no,
+                                "named constraint",
+                            )?,
                         );
                         for (body_index, body_line) in lines[i + 1..next_index]
                             .iter()
@@ -1694,24 +1726,36 @@ pub fn parse_schema_v1_with_source_map(
                             theory_index,
                             equation_index,
                         },
-                        original_range(&line_source, relative_range(line, equation_name))
-                            .expect("equation name range"),
+                        required_original_range(
+                            &line_source,
+                            relative_range(line, equation_name),
+                            line_no,
+                            "equation name",
+                        )?,
                     );
                     source_map.push(
                         CanonicalSyntacticAddressV1::EquationLeft {
                             theory_index,
                             equation_index,
                         },
-                        original_range(&segments, relative_range(&equation_text, lhs_text))
-                            .expect("equation left range"),
+                        required_original_range(
+                            &segments,
+                            relative_range(&equation_text, lhs_text),
+                            line_no,
+                            "equation left",
+                        )?,
                     );
                     source_map.push(
                         CanonicalSyntacticAddressV1::EquationRight {
                             theory_index,
                             equation_index,
                         },
-                        original_range(&segments, relative_range(&equation_text, rhs_text))
-                            .expect("equation right range"),
+                        required_original_range(
+                            &segments,
+                            relative_range(&equation_text, rhs_text),
+                            line_no,
+                            "equation right",
+                        )?,
                     );
 
                     module.theories[theory_index].equations.push(EquationV1 {
@@ -1755,8 +1799,12 @@ pub fn parse_schema_v1_with_source_map(
                             theory_index,
                             rewrite_index,
                         },
-                        original_range(&line_source, relative_range(line, rule_name))
-                            .expect("rewrite name range"),
+                        required_original_range(
+                            &line_source,
+                            relative_range(line, rule_name),
+                            line_no,
+                            "rewrite name",
+                        )?,
                     );
                     let inputs =
                         collect_rewrite_source_inputs(text, lines.as_slice(), i + 1, next_index);
@@ -1772,11 +1820,21 @@ pub fn parse_schema_v1_with_source_map(
                     }
                     let mut variable_index = 0;
                     for input in &inputs.vars {
-                        let (variables, metadata) =
-                            parse_rewrite_var_decl_list_with_source(&input.text)
-                                .expect("rewrite variables already parsed");
+                        let (variables, metadata) = parse_rewrite_var_decl_list_with_source(
+                            &input.text,
+                        )
+                        .map_err(|message| SchemaV1ParseError::Line {
+                            line: line_no,
+                            message,
+                        })?;
                         for (variable, metadata) in variables.iter().zip(metadata) {
-                            debug_assert_eq!(rule.vars.get(variable_index), Some(variable));
+                            if rule.vars.get(variable_index) != Some(variable) {
+                                return Err(SchemaV1ParseError::Line {
+                                    line: line_no,
+                                    message: "rewrite variable source does not match parsed rule"
+                                        .to_string(),
+                                });
+                            }
                             for (address, range) in [
                                 (
                                     CanonicalSyntacticAddressV1::RewriteVariableDeclaration {
@@ -1836,7 +1894,13 @@ pub fn parse_schema_v1_with_source_map(
                             variable_index += 1;
                         }
                     }
-                    debug_assert_eq!(variable_index, rule.vars.len());
+                    if variable_index != rule.vars.len() {
+                        return Err(SchemaV1ParseError::Line {
+                            line: line_no,
+                            message: "rewrite variable source count does not match parsed rule"
+                                .to_string(),
+                        });
+                    }
 
                     for (side, input, aggregate, expected) in [
                         (
@@ -1862,8 +1926,17 @@ pub fn parse_schema_v1_with_source_map(
                             events.push((aggregate, bytes));
                         }
                         let (parsed, metadata) = parse_path_expr_v3_with_source(&input.text)
-                            .expect("rewrite path already parsed");
-                        debug_assert_eq!(&parsed, expected);
+                            .map_err(|message| SchemaV1ParseError::Line {
+                                line: line_no,
+                                message,
+                            })?;
+                        if &parsed != expected {
+                            return Err(SchemaV1ParseError::Line {
+                                line: line_no,
+                                message: "rewrite path source does not match parsed rule"
+                                    .to_string(),
+                            });
+                        }
                         for (path, range) in metadata.nodes {
                             if let Some(bytes) = original_range(&input.segments, range) {
                                 events.push((
@@ -1959,16 +2032,24 @@ pub fn parse_schema_v1_with_source_map(
                             instance_index,
                             assignment_index,
                         },
-                        original_range(&line_source, relative_range(line, lhs))
-                            .expect("assignment name range"),
+                        required_original_range(
+                            &line_source,
+                            relative_range(line, lhs),
+                            line_no,
+                            "assignment name",
+                        )?,
                     );
                     source_map.push(
                         CanonicalSyntacticAddressV1::SetLiteral {
                             instance_index,
                             assignment_index,
                         },
-                        original_range(&segments, 0..set_text.len())
-                            .expect("set literal source range"),
+                        required_original_range(
+                            &segments,
+                            0..set_text.len(),
+                            line_no,
+                            "set literal",
+                        )?,
                     );
                     for (item_index, item) in item_sources.into_iter().enumerate() {
                         let mut events = vec![(
@@ -2267,6 +2348,18 @@ type SourceSegments = Vec<(Range<usize>, usize)>;
 fn relative_range(container: &str, slice: &str) -> Range<usize> {
     let start = slice.as_ptr() as usize - container.as_ptr() as usize;
     start..start + slice.len()
+}
+
+fn required_original_range(
+    segments: &SourceSegments,
+    range: Range<usize>,
+    line: usize,
+    label: &str,
+) -> Result<Range<usize>, SchemaV1ParseError> {
+    original_range(segments, range).ok_or_else(|| SchemaV1ParseError::Line {
+        line,
+        message: format!("cannot map {label} to the original source"),
+    })
 }
 
 fn original_range(segments: &SourceSegments, range: Range<usize>) -> Option<Range<usize>> {
@@ -2922,7 +3015,7 @@ fn constraint_source_metadata(
                     )
                 }))
             }
-            _ => unreachable!(),
+            _ => return None,
         }
         working = working[..index].trim_axi_end();
     }
@@ -3247,7 +3340,7 @@ fn parse_constraint(rest: &str) -> Result<ConstraintV1, String> {
     if rest == "functional" || rest.starts_with("functional ") {
         let after = rest
             .strip_prefix("functional")
-            .expect("matched prefix")
+            .ok_or_else(|| "functional expects a relation".to_string())?
             .trim_axi();
         let parts: Vec<&str> = after.split("->").collect();
         if parts.len() == 2 {
@@ -3272,7 +3365,7 @@ fn parse_constraint(rest: &str) -> Result<ConstraintV1, String> {
     if rest == "at_most" || rest.starts_with("at_most ") {
         let after = rest
             .strip_prefix("at_most")
-            .expect("matched prefix")
+            .ok_or_else(|| "at_most expects a bound".to_string())?
             .trim_axi();
         if carriers.is_some() {
             return Err("`on (...)` is not supported for at_most constraints".to_string());
@@ -3305,7 +3398,7 @@ fn parse_constraint(rest: &str) -> Result<ConstraintV1, String> {
     if rest == "typing" || rest.starts_with("typing ") {
         let after = rest
             .strip_prefix("typing")
-            .expect("matched prefix")
+            .ok_or_else(|| "typing expects a relation".to_string())?
             .trim_axi();
         if let Some((relation, rule)) = after.split_once(':') {
             let relation = relation.trim_axi();
@@ -3325,7 +3418,7 @@ fn parse_constraint(rest: &str) -> Result<ConstraintV1, String> {
     if rest == "symmetric" || rest.starts_with("symmetric ") {
         let after = rest
             .strip_prefix("symmetric")
-            .expect("matched prefix")
+            .ok_or_else(|| "symmetric expects a relation".to_string())?
             .trim_axi();
         if after.is_empty() {
             return Err("symmetric expects a relation name".to_string());
@@ -3378,7 +3471,7 @@ fn parse_constraint(rest: &str) -> Result<ConstraintV1, String> {
     if rest == "transitive" || rest.starts_with("transitive ") {
         let after = rest
             .strip_prefix("transitive")
-            .expect("matched prefix")
+            .ok_or_else(|| "transitive expects a relation".to_string())?
             .trim_axi();
         if after.is_empty() {
             return Err("transitive expects a relation name".to_string());
@@ -3392,7 +3485,10 @@ fn parse_constraint(rest: &str) -> Result<ConstraintV1, String> {
     }
 
     if rest == "key" || rest.starts_with("key ") {
-        let after = rest.strip_prefix("key").expect("matched prefix").trim_axi();
+        let after = rest
+            .strip_prefix("key")
+            .ok_or_else(|| "key expects a relation".to_string())?
+            .trim_axi();
         if carriers.is_some() || params.is_some() {
             return Err(
                 "`on (...)` / `param (...)` are only supported for symmetric/transitive constraints"
@@ -4532,13 +4628,15 @@ fn parse_set_item_with_source(
         let field_sources = field_slices
             .into_iter()
             .map(|part| {
-                let (key, value) = part.split_once('=').expect("validated tuple field");
-                (
+                let (key, value) = part
+                    .split_once('=')
+                    .ok_or_else(|| format!("tuple field missing `=`: `{part}`"))?;
+                Ok((
                     relative_range(root, key.trim_axi()),
                     relative_range(root, value.trim_axi()),
-                )
+                ))
             })
-            .collect();
+            .collect::<Result<Vec<_>, String>>()?;
         return Ok((
             SetItemV1::Tuple {
                 label: label.map(str::to_string),
@@ -4583,6 +4681,16 @@ mod tests {
             .join("../../..")
             .canonicalize()
             .expect("canonicalize repo root")
+    }
+
+    #[test]
+    fn missing_source_range_returns_line_error_without_panicking() {
+        let segments = vec![(0..3, 12)];
+        let err = required_original_range(&segments, 4..5, 7, "module name")
+            .expect_err("unmapped source must reject");
+        assert!(
+            matches!(err, SchemaV1ParseError::Line { line: 7, message } if message.contains("module name"))
+        );
     }
 
     #[test]
