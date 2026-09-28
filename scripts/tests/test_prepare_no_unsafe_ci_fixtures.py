@@ -38,7 +38,7 @@ class PrepareNoUnsafeCiFixturesTests(unittest.TestCase):
             os.link(source, self.archive)
         except OSError:
             shutil.copyfile(source, self.archive)
-        self.assertEqual(prepare(self.root), {"homes": 2, "files_per_home": 32, "pins": 2})
+        self.assertEqual(prepare(self.root), {"homes": 2, "files_per_home": 32, "pins": 3})
         for home in CANDIDATE_HOMES:
             library = self.root / home / "library"
             files = list(library.rglob("*"))

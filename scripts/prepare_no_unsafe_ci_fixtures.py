@@ -47,6 +47,13 @@ PINNED_EVIDENCE = (
         "observe-hosted-0-complete/files/FINAL_RECEIPT.json.txt",
         "9b8fa7fc7524c759183e9c06b038e06652fb346b97121d240d775f40a4fa9c3e",
     ),
+    # Exact bytes of a2d9c80f:scripts/check_no_unsafe.py, the BASE-01 negative control.
+    (
+        "scripts/fixtures/no_unsafe/BASE01_release_check_no_unsafe.py.txt",
+        "build/engineering-quality/roadmap-wave-01-policy-v2/"
+        "policy-design-20260908T171348Z/frozen/scripts/check_no_unsafe.py.txt",
+        "00e373b209b49471b25920e8754c1b8c1040bcd6924b9447c5c8641f51ed711b",
+    ),
 )
 
 
