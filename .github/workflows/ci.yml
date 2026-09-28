@@ -17,6 +17,17 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
+      - name: Observe checkout Git worktree control
+        run: |
+          if [ -e .git/config.worktree ] || [ -L .git/config.worktree ]; then
+            stat -c 'config.worktree: %F, %s bytes' .git/config.worktree
+            if [ -f .git/config.worktree ] &&
+               [ ! -L .git/config.worktree ]; then
+              git config --file .git/config.worktree --name-only --list
+            fi
+          else
+            echo 'config.worktree: absent after checkout'
+          fi
       # actions/setup-node pinned to an immutable commit.
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
@@ -78,6 +89,17 @@ jobs:
         timeout-minutes: 15
         working-directory: lean
         run: lake exe cache get
+      - name: Observe pre-gate Git worktree control
+        run: |
+          if [ -e .git/config.worktree ] || [ -L .git/config.worktree ]; then
+            stat -c 'config.worktree: %F, %s bytes' .git/config.worktree
+            if [ -f .git/config.worktree ] &&
+               [ ! -L .git/config.worktree ]; then
+              git config --file .git/config.worktree --name-only --list
+            fi
+          else
+            echo 'config.worktree: absent before gate'
+          fi
       - name: Run exact release decision
         timeout-minutes: 90
         run: make release-gate
