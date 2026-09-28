@@ -17,23 +17,35 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-      - name: Observe checkout Git worktree control
+      - name: Normalize checkout's disabled sparse settings
         run: |
-          if [ -e .git/config.worktree ] || [ -L .git/config.worktree ]; then
-            stat -c 'config.worktree: %F, %s bytes' .git/config.worktree
-            if [ -f .git/config.worktree ] &&
-               [ ! -L .git/config.worktree ]; then
-              git config --file .git/config.worktree --name-only --list
-              for key in \
-                core.sparsecheckout core.sparsecheckoutcone index.sparse; do
-                value="$(git config --file .git/config.worktree \
-                  --get --bool "$key")"
-                printf '%s=%s\n' "$key" "$value"
-              done
-            fi
-          else
-            echo 'config.worktree: absent after checkout'
+          set -euo pipefail
+          test -d .git && test ! -L .git
+          control=.git/config.worktree
+          if [ -e "$control" ] || [ -L "$control" ]; then
+            test -f "$control" && test ! -L "$control"
+            test "$(stat -c %s "$control")" -le 128
+            keys="$(git config --file "$control" --name-only --list)"
+            expected="$(printf '%s\n' \
+              core.sparsecheckout core.sparsecheckoutcone index.sparse)"
+            test "$keys" = "$expected"
+            for key in \
+              core.sparsecheckout core.sparsecheckoutcone index.sparse; do
+              test "$(git config --file "$control" \
+                --get-all --bool "$key")" = false
+            done
+            rm -- "$control"
+            test ! -e "$control" && test ! -L "$control"
+            echo 'Removed exact disabled sparse-worktree checkout control'
           fi
+          for key in \
+            core.sparsecheckout core.sparsecheckoutcone index.sparse; do
+            if value="$(git config --get --bool "$key")"; then
+              test "$value" = false
+            else
+              test "$?" -eq 1
+            fi
+          done
       # actions/setup-node pinned to an immutable commit.
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
@@ -95,17 +107,6 @@ jobs:
         timeout-minutes: 15
         working-directory: lean
         run: lake exe cache get
-      - name: Observe pre-gate Git worktree control
-        run: |
-          if [ -e .git/config.worktree ] || [ -L .git/config.worktree ]; then
-            stat -c 'config.worktree: %F, %s bytes' .git/config.worktree
-            if [ -f .git/config.worktree ] &&
-               [ ! -L .git/config.worktree ]; then
-              git config --file .git/config.worktree --name-only --list
-            fi
-          else
-            echo 'config.worktree: absent before gate'
-          fi
       - name: Run exact release decision
         timeout-minutes: 90
         run: make release-gate
