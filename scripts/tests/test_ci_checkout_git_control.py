@@ -8,19 +8,24 @@ import tempfile
 import unittest
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = ROOT / ".github/workflows/ci.yml"
 STEP = "      - name: Normalize checkout's disabled sparse settings"
-NEXT_STEP = "      # actions/setup-node pinned to an immutable commit."
 
 
 def normalizer_script() -> str:
     lines = WORKFLOW.read_text(encoding="utf-8").splitlines()
     start = lines.index(STEP)
-    end = lines.index(NEXT_STEP, start + 1)
-    if lines[start + 1] != "        run: |":
-        raise AssertionError("checkout normalizer is not a shell block")
+    end = next(
+        (
+            index
+            for index in range(start + 2, len(lines))
+            if lines[index].startswith(("      - ", "      # "))
+        ),
+        -1,
+    )
+    if end < 0 or lines[start + 1] != "        run: |":
+        raise AssertionError("checkout normalizer has no bounded shell block")
     block = lines[start + 2 : end]
     if not block or any(not line.startswith("          ") for line in block):
         raise AssertionError("checkout normalizer indentation changed")
