@@ -45,7 +45,7 @@
     "expected_cases_sha256": "13603f622fb4817e6bc03b703a723101aa90f3a870986e0f83f4cc177c1dceec"
   },
   "bounds": {
-    "max_cases": 32,
+    "max_cases": 40,
     "max_source_bytes": 4096,
     "max_syntax_depth": 8,
     "max_lines": 96,
@@ -553,6 +553,70 @@
         "formation": null,
         "outcome_class": "typecheck.refinement"
       }
+    },
+    {
+      "id": "u03-dependent-positive",
+      "path": "fixtures/canonical/contract/dependent_roles/positive.axi",
+      "sha256": "2c052d2524abd6b98d7e3cbf87f91eead04fcb749d6f013abecf226f6ca46e9a",
+      "revision_digest_v2": "axi:revision:v2:sha256:e11a2cd417823d6fe4e4ebbb1ef445de7739b82bc05c5a171f1d1f3c6e47e5a7",
+      "coverage_probes": {"authority": "exact-source-hash-and-revision", "differential_envelope": "rust-and-lean-envelope-execution"},
+      "expected": {"parse": true, "typecheck": true, "formation": true, "outcome_class": "accepted"}
+    },
+    {
+      "id": "u03-dependent-forward",
+      "path": "fixtures/canonical/contract/dependent_roles/forward_reference.axi",
+      "sha256": "516d94577d163f55f9a23c4342ce9cec8fbeadfa270bcdd2480f8b6f832b5cc1",
+      "revision_digest_v2": "axi:revision:v2:sha256:6e68793db55c8904458c9bf238a35cdf6edbb6926777b9a751a4ceb362f06870",
+      "coverage_probes": {"surface_forms": "indexed-dependent-role-surface", "authority": "exact-source-hash-and-revision"},
+      "expected": {"parse": true, "typecheck": false, "formation": null, "outcome_class": "typecheck.dependent_role"}
+    },
+    {
+      "id": "u03-refinement-positive",
+      "path": "fixtures/canonical/contract/refinements/finite_cardinality.axi",
+      "sha256": "371faaf2ec10cc629eb8568fecb099d00252c15dfb0a8a17843617befe30e7e6",
+      "revision_digest_v2": "axi:revision:v2:sha256:6a9678794ff24f0d6d2b00baaadb5b1553cfc7953d5e4f7a197f4670c3b7544a",
+      "coverage_probes": {"authority": "exact-source-hash-and-revision", "differential_envelope": "rust-and-lean-envelope-execution"},
+      "expected": {"parse": true, "typecheck": true, "formation": true, "outcome_class": "accepted"}
+    },
+    {
+      "id": "u03-refinement-unsupported-predicate",
+      "path": "fixtures/canonical/contract/refinements/unsupported_predicate.axi",
+      "sha256": "9602606765cf6a6d5c9d9836366e75698df16df153ce3495d6558bc61e8104ec",
+      "revision_digest_v2": "axi:revision:v2:sha256:2023e00f07bd4658b63c902d5ecaeb85c9fac1c9ee8a8a6704a7350ebf04171e",
+      "coverage_probes": {"authority": "exact-source-hash-and-revision", "differential_envelope": "rust-and-lean-envelope-execution"},
+      "expected": {"parse": true, "typecheck": false, "formation": null, "outcome_class": "typecheck.refinement"}
+    },
+    {
+      "id": "u03-scope-positive",
+      "path": "fixtures/canonical/contract/scopes/valid_rewrite.axi",
+      "sha256": "4d280056bda55eb5e8902e48fbf1e23a9e22d083e25c96a936ae0ac5ec4520f6",
+      "revision_digest_v2": "axi:revision:v2:sha256:95138f44e7294f1271076fd961f33ec7f5147e369e3dda1704b9df6b6a4006df",
+      "coverage_probes": {"authority": "exact-source-hash-and-revision", "differential_envelope": "rust-and-lean-envelope-execution"},
+      "expected": {"parse": true, "typecheck": true, "formation": true, "outcome_class": "accepted"}
+    },
+    {
+      "id": "u03-scope-duplicate-variable",
+      "path": "fixtures/canonical/contract/scopes/duplicate_variable.axi",
+      "sha256": "f6d62eceeb67f126e91694336e8645bc1ce4c1bc8dd2a9069b5fa62f4b61f97c",
+      "revision_digest_v2": "axi:revision:v2:sha256:c2a4d1d1e7115bc7f9900f7e2632fc6b6b209c67680f3a53225906cac251fdad",
+      "coverage_probes": {"authority": "exact-source-hash-and-revision", "differential_envelope": "rust-and-lean-envelope-execution"},
+      "expected": {"parse": true, "typecheck": false, "formation": null, "outcome_class": "typecheck.duplicate_declaration"}
+    },
+    {
+      "id": "u03-equation-opaque-review",
+      "path": "fixtures/canonical/contract/equations/opaque_text.axi",
+      "sha256": "9d62e05efde018f2d7046463b160c794c47f98b9dfcb66cf3696b89bc7d16a60",
+      "revision_digest_v2": "axi:revision:v2:sha256:471730e9ee6e89027f107daac52cbf2c7305aaf00233f209055efb817f833665",
+      "coverage_probes": {"authority": "exact-source-hash-and-revision", "differential_envelope": "rust-and-lean-envelope-execution"},
+      "expected": {"parse": true, "typecheck": true, "formation": true, "outcome_class": "accepted"}
+    },
+    {
+      "id": "u03-equation-endpoint-mismatch",
+      "path": "fixtures/canonical/contract/equations/endpoint_mismatch.axi",
+      "sha256": "b045ae498ac34dd24bc037dacd4774b71fdb6cde1a04d018a889b221c971a403",
+      "revision_digest_v2": "axi:revision:v2:sha256:4d09a5a2c8c537cd3e04e380408bd8794b85c32ad88fdd3ed37ca6e08c92ce32",
+      "coverage_probes": {"authority": "exact-source-hash-and-revision", "differential_envelope": "rust-and-lean-envelope-execution"},
+      "expected": {"parse": true, "typecheck": false, "formation": null, "outcome_class": "typecheck.theory_formation"}
     }
   ]
 }

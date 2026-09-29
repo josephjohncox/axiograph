@@ -194,7 +194,13 @@ The gate runs twice and compares its reports byte-for-byte. Measured duration is
 
 Hand-authored cases bind exact source hashes and revision digests. Selected positive cases also bind hand-written AST values. An unsupported opaque constraint has a separate expected outcome, even when parse, typecheck, and formation all succeed. Closed semantic coverage probes replace free-form section labels. Each probe checks the source, golden AST, expected stage transition, or bound witness before execution. The report records the hand case and passed runtime observation for every required contract section. The operational-bound probe runs the exact-N fixture through both binaries and checks that the runner rejects its N+1 mutation before execution.
 
-The report is local test evidence. It does not become accepted source, compiled IR, or a certificate.
+Eight additional hand cases test dependent roles, refinements, rewrite scopes, and equations. Each case binds exact bytes, a revision digest, and expected stages and classes. Rust and Lean compare parsed ASTs and independently check type results. These cases do not extend the cross-language rejection taxonomy.
+
+A separate import corpus checks seven ordered closure outcomes in the canonical compiler. The legal imported equation case cannot export a V3 category certificate. That certificate binds one module, not the import closure. A CLI test checks 1,024 and 1,025 import overlay entries. It does not claim a filesystem closure of 1,024 imported modules.
+
+A separate trusted file-mode corpus checks 15 SHA-pinned boundary cases. It checks exact bytes, parser stages, revision digests, loaded anchors, and verifier rejection reasons. File loading without a matching certificate is not certificate acceptance. A compiler test checks the finite-category object declaration limit at 64 and 65.
+
+The reports are local test evidence. They do not become accepted source, compiled IR, or certificates.
 
 ## Rejection Classes
 
