@@ -53,7 +53,10 @@ use axiograph_pathdb::{
 };
 
 mod projection;
-pub(crate) use projection::{AuthoringDetailV1, AuthoringPresentationV1, AuthoringSectionV1};
+pub(crate) use projection::{
+    AuthoringDetailV1, AuthoringNestedCollectionV1, AuthoringNestedPageRequestV1,
+    AuthoringPresentationV1, AuthoringSectionV1,
+};
 
 pub(crate) const AUTHORING_WORKSPACE_REQUEST_VERSION_V1: &str = "authoring_workspace_request_v1";
 pub(crate) const AUTHORING_WORKSPACE_REPORT_VERSION_V1: &str = "authoring_workspace_report_v1";
@@ -67,6 +70,8 @@ const MAX_AUTHORING_HTTP_CONNECTIONS: usize = 32;
 const MAX_AUTHORING_HTTP_CONNECTION_TIME: std::time::Duration = std::time::Duration::from_secs(30);
 const MAX_AUTHORING_LSP_DOCUMENTS: usize = 64;
 const MAX_AUTHORING_LSP_TOTAL_BYTES: usize = 64 * 1024 * 1024;
+pub(crate) const AUTHORING_DIAGNOSTIC_ORDER_V1: &str =
+    "authoring_pipeline_order_with_canonical_import_closure_source_suborder";
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
@@ -179,6 +184,39 @@ pub(crate) struct AuthoringDiagnosticV1 {
     /// Absent means explicitly unlocated; legacy path/line alone is not token precision.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub location: Option<crate::axi_input::diagnostics::SourceLocationV1>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub(crate) struct AuthoringDiagnosticCollectionV1 {
+    pub observed_errors: usize,
+    pub returned_errors: usize,
+    pub omitted_observed_errors: usize,
+    pub message_bytes: usize,
+    pub work_units: usize,
+    pub work_exhausted: bool,
+    pub truncated: bool,
+    pub max_items: usize,
+    pub max_message_bytes: usize,
+    pub max_work: usize,
+    pub order: String,
+}
+
+impl Default for AuthoringDiagnosticCollectionV1 {
+    fn default() -> Self {
+        Self {
+            observed_errors: 0,
+            returned_errors: 0,
+            omitted_observed_errors: 0,
+            message_bytes: 0,
+            work_units: 0,
+            work_exhausted: false,
+            truncated: false,
+            max_items: axiograph_kernel::MAX_KERNEL_DIAGNOSTIC_ITEMS,
+            max_message_bytes: axiograph_kernel::MAX_KERNEL_DIAGNOSTIC_MESSAGE_BYTES,
+            max_work: axiograph_kernel::MAX_KERNEL_DIAGNOSTIC_WORK,
+            order: AUTHORING_DIAGNOSTIC_ORDER_V1.to_string(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -371,6 +409,7 @@ pub(crate) struct AuthoringWorkspaceReportV1 {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<AuthoringSourceAnchorV1>,
     pub diagnostics: Vec<AuthoringDiagnosticV1>,
+    pub diagnostic_collection: AuthoringDiagnosticCollectionV1,
     pub validation: AuthoringValidationV1,
     pub typed_holes: AuthoringTypedHolesV1,
     pub dependent_refinements: Vec<AuthoringDependentRefinementSummaryV1>,
@@ -447,13 +486,28 @@ impl AuthoringWorkspaceService {
         &self,
         request: AuthoringWorkspaceRequestV1,
     ) -> Result<AuthoringWorkspaceReportV1> {
-        self.execute_bound(request, &mut Vec::new())
+        self.execute_bound(request, &mut Vec::new(), &BTreeMap::new())
+    }
+
+    /// Same as [`Self::execute`], but any import candidate whose canonicalized
+    /// path matches a key of `import_overlays` compiles from that unsaved
+    /// buffer instead of disk bytes, so an unsaved root can resolve against
+    /// unsaved-but-open importee buffers (including importees never written
+    /// to disk) as one exact overlay closure. Nothing is written to disk by
+    /// this call.
+    pub(crate) fn execute_with_import_overlays(
+        &self,
+        request: AuthoringWorkspaceRequestV1,
+        import_overlays: &BTreeMap<PathBuf, Vec<u8>>,
+    ) -> Result<AuthoringWorkspaceReportV1> {
+        self.execute_bound(request, &mut Vec::new(), import_overlays)
     }
 
     fn execute_bound(
         &self,
         request: AuthoringWorkspaceRequestV1,
         input_anchors: &mut Vec<String>,
+        import_overlays: &BTreeMap<PathBuf, Vec<u8>>,
     ) -> Result<AuthoringWorkspaceReportV1> {
         request.validate()?;
         let candidate_path = self.resolve_existing_file(&request.axi_path, "axi_path")?;
@@ -461,7 +515,7 @@ impl AuthoringWorkspaceService {
         input_anchors.push(projection::digest(candidate_text.as_bytes()));
 
         let mut report = empty_report(self, request.operation);
-        let candidate = match self.compile_source(candidate_path, candidate_text) {
+        let candidate = match self.compile_source(candidate_path, candidate_text, import_overlays) {
             Ok(candidate) => candidate,
             Err(error) => {
                 let projection = error.downcast_ref::<WorkspaceQueryProjectionError>();
@@ -470,6 +524,18 @@ impl AuthoringWorkspaceService {
                     input_anchors.push(serde_json::to_string(&report.source)?);
                     report.validation.canonical_axi_valid = true;
                     report.validation.compiled_kernel_ir_valid = true;
+                }
+                if let Some(collection) = error.downcast_ref::<
+                    crate::axi_input::diagnostics::CanonicalSourceDiagnosticCollection,
+                >() {
+                    append_canonical_diagnostic_collection(
+                        &mut report,
+                        collection,
+                        "authoring",
+                    );
+                    report.promotion = promotion_review(&report, false, None);
+                    report.next_actions = next_actions(&report);
+                    return Ok(report);
                 }
                 let location = error
                     .downcast_ref::<crate::axi_input::diagnostics::CanonicalSourceDiagnostic>()
@@ -495,6 +561,7 @@ impl AuthoringWorkspaceService {
                         },
                     ),
                 });
+                refresh_diagnostic_collection(&mut report);
                 report.promotion = promotion_review(&report, false, None);
                 report.next_actions = next_actions(&report);
                 return Ok(report);
@@ -727,7 +794,7 @@ impl AuthoringWorkspaceService {
         if let Some(baseline_path) = request.baseline_axi_path.as_deref() {
             let path = self.resolve_existing_file(baseline_path, "baseline_axi_path")?;
             let text = self.read_or_override(&path, request.baseline_axi_text.as_deref())?;
-            match self.compile_source(path, text) {
+            match self.compile_source(path, text, &BTreeMap::new()) {
                 Ok(baseline) => {
                     input_anchors.push(serde_json::to_string(&source_anchor(self, &baseline)?)?);
                     report
@@ -741,28 +808,38 @@ impl AuthoringWorkspaceService {
                     if let Some(projection) = projection {
                         input_anchors.push(serde_json::to_string(&projection.source)?);
                     }
-                    let location = error
-                        .downcast_ref::<crate::axi_input::diagnostics::CanonicalSourceDiagnostic>()
-                        .and_then(|diagnostic| diagnostic.location.clone());
-                    report.diagnostics.push(AuthoringDiagnosticV1 {
-                        severity: AuthoringDiagnosticSeverityV1::Error,
-                        code: projection.map_or("authoring_baseline_compile_failed", |p| {
-                            if p.cause.is::<axiograph_pathdb::axi_module_import::UnsupportedQueryProjection>() {
-                                "authoring_baseline_query_projection_unsupported"
+                    if let Some(collection) = error.downcast_ref::<
+                        crate::axi_input::diagnostics::CanonicalSourceDiagnosticCollection,
+                    >() {
+                        append_canonical_diagnostic_collection(
+                            &mut report,
+                            collection,
+                            "authoring_baseline",
+                        );
+                    } else {
+                        let location = error
+                            .downcast_ref::<crate::axi_input::diagnostics::CanonicalSourceDiagnostic>()
+                            .and_then(|diagnostic| diagnostic.location.clone());
+                        report.diagnostics.push(AuthoringDiagnosticV1 {
+                            severity: AuthoringDiagnosticSeverityV1::Error,
+                            code: projection.map_or("authoring_baseline_compile_failed", |p| {
+                                if p.cause.is::<axiograph_pathdb::axi_module_import::UnsupportedQueryProjection>() {
+                                    "authoring_baseline_query_projection_unsupported"
+                                } else {
+                                    "authoring_baseline_query_projection_failed"
+                                }
+                            }).to_string(),
+                            message: error.to_string(),
+                            path: location.as_ref().map(|location| location.path.clone()),
+                            line: location.as_ref().map(|location| location.start.line),
+                            location,
+                            repair_hint: Some(if projection.is_some() {
+                                "use a baseline representable by the named query projection before requesting an evolution preview".to_string()
                             } else {
-                                "authoring_baseline_query_projection_failed"
-                            }
-                        }).to_string(),
-                        message: error.to_string(),
-                        path: location.as_ref().map(|location| location.path.clone()),
-                        line: location.as_ref().map(|location| location.start.line),
-                        location,
-                        repair_hint: Some(if projection.is_some() {
-                            "use a baseline representable by the named query projection before requesting an evolution preview".to_string()
-                        } else {
-                            "repair the baseline module before requesting an evolution preview".to_string()
-                        }),
-                    });
+                                "repair the baseline module before requesting an evolution preview".to_string()
+                            }),
+                        });
+                    }
                 }
             }
         } else if request.baseline_axi_text.is_some() {
@@ -783,6 +860,7 @@ impl AuthoringWorkspaceService {
             self.check_competency_questions(&candidate, &request, &mut report, input_anchors)?;
         }
 
+        refresh_diagnostic_collection(&mut report);
         report.ok = !report
             .diagnostics
             .iter()
@@ -845,11 +923,17 @@ impl AuthoringWorkspaceService {
         .with_context(|| format!("read authoring source `{}` as UTF-8", path.display()))
     }
 
-    fn compile_source(&self, path: PathBuf, text: String) -> Result<CompiledWorkspaceSource> {
-        let package = crate::axi_input::compile_canonical_axi_path_with_root_bytes(
+    fn compile_source(
+        &self,
+        path: PathBuf,
+        text: String,
+        import_overlays: &BTreeMap<PathBuf, Vec<u8>>,
+    ) -> Result<CompiledWorkspaceSource> {
+        let package = crate::axi_input::compile_canonical_axi_path_with_overlays_collecting(
             &path,
             text.as_bytes().to_vec(),
             std::slice::from_ref(&self.root),
+            import_overlays,
         )?;
         let sources = package.ordered_sources();
         let source = package_source_anchor(self, &path, &text, &package)?;
@@ -1220,6 +1304,150 @@ impl AuthoringWorkspaceService {
     }
 }
 
+fn append_canonical_diagnostic_collection(
+    report: &mut AuthoringWorkspaceReportV1,
+    collection: &crate::axi_input::diagnostics::CanonicalSourceDiagnosticCollection,
+    code_prefix: &str,
+) {
+    let errors_before = report
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.severity == AuthoringDiagnosticSeverityV1::Error)
+        .count();
+    let diagnostics_before = report.diagnostics.len();
+    let message_bytes_before = report
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.severity == AuthoringDiagnosticSeverityV1::Error)
+        .map(|diagnostic| diagnostic.message.len())
+        .sum::<usize>();
+    for diagnostic in &collection.diagnostics {
+        let location = diagnostic.location.clone();
+        let code = match &diagnostic.cause {
+            axiograph_kernel::KernelCompileError::Parse { .. } => {
+                format!("{code_prefix}_canonical_parse_failed")
+            }
+            axiograph_kernel::KernelCompileError::ImportResolution { .. }
+            | axiograph_kernel::KernelCompileError::UnknownImport { .. }
+            | axiograph_kernel::KernelCompileError::ImportCycle(_) => {
+                format!("{code_prefix}_canonical_import_failed")
+            }
+            axiograph_kernel::KernelCompileError::RoleCarrier { .. } => {
+                format!("{code_prefix}_canonical_type_failed")
+            }
+            _ => format!("{code_prefix}_canonical_compile_failed"),
+        };
+        let repair_hint = location
+            .as_ref()
+            .and_then(|location| location.suggested_name.as_deref())
+            .map_or_else(
+                || {
+                    "repair this exact canonical source occurrence, or inspect the explicitly unlocated compiler error; suggestions are advisory and do not write or promote"
+                        .to_string()
+                },
+                |suggestion| {
+                    format!(
+                        "advisory namespace-local candidate `{suggestion}`; review the exact source image before editing"
+                    )
+                },
+            );
+        report.diagnostics.push(AuthoringDiagnosticV1 {
+            severity: AuthoringDiagnosticSeverityV1::Error,
+            code,
+            message: diagnostic.cause.to_string(),
+            path: location.as_ref().map(|location| location.path.clone()),
+            line: location.as_ref().map(|location| location.start.line),
+            repair_hint: Some(repair_hint),
+            location,
+        });
+    }
+    if report.diagnostics.len() == diagnostics_before {
+        report.diagnostics.push(AuthoringDiagnosticV1 {
+            severity: AuthoringDiagnosticSeverityV1::Error,
+            code: format!("{code_prefix}_canonical_diagnostic_bound"),
+            message: "canonical compilation failed and the bounded collector retained no displayable item"
+                .to_string(),
+            path: None,
+            line: None,
+            repair_hint: Some(
+                "inspect the source under the reported item/byte/work ceilings; do not treat truncation as validation"
+                    .to_string(),
+            ),
+            location: None,
+        });
+    }
+    let returned_errors = errors_before.saturating_add(collection.diagnostics.len());
+    let observed_errors = errors_before.saturating_add(collection.observed_errors.max(1));
+    report.diagnostic_collection = AuthoringDiagnosticCollectionV1 {
+        observed_errors,
+        returned_errors,
+        omitted_observed_errors: observed_errors.saturating_sub(returned_errors),
+        message_bytes: message_bytes_before.saturating_add(
+            collection
+                .diagnostics
+                .iter()
+                .map(|diagnostic| diagnostic.cause.to_string().len())
+                .sum::<usize>(),
+        ),
+        work_units: collection.work_units,
+        work_exhausted: collection.work_exhausted,
+        truncated: collection.truncated(),
+        ..AuthoringDiagnosticCollectionV1::default()
+    };
+}
+
+fn refresh_diagnostic_collection(report: &mut AuthoringWorkspaceReportV1) {
+    let prior_omitted = report.diagnostic_collection.omitted_observed_errors;
+    let mut retained_errors = 0_usize;
+    let mut message_bytes = 0_usize;
+    let mut newly_omitted = 0_usize;
+    report.diagnostics.retain(|diagnostic| {
+        if diagnostic.severity != AuthoringDiagnosticSeverityV1::Error
+            || diagnostic.code.ends_with("_diagnostic_bound")
+        {
+            return true;
+        }
+        let next_bytes = message_bytes.saturating_add(diagnostic.message.len());
+        if retained_errors >= axiograph_kernel::MAX_KERNEL_DIAGNOSTIC_ITEMS
+            || next_bytes > axiograph_kernel::MAX_KERNEL_DIAGNOSTIC_MESSAGE_BYTES
+        {
+            newly_omitted = newly_omitted.saturating_add(1);
+            return false;
+        }
+        retained_errors += 1;
+        message_bytes = next_bytes;
+        true
+    });
+    if newly_omitted > 0
+        && !report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code.ends_with("_diagnostic_bound"))
+    {
+        report.diagnostics.push(AuthoringDiagnosticV1 {
+            severity: AuthoringDiagnosticSeverityV1::Error,
+            code: "authoring_diagnostic_bound".to_string(),
+            message: "additional authoring errors were omitted at the hard item or message-byte ceiling"
+                .to_string(),
+            path: None,
+            line: None,
+            repair_hint: Some(
+                "inspect the retained errors and repair without treating bounded output as validation"
+                    .to_string(),
+            ),
+            location: None,
+        });
+    }
+    let omitted_observed_errors = prior_omitted.saturating_add(newly_omitted);
+    report.diagnostic_collection.observed_errors =
+        retained_errors.saturating_add(omitted_observed_errors);
+    report.diagnostic_collection.returned_errors = retained_errors;
+    report.diagnostic_collection.omitted_observed_errors = omitted_observed_errors;
+    report.diagnostic_collection.message_bytes = message_bytes;
+    report.diagnostic_collection.truncated =
+        omitted_observed_errors > 0 || report.diagnostic_collection.work_exhausted;
+}
+
 fn empty_report(
     service: &AuthoringWorkspaceService,
     operation: AuthoringWorkspaceOperationV1,
@@ -1231,6 +1459,7 @@ fn empty_report(
         ok: false,
         source: None,
         diagnostics: Vec::new(),
+        diagnostic_collection: AuthoringDiagnosticCollectionV1::default(),
         validation: AuthoringValidationV1 {
             canonical_axi_valid: false,
             compiled_kernel_ir_valid: false,
@@ -2162,6 +2391,156 @@ struct LspDocumentImage {
     identity: Option<PathBuf>,
     text: String,
     revision: axiograph_kernel::RevisionDigestV2,
+    // LSP textDocument version (didOpen/didChange). `None` means the client never
+    // sent a version (e.g. some didOpen payloads); version checks are then skipped
+    // for that document rather than fabricating an ordering.
+    version: Option<i64>,
+}
+
+// A single LSP `TextDocumentContentChangeEvent` decoded from the wire. `range`
+// is `None` for full-document sync; `Some` means the client sent an
+// incremental edit and every offset in it is expressed in UTF-16 code units
+// (per the LSP spec), not bytes or Unicode scalar values.
+struct LspContentChangeV1 {
+    range: Option<LspRangeV1>,
+    text: String,
+}
+
+#[derive(Clone, Copy)]
+struct LspPositionV1 {
+    line: u32,
+    character: u32,
+}
+
+#[derive(Clone, Copy)]
+struct LspRangeV1 {
+    start: LspPositionV1,
+    end: LspPositionV1,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum LspRangeEditErrorV1 {
+    /// The range's start line/character sorts after its end line/character.
+    InvertedRange,
+    /// A line/character position does not exist in the current document, or a
+    /// character offset lands inside a UTF-16 surrogate pair (an astral code
+    /// point split across two UTF-16 units) rather than on its boundary.
+    OutOfBounds,
+}
+
+// Decode a raw JSON `contentChanges` entry into a typed content change,
+// rejecting the entry (via `None`) if it is not a well-formed full-text or
+// range-edit payload. LSP full-text-sync payloads carry `text` with no
+// `range`; incremental-sync payloads carry both `range` and `text`.
+fn decode_lsp_content_change(change: &Value) -> Option<LspContentChangeV1> {
+    let text = change.get("text").and_then(Value::as_str)?.to_string();
+    let range = match change.get("range") {
+        None | Some(Value::Null) => None,
+        Some(range) => Some(LspRangeV1 {
+            start: decode_lsp_position(range.get("start")?)?,
+            end: decode_lsp_position(range.get("end")?)?,
+        }),
+    };
+    Some(LspContentChangeV1 { range, text })
+}
+
+fn decode_lsp_position(position: &Value) -> Option<LspPositionV1> {
+    Some(LspPositionV1 {
+        line: u32::try_from(position.get("line")?.as_u64()?).ok()?,
+        character: u32::try_from(position.get("character")?.as_u64()?).ok()?,
+    })
+}
+
+// Convert a UTF-16 `(line, character)` position into a byte offset into
+// `text`, failing closed (rather than clamping/rounding) when the line does
+// not exist, the character offset exceeds the line's UTF-16 length, or the
+// offset lands inside a surrogate pair (an astral/non-BMP code point is two
+// UTF-16 units but one Unicode scalar value; a boundary between them is not a
+// valid edit position).
+fn utf16_position_to_byte_offset(
+    text: &str,
+    position: LspPositionV1,
+) -> Result<usize, LspRangeEditErrorV1> {
+    let mut current_line = 0u32;
+    let mut line_start_byte = 0usize;
+    if position.line > 0 {
+        for (index, byte) in text.bytes().enumerate() {
+            if byte == b'\n' {
+                current_line += 1;
+                line_start_byte = index + 1;
+                if current_line == position.line {
+                    break;
+                }
+            }
+        }
+        if current_line < position.line {
+            return Err(LspRangeEditErrorV1::OutOfBounds);
+        }
+    }
+    let line_text = match text[line_start_byte..].split_once('\n') {
+        Some((line, _)) => line,
+        None => &text[line_start_byte..],
+    };
+    let mut utf16_units = 0u32;
+    for (char_byte_offset, ch) in line_text.char_indices() {
+        if utf16_units == position.character {
+            return Ok(line_start_byte + char_byte_offset);
+        }
+        let width = ch.len_utf16() as u32;
+        if utf16_units < position.character && position.character < utf16_units + width {
+            // The requested offset lands inside this scalar value's UTF-16
+            // encoding (only possible for astral code points, width == 2):
+            // not a valid boundary.
+            return Err(LspRangeEditErrorV1::OutOfBounds);
+        }
+        utf16_units += width;
+    }
+    if utf16_units == position.character {
+        return Ok(line_start_byte + line_text.len());
+    }
+    Err(LspRangeEditErrorV1::OutOfBounds)
+}
+
+// Apply one incremental LSP range edit to `text`, returning the new full
+// text. Fails closed (no partial/best-effort merge) on an inverted range or
+// any position that does not resolve to a valid UTF-16 boundary.
+fn apply_lsp_range_edit(
+    text: &str,
+    range: LspRangeV1,
+    replacement: &str,
+) -> Result<String, LspRangeEditErrorV1> {
+    if (range.start.line, range.start.character) > (range.end.line, range.end.character) {
+        return Err(LspRangeEditErrorV1::InvertedRange);
+    }
+    let start = utf16_position_to_byte_offset(text, range.start)?;
+    let end = utf16_position_to_byte_offset(text, range.end)?;
+    if start > end || end > text.len() {
+        return Err(LspRangeEditErrorV1::OutOfBounds);
+    }
+    let mut merged = String::with_capacity(text.len() - (end - start) + replacement.len());
+    merged.push_str(&text[..start]);
+    merged.push_str(replacement);
+    merged.push_str(&text[end..]);
+    Ok(merged)
+}
+
+// Apply a full `contentChanges` sequence (as sent by one `didChange`) against
+// `base` in order, and return the resulting text. Each entry may be a
+// full-text replacement (`range: None`) or an incremental range edit; a
+// malformed entry or a range edit that fails `apply_lsp_range_edit` fails the
+// whole sequence closed rather than applying a prefix.
+fn apply_lsp_content_changes(base: &str, changes: &[Value]) -> Result<String, LspRangeEditErrorV1> {
+    let mut current = base.to_string();
+    for change in changes {
+        let Some(decoded) = decode_lsp_content_change(change) else {
+            return Err(LspRangeEditErrorV1::OutOfBounds);
+        };
+        current = match decoded.range {
+            None => decoded.text,
+            Some(range) => apply_lsp_range_edit(&current, range, &decoded.text)?,
+        };
+    }
+    Ok(current)
 }
 
 struct AuthoringWorkspaceLspState {
@@ -2313,8 +2692,18 @@ fn handle_lsp_notification(
                 .and_then(Value::as_str)
                 .unwrap_or("")
                 .to_string();
-            if store_lsp_document(state, &uri, &text) {
-                publish_lsp_diagnostics(state, &uri, &text)
+            let version = notification
+                .params
+                .pointer("/textDocument/version")
+                .and_then(Value::as_i64);
+            if store_lsp_document(state, &uri, &text, version) {
+                let mut messages = publish_lsp_diagnostics(state, &uri, &text);
+                // A newly opened unsaved buffer can be an import overlay for
+                // other open documents (see `open_document_import_overlays`);
+                // those importers must be recomputed now, not left pinned to
+                // whatever they resolved against before this buffer existed.
+                messages.extend(revalidate_dependent_lsp_importers(state, &uri));
+                messages
             } else {
                 let mut messages = replace_lsp_publications(state, &uri, BTreeMap::new());
                 messages.extend(lsp_resource_limit_diagnostic(&uri));
@@ -2328,22 +2717,89 @@ fn handle_lsp_notification(
                 .and_then(Value::as_str)
                 .unwrap_or("")
                 .to_string();
-            let text = notification
+            let version = notification
+                .params
+                .pointer("/textDocument/version")
+                .and_then(Value::as_i64);
+            if !lsp_version_is_monotonic(state, &uri, version) {
+                // Stale/out-of-order version: fail closed. Drop the tracked image so a
+                // rejected edit cannot silently keep serving diagnostics against text
+                // the client no longer holds, and publish a typed resource diagnostic
+                // instead of an unsafe/best-effort merge.
+                state.documents.remove(&uri);
+                state.document_images_incomplete = true;
+                let mut messages = replace_lsp_publications(state, &uri, BTreeMap::new());
+                messages.extend(lsp_stale_version_diagnostic(&uri));
+                return messages;
+            }
+            let changes = notification
                 .params
                 .get("contentChanges")
                 .and_then(Value::as_array)
-                .and_then(|changes| changes.last())
-                .and_then(|change| change.get("text"))
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_string();
-            if store_lsp_document(state, &uri, &text) {
+                .cloned()
+                .unwrap_or_default();
+            // Incremental range edits (UTF-16 line/character positions, per the
+            // LSP spec) are applied against the last tracked image for this URI;
+            // a lone full-text entry (no `range`) replaces it directly. Either an
+            // unresolvable range (out-of-bounds line/character, a boundary
+            // inside a UTF-16 surrogate pair, or an inverted range) or an
+            // unknown base document (a range edit with nothing tracked yet)
+            // fails the whole edit closed: the tracked image is dropped rather
+            // than silently applying a partial/best-effort merge.
+            let base = state.documents.get(&uri).map(|image| image.text.clone());
+            let applied = match (
+                base,
+                changes
+                    .iter()
+                    .any(|change| change.get("range").is_some_and(|range| !range.is_null())),
+            ) {
+                (_, false) => changes
+                    .last()
+                    .and_then(|change| change.get("text"))
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+                    .ok_or(LspRangeEditErrorV1::OutOfBounds),
+                (None, true) => Err(LspRangeEditErrorV1::OutOfBounds),
+                (Some(base), true) => apply_lsp_content_changes(&base, &changes),
+            };
+            let Ok(text) = applied else {
+                state.documents.remove(&uri);
+                state.document_images_incomplete = true;
+                let mut messages = replace_lsp_publications(state, &uri, BTreeMap::new());
+                messages.extend(lsp_stale_version_diagnostic(&uri));
+                return messages;
+            };
+            if store_lsp_document(state, &uri, &text, version) {
                 publish_lsp_diagnostics(state, &uri, &text)
             } else {
                 let mut messages = replace_lsp_publications(state, &uri, BTreeMap::new());
                 messages.extend(lsp_resource_limit_diagnostic(&uri));
                 messages
             }
+        }
+        "textDocument/didSave" => {
+            let Some(uri) = notification
+                .params
+                .pointer("/textDocument/uri")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+            else {
+                return Vec::new();
+            };
+            // didSave carries no authoritative text in this session's sync mode
+            // (full-document sync only); the tracked in-memory image from the
+            // last didOpen/didChange remains the single source of truth. Saving
+            // does not invalidate that image, but it must deterministically
+            // revalidate this document and every other tracked document whose
+            // last-published diagnostics depended on this document's on-disk
+            // bytes, since a save is exactly the point at which those bytes are
+            // guaranteed to change from the caller's perspective.
+            let Some(text) = state.documents.get(&uri).map(|image| image.text.clone()) else {
+                return Vec::new();
+            };
+            let mut messages = publish_lsp_diagnostics(state, &uri, &text);
+            messages.extend(revalidate_dependent_lsp_importers(state, &uri));
+            messages
         }
         "textDocument/didClose" => {
             if let Some(uri) = notification
@@ -2352,7 +2808,9 @@ fn handle_lsp_notification(
                 .and_then(Value::as_str)
             {
                 state.documents.remove(uri);
-                return replace_lsp_publications(state, uri, BTreeMap::new());
+                let mut messages = replace_lsp_publications(state, uri, BTreeMap::new());
+                messages.extend(revalidate_dependent_lsp_importers(state, uri));
+                return messages;
             }
             Vec::new()
         }
@@ -2360,7 +2818,12 @@ fn handle_lsp_notification(
     }
 }
 
-fn store_lsp_document(state: &mut AuthoringWorkspaceLspState, uri: &str, text: &str) -> bool {
+fn store_lsp_document(
+    state: &mut AuthoringWorkspaceLspState,
+    uri: &str,
+    text: &str,
+    version: Option<i64>,
+) -> bool {
     let previous = state.documents.get(uri).map_or(0, |image| image.text.len());
     let total = state
         .documents
@@ -2384,9 +2847,51 @@ fn store_lsp_document(state: &mut AuthoringWorkspaceLspState, uri: &str, text: &
             identity: uri_to_workspace_path(state.service.root(), uri).ok(),
             text: text.to_string(),
             revision: axiograph_kernel::RevisionDigestV2::from_accepted_text(text),
+            version,
         },
     );
     true
+}
+
+// Version monotonicity: a didChange whose version is not strictly greater than the
+// last tracked version for this document is stale/out-of-order and must fail closed
+// rather than silently overwrite newer client state with older text. Documents with
+// no tracked version yet, or edits carrying no version at all, are accepted (the
+// client did not opt into version tracking for this exchange).
+fn lsp_version_is_monotonic(
+    state: &AuthoringWorkspaceLspState,
+    uri: &str,
+    version: Option<i64>,
+) -> bool {
+    let (Some(next), Some(previous)) = (
+        version,
+        state.documents.get(uri).and_then(|image| image.version),
+    ) else {
+        return true;
+    };
+    next > previous
+}
+
+fn lsp_stale_version_diagnostic(uri: &str) -> Vec<Message> {
+    let Ok(uri) = uri.parse::<Uri>() else {
+        return Vec::new();
+    };
+    let diagnostic = Diagnostic {
+        range: Range::new(Position::new(0, 0), Position::new(0, 0)),
+        data: Some(json!({"sourceLocated":false,"location":null})),
+        severity: Some(DiagnosticSeverity::ERROR),
+        code: Some(lsp_types::NumberOrString::String(
+            "authoring.stale_version".to_string(),
+        )),
+        source: Some("axiograph-authoring-workspace".to_string()),
+        message: "document edit rejected: version is not strictly greater than the last tracked version; precise diagnostic publications are disabled until the client resends an in-order edit".to_string(),
+        ..Diagnostic::default()
+    };
+    vec![Message::Notification(Notification::new(
+        "textDocument/publishDiagnostics".to_string(),
+        serde_json::to_value(PublishDiagnosticsParams::new(uri, vec![diagnostic], None))
+            .unwrap_or(Value::Null),
+    ))]
 }
 
 // At most MAX_AUTHORING_LSP_DOCUMENTS images are inspected. Multiple client aliases
@@ -2432,6 +2937,52 @@ fn lsp_resource_limit_diagnostic(uri: &str) -> Vec<Message> {
         serde_json::to_value(PublishDiagnosticsParams::new(uri, vec![diagnostic], None))
             .unwrap_or(Value::Null),
     ))]
+}
+
+// Build a bounded canonical-path -> unsaved-bytes overlay from every other
+// currently open LSP document. This lets an importer resolve against an
+// open-but-unsaved importee buffer instead of stale/absent disk bytes,
+// without ever writing to disk. `requester_uri` is excluded (its own text is
+// supplied as the root buffer, not as an import overlay of itself); documents
+// with no validated workspace identity (rejected/never-verified paths) are
+// skipped rather than guessed at. A document opened under an alias URI (a
+// URI that does not round-trip to the same string once resolved back from
+// its canonical workspace path) is never trusted as an overlay: aliases and
+// ambiguous images must not recover stale precision, matching the ownership
+// policy `verified_lsp_owner` already enforces for diagnostic locations. Two
+// distinct *canonical* URIs racing to claim the same import path are also
+// excluded outright rather than picking one arbitrarily.
+fn open_document_import_overlays(
+    state: &AuthoringWorkspaceLspState,
+    requester_uri: &str,
+) -> BTreeMap<PathBuf, Vec<u8>> {
+    let mut claims = BTreeMap::<PathBuf, Vec<u8>>::new();
+    let mut ambiguous = BTreeSet::<PathBuf>::new();
+    let mut seen = 0_usize;
+    for (document_uri, image) in &state.documents {
+        if document_uri.as_str() == requester_uri || seen >= MAX_AUTHORING_LSP_DOCUMENTS {
+            continue;
+        }
+        seen += 1;
+        let Some(path) = image.identity.clone() else {
+            continue;
+        };
+        let is_canonical_uri = url::Url::from_file_path(&path)
+            .is_ok_and(|canonical| canonical.as_str() == document_uri.as_str());
+        if !is_canonical_uri {
+            continue;
+        }
+        if claims
+            .insert(path.clone(), image.text.as_bytes().to_vec())
+            .is_some()
+        {
+            ambiguous.insert(path);
+        }
+    }
+    for path in ambiguous {
+        claims.remove(&path);
+    }
+    claims
 }
 
 fn lsp_request_for_document(
@@ -2493,7 +3044,7 @@ fn publish_lsp_diagnostics(
         let diagnostic = authoring_diagnostic_to_lsp(AuthoringDiagnosticV1 {
             severity: AuthoringDiagnosticSeverityV1::Error,
             code: "authoring_lsp_document_unsupported".to_string(),
-            message: "diagnostics require an existing workspace .axi file (or a .cq file with a configured default); new files and unsaved import overlays are unsupported".to_string(),
+            message: "diagnostics require an existing on-disk workspace .axi file as the root (or a .cq file with a configured default); imports of that root now resolve against open-but-unsaved importee buffers as an overlay closure, but a brand-new root with no on-disk backing is still unsupported".to_string(),
             path: None, line: None, repair_hint: None, location: None,
         });
         return replace_lsp_publications(
@@ -2502,7 +3053,10 @@ fn publish_lsp_diagnostics(
             BTreeMap::from([(uri.to_string(), vec![diagnostic])]),
         );
     };
-    let report = match state.service.execute(request) {
+    let report = match state
+        .service
+        .execute_with_import_overlays(request, &open_document_import_overlays(state, uri))
+    {
         Ok(report) => report,
         Err(error) => {
             let diagnostic = authoring_diagnostic_to_lsp(AuthoringDiagnosticV1 {
@@ -2646,6 +3200,32 @@ fn replace_lsp_publications(
             )))
         })
         .collect()
+}
+
+// On didSave/didClose the on-disk bytes for `saved_uri` are now authoritative (a
+// save writes them; a close drops the in-memory override that was shadowing them).
+// `replace_lsp_publications` already invalidates (unlocates) any other open root's
+// stale-owned diagnostics as soon as the edit happens, so by the time didSave/
+// didClose runs there is no reliable ownership key left to search for. Instead,
+// deterministically revalidate every other currently open document: this is a
+// bounded scan (at most MAX_AUTHORING_LSP_DOCUMENTS open documents) and guarantees
+// no open importer keeps serving diagnostics computed against bytes that a save or
+// close has just superseded.
+fn revalidate_dependent_lsp_importers(
+    state: &mut AuthoringWorkspaceLspState,
+    saved_uri: &str,
+) -> Vec<Message> {
+    let dependents: Vec<(String, String)> = state
+        .documents
+        .iter()
+        .filter(|(uri, _)| uri.as_str() != saved_uri)
+        .map(|(uri, image)| (uri.clone(), image.text.clone()))
+        .collect();
+    let mut messages = Vec::new();
+    for (dependent_uri, text) in dependents {
+        messages.extend(publish_lsp_diagnostics(state, &dependent_uri, &text));
+    }
+    messages
 }
 
 fn uri_to_workspace_relative(root: &Path, uri: &str) -> Result<String> {
@@ -3250,7 +3830,7 @@ instance I of S:
             document_images_incomplete: false,
             publications: BTreeMap::new(),
         };
-        assert!(store_lsp_document(&mut state, &uri, &text));
+        assert!(store_lsp_document(&mut state, &uri, &text, Some(1)));
         let action_response = handle_lsp_request(
             &mut state,
             LspRequest::new(

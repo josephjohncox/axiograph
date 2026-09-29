@@ -1,6 +1,38 @@
-// @ts-nocheck
 
-export function initContextMenu(ctx) {
+import type { GraphNode, NodeMap, VizUiState } from "../types";
+
+interface MenuItemOptions {
+  separator?: boolean;
+  disabled?: boolean;
+  danger?: boolean;
+}
+
+interface ContextMenuContext {
+  svg: SVGSVGElement;
+  ui: VizUiState;
+  nodeById: NodeMap;
+  nodeDisplayName: (node: GraphNode) => string;
+  nodeTitle: (node: GraphNode) => string;
+  searchEl: HTMLInputElement;
+  selectNode?: (id: number, shiftKey: boolean) => void;
+  centerViewOnNode?: (id: number) => void;
+  updatePathStatus?: () => void;
+  rerender?: () => void;
+  clearPath?: (ctx: ContextMenuContext) => void;
+  certifySelectedPath?: () => void;
+  fitViewToLayoutBounds?: () => void;
+  resetViewToDefault?: () => void;
+  labelDensityEl: HTMLSelectElement;
+  layoutAlgoEl: HTMLSelectElement;
+  pickRandomComponentNode?: (excludeNodeId: number | null) => number | null;
+  selectedIdRef?: () => number | null;
+}
+
+export type ContextMenuRequest =
+  | { kind: "node"; nodeId: number; x: number; y: number }
+  | { kind: "panel"; x: number; y: number };
+
+export function initContextMenu(ctx: ContextMenuContext) {
   const { svg, ui, nodeById, nodeDisplayName, nodeTitle, searchEl } = ctx;
 
   const menu = document.createElement("div");
@@ -11,10 +43,12 @@ export function initContextMenu(ctx) {
 
   function hideContextMenu() {
     menu.style.display = "none";
+    // EQ-02-U03 reviewed sink: bare empty-string literal clear, not markup
+    // construction. See frontend/viz/tests/html-sink-inventory.test.mjs.
     menu.innerHTML = "";
   }
 
-  function copyText(text) {
+  function copyText(text: unknown): void {
     if (text == null) return;
     const value = String(text);
     if (navigator.clipboard && navigator.clipboard.writeText) {
@@ -27,11 +61,19 @@ export function initContextMenu(ctx) {
     ta.style.opacity = "0";
     document.body.appendChild(ta);
     ta.select();
-    try { document.execCommand("copy"); } catch (_e) {}
+    try {
+      document.execCommand("copy");
+    } catch {
+      ta.value = "";
+    }
     document.body.removeChild(ta);
   }
 
-  function addItem(label, action, opts = {}) {
+  function addItem(
+    label: string,
+    action: (() => void) | null,
+    opts: MenuItemOptions = {},
+  ): void {
     if (opts.separator) {
       const sep = document.createElement("div");
       sep.className = "context-menu-sep";
@@ -57,7 +99,7 @@ export function initContextMenu(ctx) {
     menu.appendChild(item);
   }
 
-  function showAt(x, y) {
+  function showAt(x: number, y: number): void {
     const pad = 8;
     menu.style.display = "block";
     const rect = menu.getBoundingClientRect();
@@ -69,13 +111,16 @@ export function initContextMenu(ctx) {
     menu.style.top = `${top}px`;
   }
 
-  function setSelectValue(selectEl, value) {
+  function setSelectValue(
+    selectEl: HTMLSelectElement | null | undefined,
+    value: string,
+  ): void {
     if (!selectEl) return;
     selectEl.value = value;
     selectEl.dispatchEvent(new Event("change", { bubbles: true }));
   }
 
-  function showNodeMenu(nodeId, x, y) {
+  function showNodeMenu(nodeId: number, x: number, y: number): void {
     const n = nodeById ? nodeById.get(nodeId) : null;
     const name = n ? (nodeDisplayName ? nodeDisplayName(n) : (n.name || "")) : "";
     const title = n ? (nodeTitle ? nodeTitle(n) : `${n.entity_type || "Entity"}#${n.id}`) : `#${nodeId}`;
@@ -100,8 +145,8 @@ export function initContextMenu(ctx) {
       if (ctx.clearPath) ctx.clearPath(ctx);
       if (ctx.rerender) ctx.rerender();
     }, { danger: true });
-    addItem("Certify path (unavailable; use CLI)", () => ctx.certifySelectedPath && ctx.certifySelectedPath(false), { disabled: true });
-    addItem("Verify path (unavailable; use CLI)", () => ctx.certifySelectedPath && ctx.certifySelectedPath(true), { disabled: true });
+    addItem("Certify path (unavailable; use CLI)", () => ctx.certifySelectedPath?.(), { disabled: true });
+    addItem("Verify path (unavailable; use CLI)", () => ctx.certifySelectedPath?.(), { disabled: true });
     addItem("", null, { separator: true });
     addItem("Focus search on name", () => {
       if (!searchEl) return;
@@ -115,7 +160,7 @@ export function initContextMenu(ctx) {
     showAt(x, y);
   }
 
-  function showPanelMenu(x, y) {
+  function showPanelMenu(x: number, y: number): void {
     addItem("Fit view", () => ctx.fitViewToLayoutBounds && ctx.fitViewToLayoutBounds(), { disabled: !ctx.fitViewToLayoutBounds });
     addItem("Reset view", () => ctx.resetViewToDefault && ctx.resetViewToDefault(), { disabled: !ctx.resetViewToDefault });
     addItem("Clear path", () => {
@@ -143,8 +188,10 @@ export function initContextMenu(ctx) {
     showAt(x, y);
   }
 
-  function showContextMenu(opts) {
+  function showContextMenu(opts: ContextMenuRequest | null | undefined): void {
     if (!opts) return;
+    // EQ-02-U03 reviewed sink: bare empty-string literal clear, not markup
+    // construction. See frontend/viz/tests/html-sink-inventory.test.mjs.
     menu.innerHTML = "";
     if (opts.kind === "node") {
       showNodeMenu(opts.nodeId, opts.x, opts.y);

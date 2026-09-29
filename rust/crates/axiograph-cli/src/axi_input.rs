@@ -1,7 +1,9 @@
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, VecDeque},
+    fmt::{Display, Write as _},
     fs,
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
 use anyhow::{anyhow, Context, Result};
@@ -22,6 +24,39 @@ const MAX_AXI_PACKAGE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_AXI_SEARCH_ROOTS: usize = 32;
 const MAX_AXI_SEARCH_ENTRIES: usize = 50_000;
 const MAX_AXI_SEARCH_DEPTH: usize = 32;
+const MAX_IMPORT_DIAGNOSTIC_DETAIL_BYTES: usize = 4 * 1024;
+
+#[derive(Debug)]
+struct DiagnosticImportWorkBudget {
+    used: usize,
+    max: usize,
+    exhausted: bool,
+}
+
+impl DiagnosticImportWorkBudget {
+    fn new(max: usize) -> Self {
+        Self {
+            used: 0,
+            max,
+            exhausted: false,
+        }
+    }
+
+    fn charge(&mut self, amount: usize) -> bool {
+        let Some(next) = self.used.checked_add(amount) else {
+            self.used = self.max;
+            self.exhausted = true;
+            return false;
+        };
+        if next > self.max {
+            self.used = self.max;
+            self.exhausted = true;
+            return false;
+        }
+        self.used = next;
+        true
+    }
+}
 
 #[derive(Debug, Clone)]
 pub(crate) struct CanonicalAxiModule {
@@ -102,6 +137,55 @@ pub(crate) fn compile_canonical_axi_path_with_root_bytes(
     exact_bytes: Vec<u8>,
     search_roots: &[PathBuf],
 ) -> Result<CanonicalAxiPackage> {
+    compile_canonical_axi_path_with_root_bytes_mode(
+        input,
+        exact_bytes,
+        search_roots,
+        &BTreeMap::new(),
+        false,
+    )
+}
+
+/// Same as compiling with an unsaved root replacement, but any import whose
+/// resolved candidate path is a key of `import_overlays` is compiled from the
+/// overlay's exact unsaved bytes instead of disk bytes.
+/// the disk-resolution guess exactly; overlay presence bypasses the disk
+/// existence check entirely for that candidate.
+pub(crate) fn compile_canonical_axi_path_with_overlays_collecting(
+    input: &Path,
+    exact_bytes: Vec<u8>,
+    search_roots: &[PathBuf],
+    import_overlays: &BTreeMap<PathBuf, Vec<u8>>,
+) -> Result<CanonicalAxiPackage> {
+    if import_overlays.len() > MAX_AXI_IMPORT_MODULES {
+        return Err(anyhow!(
+            "canonical .axi import overlays exceed {MAX_AXI_IMPORT_MODULES} entries"
+        ));
+    }
+    for bytes in import_overlays.values() {
+        if bytes.len() > crate::security::MAX_AXI_MODULE_BYTES {
+            return Err(anyhow!(
+                "unsaved canonical .axi import overlay exceeds {} bytes",
+                crate::security::MAX_AXI_MODULE_BYTES
+            ));
+        }
+    }
+    compile_canonical_axi_path_with_root_bytes_mode(
+        input,
+        exact_bytes,
+        search_roots,
+        import_overlays,
+        true,
+    )
+}
+
+fn compile_canonical_axi_path_with_root_bytes_mode(
+    input: &Path,
+    exact_bytes: Vec<u8>,
+    search_roots: &[PathBuf],
+    import_overlays: &BTreeMap<PathBuf, Vec<u8>>,
+    collect_diagnostics: bool,
+) -> Result<CanonicalAxiPackage> {
     if exact_bytes.len() > crate::security::MAX_AXI_MODULE_BYTES {
         return Err(anyhow!(
             "canonical .axi root exceeds {} bytes",
@@ -114,39 +198,165 @@ pub(crate) fn compile_canonical_axi_path_with_root_bytes(
         ));
     }
     let input = canonical_regular_file_path(input, "canonical .axi module")?;
-    let root_source = CanonicalModuleSource::parse(exact_bytes)?;
+    let diagnostic_limits = axiograph_kernel::KernelDiagnosticLimits::default();
+    let mut diagnostic_import_work =
+        DiagnosticImportWorkBudget::new(diagnostic_limits.max_work / 2);
+    let root_source = match CanonicalModuleSource::parse(exact_bytes.clone()) {
+        Ok(source) => source,
+        Err(axiograph_kernel::KernelCompileError::Parse { line, message })
+            if collect_diagnostics =>
+        {
+            let exact_text = String::from_utf8(exact_bytes)
+                .map_err(|_| axiograph_kernel::KernelCompileError::InvalidUtf8)?;
+            return Err(diagnostics::parse_diagnostic_collection(
+                &input,
+                &exact_text,
+                line,
+                message,
+                1,
+            )
+            .into());
+        }
+        Err(error) => return Err(error.into()),
+    };
     reject_obsolete_pathdb_snapshot_module(root_source.parsed())?;
     let root_module = root_source.parsed().module_name.clone();
     let mut package_bytes = root_source.exact_text().len();
     let mut paths = BTreeMap::from([(root_module.clone(), input.clone())]);
     let mut sources = BTreeMap::from([(root_module.clone(), root_source)]);
-    let mut pending = sources[&root_module].parsed().imports.clone();
-    while let Some(import) = pending.pop() {
+    let mut load_failures = BTreeMap::<(String, usize, String), String>::new();
+    let mut load_failure_message_bytes = 0_usize;
+    let mut additional_omitted_load_failures = 0_usize;
+    let mut authoritative_load_failure = None::<(String, usize, String)>;
+    let mut canonical_failure_seen = false;
+    let root_importer = Arc::<str>::from(root_module.as_str());
+    let mut pending = sources[&root_module]
+        .parsed()
+        .imports
+        .iter()
+        .enumerate()
+        .map(|(index, import)| (Arc::clone(&root_importer), index, import.clone()))
+        .collect::<VecDeque<_>>();
+    if pending.len() > MAX_AXI_IMPORT_MODULES * MAX_AXI_IMPORT_MODULES {
+        return Err(anyhow!(
+            "canonical .axi import worklist exceeds finite bound"
+        ));
+    }
+    while let Some((importer, import_index, import)) = pending.pop_front() {
+        if collect_diagnostics && canonical_failure_seen && !diagnostic_import_work.charge(1) {
+            break;
+        }
         if sources.contains_key(&import) {
             continue;
         }
         if sources.len() >= MAX_AXI_IMPORT_MODULES {
+            if collect_diagnostics && canonical_failure_seen {
+                additional_omitted_load_failures =
+                    additional_omitted_load_failures.saturating_add(1);
+                break;
+            }
             return Err(anyhow!(
                 "canonical .axi import closure exceeds {MAX_AXI_IMPORT_MODULES} modules"
             ));
         }
-        let (path, source) = resolve_import_source(&input, &import, search_roots)?;
-        paths.insert(import.clone(), path);
-        package_bytes = package_bytes
-            .checked_add(source.exact_text().len())
-            .ok_or_else(|| anyhow!("canonical .axi package byte count overflow"))?;
-        if package_bytes > MAX_AXI_PACKAGE_BYTES {
+        let resolved = if collect_diagnostics && canonical_failure_seen {
+            resolve_import_source_with_diagnostic_budget(
+                &input,
+                &import,
+                search_roots,
+                import_overlays,
+                &mut diagnostic_import_work,
+            )
+        } else {
+            resolve_import_source(&input, &import, search_roots, import_overlays)
+        };
+        let (path, source) = match resolved {
+            Ok(resolved) => resolved,
+            Err(error) if collect_diagnostics => {
+                canonical_failure_seen = true;
+                if diagnostic_import_work.exhausted {
+                    break;
+                }
+                let key = (importer.to_string(), import_index, import);
+                let is_authoritative = authoritative_load_failure.is_none();
+                authoritative_load_failure.get_or_insert_with(|| key.clone());
+                let detail = bounded_display(&error, MAX_IMPORT_DIAGNOSTIC_DETAIL_BYTES);
+                let message_bytes = "module `"
+                    .len()
+                    .saturating_add(key.0.len())
+                    .saturating_add("` cannot resolve import `".len())
+                    .saturating_add(key.2.len())
+                    .saturating_add("`: ".len())
+                    .saturating_add(detail.len());
+                let fits = load_failures.len() < axiograph_kernel::MAX_KERNEL_DIAGNOSTIC_ITEMS
+                    && load_failure_message_bytes
+                        .checked_add(message_bytes)
+                        .is_some_and(|total| {
+                            total <= axiograph_kernel::MAX_KERNEL_DIAGNOSTIC_MESSAGE_BYTES
+                        });
+                if !fits {
+                    if !is_authoritative {
+                        additional_omitted_load_failures =
+                            additional_omitted_load_failures.saturating_add(1);
+                    }
+                    break;
+                }
+                load_failure_message_bytes += message_bytes;
+                load_failures.insert(key, detail);
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
+        let Some(next_package_bytes) = package_bytes.checked_add(source.exact_text().len()) else {
+            if collect_diagnostics && canonical_failure_seen {
+                additional_omitted_load_failures =
+                    additional_omitted_load_failures.saturating_add(1);
+                break;
+            }
+            return Err(anyhow!("canonical .axi package byte count overflow"));
+        };
+        if next_package_bytes > MAX_AXI_PACKAGE_BYTES {
+            if collect_diagnostics && canonical_failure_seen {
+                additional_omitted_load_failures =
+                    additional_omitted_load_failures.saturating_add(1);
+                break;
+            }
             return Err(anyhow!(
                 "canonical .axi import closure exceeds {MAX_AXI_PACKAGE_BYTES} bytes"
             ));
         }
-        reject_obsolete_pathdb_snapshot_module(source.parsed())?;
-        pending.extend(source.parsed().imports.iter().cloned());
-        if pending.len() > MAX_AXI_IMPORT_MODULES * MAX_AXI_IMPORT_MODULES {
+        if let Err(error) = reject_obsolete_pathdb_snapshot_module(source.parsed()) {
+            if collect_diagnostics && canonical_failure_seen {
+                additional_omitted_load_failures =
+                    additional_omitted_load_failures.saturating_add(1);
+                break;
+            }
+            return Err(error);
+        }
+        package_bytes = next_package_bytes;
+        paths.insert(import.clone(), path);
+        let child_imports = source.parsed().imports.len();
+        if pending.len().saturating_add(child_imports)
+            > MAX_AXI_IMPORT_MODULES * MAX_AXI_IMPORT_MODULES
+        {
+            if collect_diagnostics && canonical_failure_seen {
+                additional_omitted_load_failures =
+                    additional_omitted_load_failures.saturating_add(1);
+                break;
+            }
             return Err(anyhow!(
                 "canonical .axi import worklist exceeds finite bound"
             ));
         }
+        let child_importer = Arc::<str>::from(import.as_str());
+        pending.extend(
+            source
+                .parsed()
+                .imports
+                .iter()
+                .enumerate()
+                .map(|(index, child)| (Arc::clone(&child_importer), index, child.clone())),
+        );
         sources.insert(import, source);
     }
 
@@ -157,13 +367,132 @@ pub(crate) fn compile_canonical_axi_path_with_root_bytes(
         .unwrap_or_else(|| input.clone());
     let repository_id =
         RepositoryIdV2::from_descriptor_bytes(repository_descriptor.to_string_lossy().as_bytes());
-    let preliminary = CanonicalCompiler::compile(KernelCompilationRequest {
+    let preliminary_request = KernelCompilationRequest {
         repository_id: repository_id.clone(),
         accepted_snapshot_id: SnapshotIdV2::from_canonical_fields(&[b"closure-order-probe"]),
         root_module: root_module.clone(),
         modules: sources.values().cloned().collect(),
-    })
-    .map_err(|error| diagnostics::compile_diagnostic(error, &sources, &paths))?;
+    };
+    if collect_diagnostics && authoritative_load_failure.is_some() {
+        let remaining_work = diagnostic_limits
+            .max_work
+            .saturating_sub(diagnostic_import_work.used)
+            .max(1);
+        let remaining_message_bytes = diagnostic_limits
+            .max_message_bytes
+            .saturating_sub(load_failure_message_bytes)
+            .max(1);
+        let mut known_import_failures = load_failures.keys().cloned().collect::<BTreeSet<_>>();
+        let (authoritative_module, authoritative_import_index, authoritative_import) =
+            authoritative_load_failure
+                .as_ref()
+                .ok_or_else(|| anyhow!("diagnostic load-failure identity is missing"))?;
+        known_import_failures.insert((
+            authoritative_module.clone(),
+            *authoritative_import_index,
+            authoritative_import.clone(),
+        ));
+        let authoritative_unknown = axiograph_kernel::KernelCompileError::UnknownImport {
+            module: authoritative_module.clone(),
+            import: authoritative_import.clone(),
+        };
+        let mut collected = CanonicalCompiler::collect_diagnostics_for_known_import_failures_with_authoritative_error(
+            &preliminary_request,
+            axiograph_kernel::KernelDiagnosticLimits {
+                max_message_bytes: remaining_message_bytes,
+                max_work: remaining_work,
+                ..diagnostic_limits
+            },
+            &known_import_failures,
+            authoritative_load_failure
+                .as_ref()
+                .ok_or_else(|| anyhow!("diagnostic load-failure identity is missing"))?,
+            &authoritative_unknown,
+        )?;
+        collected.work_units = collected
+            .work_units
+            .saturating_add(diagnostic_import_work.used)
+            .min(diagnostic_limits.max_work);
+        collected.work_exhausted |= diagnostic_import_work.exhausted;
+        collected.limits = diagnostic_limits;
+        collected.observed_errors = collected
+            .observed_errors
+            .saturating_add(additional_omitted_load_failures);
+        collected.omitted_observed_errors = collected
+            .omitted_observed_errors
+            .saturating_add(additional_omitted_load_failures);
+        for diagnostic in &mut collected.diagnostics {
+            if let (
+                axiograph_kernel::KernelCompileError::UnknownImport { module, import },
+                axiograph_kernel::KernelDiagnosticSubjectV1::Syntactic {
+                    address:
+                        axiograph_dsl::schema_v1::CanonicalSyntacticAddressV1::ImportName {
+                            import_index,
+                        },
+                    ..
+                },
+            ) = (&diagnostic.cause, &diagnostic.subject)
+            {
+                if let Some(detail) =
+                    load_failures.get(&(module.clone(), *import_index, import.clone()))
+                {
+                    diagnostic.cause = axiograph_kernel::KernelCompileError::ImportResolution {
+                        module: module.clone(),
+                        import: import.clone(),
+                        detail: detail.clone(),
+                    };
+                }
+            }
+        }
+        let authoritative_error = load_failures
+            .get(&(
+                authoritative_module.clone(),
+                *authoritative_import_index,
+                authoritative_import.clone(),
+            ))
+            .map_or(authoritative_unknown, |detail| {
+                axiograph_kernel::KernelCompileError::ImportResolution {
+                    module: authoritative_module.clone(),
+                    import: authoritative_import.clone(),
+                    detail: detail.clone(),
+                }
+            });
+        collected.message_bytes = collected
+            .diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.cause.to_string().len())
+            .sum();
+        diagnostics::retain_authoritative_loader_error(&mut collected, authoritative_error);
+        return Err(diagnostics::collect_kernel_diagnostics(collected, &sources, &paths).into());
+    }
+    let preliminary = match CanonicalCompiler::compile(preliminary_request.clone()) {
+        Ok(snapshot) => snapshot,
+        Err(error) if collect_diagnostics => {
+            let remaining_work = diagnostic_limits
+                .max_work
+                .saturating_sub(diagnostic_import_work.used)
+                .max(1);
+            let mut collected = CanonicalCompiler::collect_diagnostics_with_authoritative_error(
+                &preliminary_request,
+                axiograph_kernel::KernelDiagnosticLimits {
+                    max_work: remaining_work,
+                    ..diagnostic_limits
+                },
+                &error,
+            )?;
+            collected.work_units = collected
+                .work_units
+                .saturating_add(diagnostic_import_work.used)
+                .min(diagnostic_limits.max_work);
+            collected.work_exhausted |= diagnostic_import_work.exhausted;
+            collected.limits = diagnostic_limits;
+            diagnostics::retain_authoritative_compile_error(&mut collected, error);
+            return Err(
+                diagnostics::collect_kernel_diagnostics(collected, &sources, &paths).into(),
+            );
+        }
+        Err(error) => return Err(diagnostics::compile_diagnostic(error, &sources, &paths)),
+    };
     let accepted_fields = preliminary
         .ir()
         .ordered_module_closure()
@@ -226,6 +555,33 @@ fn resolve_import_source(
     root_input: &Path,
     import: &str,
     search_roots: &[PathBuf],
+    import_overlays: &BTreeMap<PathBuf, Vec<u8>>,
+) -> Result<(PathBuf, CanonicalModuleSource)> {
+    resolve_import_source_mode(root_input, import, search_roots, import_overlays, None)
+}
+
+fn resolve_import_source_with_diagnostic_budget(
+    root_input: &Path,
+    import: &str,
+    search_roots: &[PathBuf],
+    import_overlays: &BTreeMap<PathBuf, Vec<u8>>,
+    work: &mut DiagnosticImportWorkBudget,
+) -> Result<(PathBuf, CanonicalModuleSource)> {
+    resolve_import_source_mode(
+        root_input,
+        import,
+        search_roots,
+        import_overlays,
+        Some(work),
+    )
+}
+
+fn resolve_import_source_mode(
+    root_input: &Path,
+    import: &str,
+    search_roots: &[PathBuf],
+    import_overlays: &BTreeMap<PathBuf, Vec<u8>>,
+    mut diagnostic_work: Option<&mut DiagnosticImportWorkBudget>,
 ) -> Result<(PathBuf, CanonicalModuleSource)> {
     if import.is_empty()
         || import.len() > 256
@@ -239,9 +595,11 @@ fn resolve_import_source(
 
     let mut allowed_roots = BTreeSet::new();
     if let Some(parent) = root_input.parent() {
+        charge_diagnostic_import_work(&mut diagnostic_work, 1)?;
         allowed_roots.insert(fs::canonicalize(parent)?);
     }
     for root in search_roots {
+        charge_diagnostic_import_work(&mut diagnostic_work, 1)?;
         allowed_roots.insert(canonical_real_directory(
             root,
             "canonical .axi search root",
@@ -258,6 +616,7 @@ fn resolve_import_source(
             .into_iter()
             .filter_entry(is_import_search_entry)
         {
+            charge_diagnostic_import_work(&mut diagnostic_work, 1)?;
             let entry = result.with_context(|| {
                 format!(
                     "failed while searching .axi imports under `{}`",
@@ -277,55 +636,198 @@ fn resolve_import_source(
             }
         }
     }
-
-    let mut matches = Vec::new();
-    for candidate in candidate_paths {
-        let metadata = match fs::symlink_metadata(&candidate) {
-            Ok(metadata) => metadata,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(error) => return Err(error.into()),
-        };
-        if metadata.file_type().is_symlink() || !metadata.file_type().is_file() {
-            continue;
-        }
-        if !allowed_roots.iter().any(|root| candidate.starts_with(root)) {
-            return Err(anyhow!(
-                "canonical .axi import `{}` escapes configured search roots",
-                candidate.display()
-            ));
-        }
-        let bytes = crate::security::read_file_bounded(
-            &candidate,
-            crate::security::MAX_AXI_MODULE_BYTES,
-            "imported canonical .axi module",
-        )?;
-        let Ok(source) = CanonicalModuleSource::parse(bytes) else {
-            continue;
-        };
-        if source.parsed().module_name == import {
-            matches.push((candidate, source));
+    // An unsaved importee overlay is a candidate too, even when the buffer has
+    // never been written to disk: its canonical path still matches the same
+    // `<allowed_root>/<import>.axi` guess used for disk resolution, so it joins
+    // the same ambiguity/duplicate-name accounting as any real file.
+    for overlay_path in import_overlays.keys() {
+        if allowed_roots
+            .iter()
+            .any(|root| overlay_path.starts_with(root))
+            && overlay_path
+                .file_name()
+                .is_some_and(|name| name == expected_file_name_for(import).as_str())
+        {
+            candidate_paths.insert(overlay_path.clone());
         }
     }
-    match matches.len() {
+
+    let expected_file_name = format!("{import}.axi");
+    let mut match_count = 0_usize;
+    let mut first_match = None;
+    let mut matched_path_sample = Vec::new();
+    let mut malformed_named_candidates = Vec::new();
+    let mut malformed_named_omitted = 0_usize;
+    for candidate in candidate_paths {
+        charge_diagnostic_import_work(&mut diagnostic_work, 1)?;
+        let bytes = if let Some(overlay_bytes) = import_overlays.get(&candidate) {
+            if !allowed_roots.iter().any(|root| candidate.starts_with(root)) {
+                return Err(anyhow!(
+                    "canonical .axi import `{}` escapes configured search roots",
+                    candidate.display()
+                ));
+            }
+            if overlay_bytes.len() as u64 > crate::security::MAX_AXI_MODULE_BYTES as u64 {
+                return Err(anyhow!(
+                    "unsaved canonical .axi import overlay `{}` exceeds {} bytes",
+                    candidate.display(),
+                    crate::security::MAX_AXI_MODULE_BYTES
+                ));
+            }
+            overlay_bytes.clone()
+        } else {
+            let metadata = match fs::symlink_metadata(&candidate) {
+                Ok(metadata) => metadata,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(error.into()),
+            };
+            if metadata.file_type().is_symlink() || !metadata.file_type().is_file() {
+                continue;
+            }
+            if !allowed_roots.iter().any(|root| candidate.starts_with(root)) {
+                return Err(anyhow!(
+                    "canonical .axi import `{}` escapes configured search roots",
+                    candidate.display()
+                ));
+            }
+            crate::security::read_file_bounded(
+                &candidate,
+                crate::security::MAX_AXI_MODULE_BYTES,
+                "imported canonical .axi module",
+            )?
+        };
+        let source = match CanonicalModuleSource::parse(bytes) {
+            Ok(source) => source,
+            Err(error) => {
+                if candidate
+                    .file_name()
+                    .is_some_and(|name| name == expected_file_name.as_str())
+                {
+                    if malformed_named_candidates.len() < 8 {
+                        malformed_named_candidates
+                            .push(bounded_named_candidate_error(&candidate, &error));
+                    } else {
+                        malformed_named_omitted = malformed_named_omitted.saturating_add(1);
+                    }
+                }
+                continue;
+            }
+        };
+        if source.parsed().module_name == import {
+            match_count = match_count.saturating_add(1);
+            if matched_path_sample.len() < 8 {
+                matched_path_sample.push(bounded_text(&candidate.display().to_string(), 384));
+            }
+            if first_match.is_none() {
+                first_match = Some((candidate, source));
+            }
+        }
+    }
+    match match_count {
+        0 if !malformed_named_candidates.is_empty() => Err(anyhow!(
+            "cannot resolve imported module `{import}` from `{}`; named candidate parse failure(s): {}{}",
+            root_input.display(),
+            malformed_named_candidates.join("; "),
+            if malformed_named_omitted == 0 {
+                String::new()
+            } else {
+                format!("; {malformed_named_omitted} additional named candidate(s) omitted")
+            }
+        )),
         0 => Err(anyhow!(
             "cannot resolve imported module `{import}` from `{}`",
             root_input.display()
         )),
-        1 => {
-            let Some(resolved) = matches.pop() else {
-                return Err(anyhow!("resolved import disappeared before use"));
-            };
-            Ok(resolved)
+        1 => first_match.ok_or_else(|| anyhow!("resolved import disappeared before use")),
+        _ => {
+            let retained = matched_path_sample.join(", ");
+            let omitted = match_count.saturating_sub(8);
+            Err(anyhow!(
+                "imported module `{import}` is ambiguous: {retained}{}",
+                if omitted == 0 {
+                    String::new()
+                } else {
+                    format!(", {omitted} additional candidate(s) omitted")
+                }
+            ))
         }
-        _ => Err(anyhow!(
-            "imported module `{import}` is ambiguous: {}",
-            matches
-                .iter()
-                .map(|(path, _)| path.display().to_string())
-                .collect::<Vec<_>>()
-                .join(", ")
-        )),
     }
+}
+
+fn expected_file_name_for(import: &str) -> String {
+    format!("{import}.axi")
+}
+
+fn charge_diagnostic_import_work(
+    work: &mut Option<&mut DiagnosticImportWorkBudget>,
+    amount: usize,
+) -> Result<()> {
+    if work.as_deref_mut().is_some_and(|work| !work.charge(amount)) {
+        return Err(anyhow!("diagnostic import-resolution work bound exhausted"));
+    }
+    Ok(())
+}
+
+fn bounded_named_candidate_error(
+    path: &Path,
+    error: &axiograph_kernel::KernelCompileError,
+) -> String {
+    let path = bounded_text(&path.display().to_string(), 192);
+    match error {
+        axiograph_kernel::KernelCompileError::Parse { line, message } => {
+            let prefix = format!("{path}: parse failure at line {line}: ");
+            let remaining = 384_usize.saturating_sub(prefix.len());
+            format!("{prefix}{}", bounded_text(message, remaining))
+        }
+        _ => bounded_text(&format!("{path}: {error}"), 384),
+    }
+}
+
+fn bounded_text(detail: &str, max_bytes: usize) -> String {
+    if detail.len() <= max_bytes {
+        return detail.to_string();
+    }
+    let suffix = " [truncated]";
+    if max_bytes < suffix.len() {
+        return String::new();
+    }
+    let mut end = max_bytes.saturating_sub(suffix.len()).min(detail.len());
+    while !detail.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}{suffix}", &detail[..end])
+}
+
+struct BoundedDisplay {
+    text: String,
+    max_bytes: usize,
+}
+
+impl std::fmt::Write for BoundedDisplay {
+    fn write_str(&mut self, value: &str) -> std::fmt::Result {
+        if self.text.len().saturating_add(value.len()) > self.max_bytes {
+            return Err(std::fmt::Error);
+        }
+        self.text.push_str(value);
+        Ok(())
+    }
+}
+
+fn bounded_display(value: &impl Display, max_bytes: usize) -> String {
+    let mut output = BoundedDisplay {
+        text: String::with_capacity(max_bytes.min(1024)),
+        max_bytes,
+    };
+    if write!(&mut output, "{value}").is_err() {
+        let suffix = " [truncated]";
+        while output.text.len().saturating_add(suffix.len()) > max_bytes {
+            output.text.pop();
+        }
+        if suffix.len() <= max_bytes {
+            output.text.push_str(suffix);
+        }
+    }
+    output.text
 }
 
 fn is_import_search_entry(entry: &DirEntry) -> bool {
@@ -409,7 +911,9 @@ schema S:
 "#;
         let err = require_canonical_axi_text(missing)
             .expect_err("accepted candidate without a module header must reject");
-        assert!(err.to_string().contains("exactly one explicit"));
+        assert!(err
+            .to_string()
+            .contains("module header must be the first canonical header"));
 
         let multiple = r#"
 module Left
@@ -444,6 +948,57 @@ schema R:
             package.snapshot().ir().accepted_snapshot_id(),
             &SnapshotIdV2::from_canonical_fields(&[base, root])
         );
+    }
+
+    #[test]
+    fn import_overlay_count_accepts_n_and_rejects_n_plus_one() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root_path = temp.path().join("Root.axi");
+        let root = b"module Root\nimport Base\n";
+        crate::security::write_output_bounded(&root_path, root, "CLI output").expect("write root");
+        let mut overlays = BTreeMap::new();
+        overlays.insert(
+            temp.path().join("Base.axi"),
+            b"module Base\nschema S:\n  object A\n".to_vec(),
+        );
+        for index in 0..MAX_AXI_IMPORT_MODULES - 1 {
+            overlays.insert(
+                temp.path().join(format!("Unused{index:04}.axi")),
+                format!("module Unused{index:04}\n").into_bytes(),
+            );
+        }
+        assert_eq!(overlays.len(), MAX_AXI_IMPORT_MODULES);
+        let package = compile_canonical_axi_path_with_overlays_collecting(
+            &root_path,
+            root.to_vec(),
+            &[],
+            &overlays,
+        )
+        .expect("exact-N overlay entries preserve a real imported closure");
+        let names = package
+            .snapshot()
+            .ir()
+            .ordered_module_closure()
+            .iter()
+            .map(|module| module.module_name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(names, ["Base", "Root"]);
+
+        overlays.insert(
+            temp.path().join("Unused1023.axi"),
+            b"module Unused1023\n".to_vec(),
+        );
+        assert_eq!(overlays.len(), MAX_AXI_IMPORT_MODULES + 1);
+        let error = compile_canonical_axi_path_with_overlays_collecting(
+            &root_path,
+            root.to_vec(),
+            &[],
+            &overlays,
+        )
+        .expect_err("N+1 overlay entries must fail before import loading");
+        assert!(error
+            .to_string()
+            .contains("import overlays exceed 1024 entries"));
     }
 
     #[test]

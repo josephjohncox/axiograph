@@ -7,12 +7,13 @@
 //! a `.axi` module is self-contained and well-formed with respect to its
 //! declared schema:
 //!
-//! - instances reference declared schemas,
-//! - object assignments reference declared object types,
-//! - relation assignments reference declared relations,
+//! - schema, dependent-role, and refinement declarations are well formed,
+//! - supported theory constraints reference declared relations and fields,
+//! - typed rewrites reference declared types, variables, and relation carriers,
+//! - instances reference declared schemas and assignment targets,
 //! - each relation tuple has exactly the declared fields, and
-//! - every tuple field value refers to a compatible object type, and subtyping
-//!   does not introduce ambiguous name resolution at supertypes.
+//! - every tuple field value refers to a compatible object type without
+//!   ambiguous subtype-based name resolution.
 //!
 //! This module implements that small decision procedure and returns an
 //! `AxiWellTypedProofV1` summary that can be re-checked in Lean.
@@ -22,9 +23,20 @@ use std::marker::PhantomData;
 
 use anyhow::{anyhow, Result};
 
+trait CanonicalSyntaxTrim {
+    fn trim_axi(&self) -> &str;
+}
+
+impl CanonicalSyntaxTrim for str {
+    fn trim_axi(&self) -> &str {
+        self.trim_matches(|c| matches!(c, ' ' | '\t' | '\n' | '\r'))
+    }
+}
+
 use axiograph_dsl::schema_v1::{
-    parse_path_expr_v3, ConstraintV1, GeneratorDeclV1, PathExprV3, RelationDeclV1, RewriteRuleV1,
-    RewriteVarTypeV1, SchemaV1Instance, SchemaV1Module, SchemaV1Schema, SchemaV1Theory, SetItemV1,
+    parse_path_expr_v3, ConstraintV1, GeneratorDeclV1, PathExprV3, RefinementPredicateV1,
+    RelationDeclV1, RewriteRuleV1, RewriteVarTypeV1, SchemaV1Instance, SchemaV1Module,
+    SchemaV1Schema, SchemaV1Theory, SetItemV1, TypeExprV1,
 };
 
 use crate::certificate::AxiWellTypedProofV1;
@@ -210,6 +222,84 @@ struct SchemaIndex {
     subtypes_of: HashMap<String, HashSet<String>>,
 }
 
+fn validate_role_type_expr(
+    schema_name: &str,
+    relation_name: &str,
+    role_name: &str,
+    earlier_roles: &HashSet<String>,
+    expression: &TypeExprV1,
+) -> Result<()> {
+    match expression {
+        TypeExprV1::Object { .. } | TypeExprV1::RelationObject { .. } => Ok(()),
+        TypeExprV1::Indexed { base, over_roles } => {
+            validate_role_type_expr(schema_name, relation_name, role_name, earlier_roles, base)?;
+            if over_roles.is_empty() {
+                return Err(anyhow!(
+                    "schema `{schema_name}` relation `{relation_name}` role `{role_name}` has an empty index"
+                ));
+            }
+            for index_role in over_roles {
+                if !earlier_roles.contains(index_role) {
+                    return Err(anyhow!(
+                        "schema `{schema_name}` relation `{relation_name}` role `{role_name}` indexes unknown or non-earlier role `{index_role}`"
+                    ));
+                }
+            }
+            Ok(())
+        }
+        TypeExprV1::Refined { base, predicates } => {
+            validate_role_type_expr(schema_name, relation_name, role_name, earlier_roles, base)?;
+            if predicates.is_empty() {
+                return Err(anyhow!(
+                    "schema `{schema_name}` relation `{relation_name}` role `{role_name}` has an empty refinement"
+                ));
+            }
+            for predicate in predicates {
+                match predicate {
+                    RefinementPredicateV1::MemberOf { values }
+                    | RefinementPredicateV1::Enum { values }
+                        if values.is_empty() =>
+                    {
+                        return Err(anyhow!(
+                            "schema `{schema_name}` relation `{relation_name}` role `{role_name}` has an empty finite refinement"
+                        ));
+                    }
+                    RefinementPredicateV1::Cardinality { min, max } if max < min => {
+                        return Err(anyhow!(
+                            "schema `{schema_name}` relation `{relation_name}` role `{role_name}` has inverted cardinality bounds"
+                        ));
+                    }
+                    RefinementPredicateV1::Key { roles } => {
+                        if roles.is_empty() {
+                            return Err(anyhow!(
+                                "schema `{schema_name}` relation `{relation_name}` role `{role_name}` has an empty key refinement"
+                            ));
+                        }
+                        for key_role in roles {
+                            if !earlier_roles.contains(key_role) {
+                                return Err(anyhow!(
+                                    "schema `{schema_name}` relation `{relation_name}` role `{role_name}` key references unknown or non-earlier role `{key_role}`"
+                                ));
+                            }
+                        }
+                    }
+                    RefinementPredicateV1::Predicate { name, .. } if name != "non_empty" => {
+                        return Err(anyhow!(
+                            "schema `{schema_name}` relation `{relation_name}` role `{role_name}` uses unsupported predicate `{name}`"
+                        ));
+                    }
+                    RefinementPredicateV1::Equals { .. }
+                    | RefinementPredicateV1::MemberOf { .. }
+                    | RefinementPredicateV1::Cardinality { .. }
+                    | RefinementPredicateV1::Enum { .. }
+                    | RefinementPredicateV1::Predicate { .. } => {}
+                }
+            }
+            Ok(())
+        }
+    }
+}
+
 impl SchemaIndex {
     fn try_from_schema(schema: &SchemaV1Schema) -> Result<Self> {
         let mut object_types: HashSet<String> = HashSet::new();
@@ -223,16 +313,28 @@ impl SchemaIndex {
             }
         }
 
-        let relation_names = schema
-            .relations
-            .iter()
-            .map(|relation| relation.name.clone())
-            .collect::<HashSet<_>>();
+        let mut relation_names = HashSet::new();
+        for relation in &schema.relations {
+            if !relation_names.insert(relation.name.clone()) {
+                return Err(anyhow!(
+                    "schema `{}` declares duplicate relation `{}`",
+                    schema.name,
+                    relation.name
+                ));
+            }
+            if object_types.contains(&relation.name) {
+                return Err(anyhow!(
+                    "schema `{}` declares both object and relation `{}`",
+                    schema.name,
+                    relation.name
+                ));
+            }
+        }
         let mut relation_decls: HashMap<String, RelationDeclV1> = HashMap::new();
         for relation in &schema.relations {
             let mut seen_fields = HashSet::new();
             for field in &relation.fields {
-                if !seen_fields.insert(field.field.clone()) {
+                if seen_fields.contains(&field.field) {
                     return Err(anyhow!(
                         "schema `{}` relation `{}` declares duplicate field `{}`",
                         schema.name,
@@ -254,6 +356,14 @@ impl SchemaIndex {
                         field.ty
                     ));
                 }
+                validate_role_type_expr(
+                    &schema.name,
+                    &relation.name,
+                    &field.field,
+                    &seen_fields,
+                    &field.ty,
+                )?;
+                seen_fields.insert(field.field.clone());
             }
             if relation_decls
                 .insert(relation.name.clone(), relation.clone())
@@ -297,6 +407,7 @@ impl SchemaIndex {
             }
         }
 
+        let mut subtype_edges = HashSet::new();
         for subtype in &schema.subtypes {
             if !object_types.contains(&subtype.sub) {
                 return Err(anyhow!(
@@ -312,28 +423,30 @@ impl SchemaIndex {
                     subtype.sup
                 ));
             }
+            if !subtype_edges.insert((subtype.sub.clone(), subtype.sup.clone())) {
+                return Err(anyhow!(
+                    "schema `{}` repeats subtype `{} < {}`",
+                    schema.name,
+                    subtype.sub,
+                    subtype.sup
+                ));
+            }
         }
 
         let supertypes_of = compute_supertypes_closure(&object_types, &schema.subtypes);
         let subtypes_of = compute_subtypes_closure(&object_types, &schema.subtypes);
-        for (ty, supers) in &supertypes_of {
-            if supers.contains(ty) && supers.len() > 1 {
-                for sup in supers {
-                    if sup == ty {
-                        continue;
-                    }
-                    if supertypes_of
-                        .get(sup)
-                        .is_some_and(|other_supers| other_supers.contains(ty))
-                    {
-                        return Err(anyhow!(
-                            "schema `{}` has cyclic subtype declarations involving `{}` and `{}`",
-                            schema.name,
-                            ty,
-                            sup
-                        ));
-                    }
-                }
+        for subtype in &schema.subtypes {
+            if subtype.sub == subtype.sup
+                || supertypes_of
+                    .get(&subtype.sup)
+                    .is_some_and(|supers| supers.contains(&subtype.sub))
+            {
+                return Err(anyhow!(
+                    "schema `{}` has a subtype cycle involving `{}` and `{}`",
+                    schema.name,
+                    subtype.sub,
+                    subtype.sup
+                ));
             }
         }
 
@@ -671,10 +784,18 @@ fn typecheck_instance(
                         generator.name
                     ));
                 };
-                let values = fields
-                    .iter()
-                    .map(|(field, value)| (field.as_str(), value.as_str()))
-                    .collect::<HashMap<_, _>>();
+                let mut values = HashMap::new();
+                for (field, value) in fields {
+                    if values.contains_key(field.as_str()) {
+                        return Err(anyhow!(
+                            "instance `{}` generator `{}` repeats field `{}`",
+                            instance.name,
+                            generator.name,
+                            field
+                        ));
+                    }
+                    values.insert(field.as_str(), value.as_str());
+                }
                 if values.len() != 2
                     || !values.contains_key("source")
                     || !values.contains_key("target")
@@ -881,7 +1002,7 @@ fn typecheck_constraint(
         }
         ConstraintV1::Typing { relation, rule } => {
             relation_fields(relation)?;
-            if rule.trim().is_empty() {
+            if rule.trim_axi().is_empty() {
                 return Err(anyhow!(
                     "theory `{}` typing constraint on relation `{}` has an empty rule name",
                     theory.name,
@@ -942,13 +1063,13 @@ fn typecheck_constraint(
             }
         }
         ConstraintV1::NamedBlock { name, body } => {
-            if name.trim().is_empty() {
+            if name.trim_axi().is_empty() {
                 return Err(anyhow!(
                     "theory `{}` has a named constraint block with an empty name",
                     theory.name
                 ));
             }
-            if body.iter().all(|line| line.trim().is_empty()) {
+            if body.iter().all(|line| line.trim_axi().is_empty()) {
                 return Err(anyhow!(
                     "theory `{}` named constraint block `{}` must not be empty",
                     theory.name,
@@ -957,7 +1078,7 @@ fn typecheck_constraint(
             }
         }
         ConstraintV1::Unknown { text } => {
-            if text.trim().is_empty() {
+            if text.trim_axi().is_empty() {
                 return Err(anyhow!(
                     "theory `{}` contains an empty unknown constraint",
                     theory.name
@@ -979,7 +1100,7 @@ fn typecheck_equation(
     schema_index: &SchemaIndex,
     equation: &axiograph_dsl::schema_v1::EquationV1,
 ) -> Result<()> {
-    if equation.lhs.trim().is_empty() || equation.rhs.trim().is_empty() {
+    if equation.lhs.trim_axi().is_empty() || equation.rhs.trim_axi().is_empty() {
         return Err(anyhow!(
             "theory `{}` equation `{}` must have non-empty lhs and rhs",
             theory.name,
@@ -1054,13 +1175,13 @@ fn infer_equation_expr_endpoints(
                     rel, schema_index.name
                 ));
             };
-            unify_object_requirement(
+            unify_equation_value_requirement(
                 schema_index,
                 &mut env.object_vars,
                 from,
                 &src_role.target_type,
             )?;
-            unify_object_requirement(
+            unify_equation_value_requirement(
                 schema_index,
                 &mut env.object_vars,
                 to,
@@ -1168,11 +1289,10 @@ fn typecheck_rewrite_rule(
     }
 
     let mut env = RewriteEnv::default();
+    let mut seen_variable_names = HashSet::new();
     let mut pending_path_vars = Vec::new();
     for variable in &rule.vars {
-        if env.object_vars.contains_key(&variable.name)
-            || env.path_vars.contains_key(&variable.name)
-        {
+        if !seen_variable_names.insert(variable.name.as_str()) {
             return Err(anyhow!(
                 "theory `{}` rewrite rule `{}` declares duplicate variable `{}`",
                 theory.name,
@@ -1182,9 +1302,9 @@ fn typecheck_rewrite_rule(
         }
         match &variable.ty {
             RewriteVarTypeV1::Object { ty } => {
-                if !schema_index.is_value_type(ty) {
+                if !schema_index.object_types.contains(ty) {
                     return Err(anyhow!(
-                        "theory `{}` rewrite rule `{}` references unknown value type `{}` for variable `{}`",
+                        "theory `{}` rewrite rule `{}` references unknown object type `{}` for variable `{}`",
                         theory.name,
                         rule.name,
                         ty,
@@ -1255,7 +1375,7 @@ fn typecheck_rewrite_rule(
     Ok(())
 }
 
-fn unify_object_requirement(
+fn unify_equation_value_requirement(
     schema_index: &SchemaIndex,
     object_vars: &mut HashMap<String, String>,
     variable: &str,

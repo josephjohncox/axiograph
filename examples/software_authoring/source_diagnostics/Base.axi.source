@@ -1,0 +1,6 @@
+module Base
+# Repeated text is not used to guess a location: Compny Compny.
+schema SharedHiring:
+  object Company
+  relation Employment(company: Compny)
+  relation Referral(company: Compny)

@@ -1,7 +1,13 @@
 # Trusted Kernel
 
-**Diataxis:** Reference  
+**Diataxis:** Reference
 **Audience:** contributors
+**Claim status:** `trusted_formal_result`, `current_implementation`, and
+`design_target`. See [Documentation Claim Status](CLAIM_STATUS.md).
+
+Claims about the `VerifyMain` import closure are trusted formal results within
+the stated fragment. Rust, storage, process, and report descriptions are current
+implementation claims. The **Planned Tightening** section contains design targets.
 
 This document defines the target boundary of Axiograph's trusted semantics.
 
@@ -97,6 +103,18 @@ accepted-plane promotion surfaces.
 
 Adjacent theorem-bearing modules are important, but they are not automatically
 part of the shipped runtime kernel unless imported by the verifier target.
+
+## Canonical Parser Contract
+
+[`CANONICAL_AXI_V1_CONTRACT.md`](CANONICAL_AXI_V1_CONTRACT.md) defines the
+versioned `axi_v1` AST, exact-byte anchor, ordered arrays, unsupported forms,
+operational bounds, and rejection classes. Rust and Lean parse the same exact
+UTF-8 image and construct independent ASTs. The normalized AST JSON is a test
+view only. Lean never uses Rust AST or IR serialization as source meaning.
+
+Parse, typecheck, canonical formation, and certificate checking are separate
+stages. Success at an earlier stage does not authorize a later stage. Resource
+limits are runtime controls, not Lean theorems.
 
 ## Canonical Compiler Boundary
 

@@ -300,6 +300,14 @@ reranker, calibrated/rank-based fusion, or labeled relevance benchmark suite.
 No nDCG, meaningful MRR, Recall@k, or Precision@k suite was found. Absence in the
 inspected/searchable sources is not a benchmark result.
 
+**Later remediation note:** EQ18-U01 replaces the stale production comment and
+the provider-specific result name with the versioned, provider-neutral
+`axiograph_semantic_search_response_v2` contract. The implementation still uses
+exhaustive token-hash and optional model-embedding scans with max-value fusion;
+it does not add ANN, calibration, relevance benchmarks, or semantic authority.
+This note records a later change. The baseline observation above remains the
+observed state at `70c568b`.
+
 ## F. RAG and model grounding
 
 ### F1. Authority separation

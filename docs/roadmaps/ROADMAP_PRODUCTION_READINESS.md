@@ -1,7 +1,14 @@
 # Production Readiness Roadmap (typed ontology workbench as a product)
 
-**Diataxis:** Roadmap  
+**Diataxis:** Roadmap
 **Audience:** contributors
+**Claim status:** `current_implementation`, `design_target`, and
+`operational_evidence`. See the
+[claim-status taxonomy](../reference/CLAIM_STATUS.md).
+
+Section 0 describes current implementation and points to source or gates.
+Unchecked work in later sections is a design target. Release statements are
+operational evidence and do not establish semantic proof.
 
 This roadmap turns the “book” (`docs/explanation/BOOK.md`) into concrete engineering work:
 
@@ -18,7 +25,8 @@ This is intentionally **certificate-first**:
 For ontology-process roadmapping (CQs, linting, patterns, reuse), see `docs/roadmaps/ROADMAP_ONTOLOGY_ENGINEERING.md`.
 For math/migration roadmapping (Δ/Σ/Π, rewrite theory), see `docs/roadmaps/ROADMAP_MATHEMATICAL.md`.
 
-Last updated: 2026-04-28.
+Status reconciled against the accepted v20260908.0.0 release baseline.
+Later uncommitted work requires its own checks and parent acceptance.
 
 ---
 
@@ -83,7 +91,10 @@ Last updated: 2026-04-28.
 - Missing: a distributed replica protocol that transfers and validates the
   complete AxiStore object/receipt closure before advancing local refs.
 
-### 0.4 Release/build audit (repository gate implemented, release open)
+### 0.4 Release/build audit (gate implemented, one release accepted)
+
+**Claim status:** `current_implementation` for the gate and
+`operational_evidence` for the named release.
 
 - Implemented: `make release-gate` pins rustc 1.98.0 and Node.js 26.8.1 and
   combines catalog, formatting, no-unsafe, no-panic, full locked workspace,
@@ -98,13 +109,13 @@ Last updated: 2026-04-28.
   validation, authenticated DB command-surface checks, bare-`.axpd` rejection,
   BuildKit `--check`, and
   digest-first multi-architecture publication with safe arrays.
-- Open CI-only blocker: no tag workflow has yet built and smoked every hosted
-  runner lane and published both release assets and the GHCR manifest. Until an
-  immutable run records that evidence, Linux x86_64, macOS arm64, and Windows
-  x86_64 are configured candidates, not supported release platforms.
-- Unsupported: native Linux arm64 bundles, macOS Intel bundles, Windows arm64
-  bundles, and any other unexecuted hosted-runner path. Linux arm64 remains a
-  container candidate only.
+- Accepted operational evidence: release `v20260908.0.0` records seven successful
+  workflow jobs, four public assets, and one Linux multi-architecture OCI index.
+  See [Released Baseline v20260908.0.0](../reference/RELEASE_BASELINE_V20260908.md).
+  This evidence applies only to that release and its exact source.
+- Unsupported outside that record: native Linux arm64 bundles, macOS Intel
+  bundles, Windows bundles, and every unexecuted hosted-runner path. The accepted
+  Linux arm64 result is a container manifest, not a native bundle.
 - W05 is a greenfield cutover: obsolete PathDB readers/writers are deleted;
   old bytes fail closed and must be rebuilt from exact accepted inputs.
 

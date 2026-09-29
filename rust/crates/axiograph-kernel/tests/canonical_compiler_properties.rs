@@ -1,10 +1,18 @@
 #![allow(clippy::result_large_err)]
 
-use std::{fs, path::Path};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fs,
+    path::Path,
+};
 
+use sha2::{Digest, Sha256};
+
+use axiograph_dsl::axi_v1::CanonicalSyntacticAddressV1 as Address;
 use axiograph_kernel::{
-    validate_instance_model_ir, CanonicalCompiler, CanonicalModuleSource, KernelCompilationRequest,
-    KernelCompileError, RepositoryIdV2, SchemaGeneratorKindIr, SnapshotIdV2,
+    validate_instance_model_ir, CanonicalCompiler, CanonicalModuleSource,
+    FiniteTheoryGateConsumerIr, KernelCompilationRequest, KernelCompileError, RepositoryIdV2,
+    SchemaGeneratorKindIr, SnapshotIdV2, TheoryResidualKindIr, MAX_FINITE_CATEGORY_OBJECTS,
 };
 use proptest::prelude::*;
 
@@ -50,13 +58,43 @@ fn role_carrier_error_preserves_first_structured_occurrence_and_source() {
     );
     assert_eq!(rendered, cause.to_string());
     assert!(matches!(
-        compile("module M\nschema S:\n  object Company\n  subtype Compny <: Company\n"),
+        compile("module M\nschema S:\n  object Company\n  subtype Compny < Company\n"),
         Err(KernelCompileError::UnknownObjectTarget { .. })
     ));
     let error = compile("module M\nschema S:\n  object Company\n  relation Employment(company: relation(Employmnt))\n").unwrap_err();
     assert!(
         matches!(error, KernelCompileError::RoleCarrier { cause, .. } if matches!(*cause, KernelCompileError::UnknownRelationTarget { .. }))
     );
+}
+
+#[test]
+fn canonical_source_retains_exact_bytes_import_order_and_typed_occurrences() {
+    let text = "module Root\r\nimport Base\r\nimport Other\r\n# Base Other 😀\r\nschema Root:\r\n  object Base\r\n";
+    let source = CanonicalModuleSource::parse(text.as_bytes().to_vec()).expect("canonical source");
+    assert_eq!(source.exact_text().as_bytes(), text.as_bytes());
+    assert_eq!(source.parsed().imports, ["Base", "Other"]);
+    for (address, expected) in [
+        (Address::ImportName { import_index: 0 }, "Base"),
+        (Address::ImportName { import_index: 1 }, "Other"),
+        (Address::SchemaName { schema_index: 0 }, "Root"),
+        (
+            Address::ObjectName {
+                schema_index: 0,
+                object_index: 0,
+            },
+            "Base",
+        ),
+    ] {
+        let occurrence = source
+            .source_map()
+            .occurrence(&address)
+            .expect("typed parser occurrence");
+        assert_eq!(&source.exact_text()[occurrence.bytes.clone()], expected);
+    }
+    assert!(source
+        .source_map()
+        .occurrence(&Address::ImportName { import_index: 2 })
+        .is_none());
 }
 
 fn atom_strategy() -> impl Strategy<Value = String> {
@@ -271,6 +309,229 @@ fn imported_schema_is_visible_to_dependent_instances() {
         .instance("Extension", "Family")
         .expect("dependent instance");
     assert_eq!(instance.schema_id, schema.schema_id);
+}
+
+#[test]
+fn finite_category_object_declaration_count_accepts_n_and_blocks_n_plus_one() {
+    for count in [MAX_FINITE_CATEGORY_OBJECTS, MAX_FINITE_CATEGORY_OBJECTS + 1] {
+        let mut source = "module FiniteObjects\nschema S:\n".to_string();
+        for index in 0..count {
+            source.push_str(&format!("  object O{index}\n"));
+        }
+        let snapshot = compile(&source).expect("both limits are legal canonical .axi syntax");
+        let schema = snapshot
+            .ir()
+            .schema("FiniteObjects", "S")
+            .expect("compiled schema");
+        assert_eq!(schema.objects.len(), count);
+        let gate = snapshot
+            .finite_theory_gate_receipt(FiniteTheoryGateConsumerIr::Authoring)
+            .expect("typed finite-theory gate receipt");
+        if count == MAX_FINITE_CATEGORY_OBJECTS {
+            assert!(gate.passed, "{gate:?}");
+            snapshot
+                .category_kernel_certificate_json("S")
+                .expect("exact-N declaration category export");
+        } else {
+            assert!(!gate.passed, "N+1 must not receive a finite certificate");
+            assert_eq!(gate.residual_obligations.len(), 1);
+            assert_eq!(
+                gate.residual_obligations[0].kind,
+                TheoryResidualKindIr::SaturationBound
+            );
+            snapshot
+                .category_kernel_certificate_json("S")
+                .expect_err("N+1 category export must reject");
+        }
+    }
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ImportCorpus {
+    schema: String,
+    version: u32,
+    files: Vec<ImportCorpusFile>,
+    cases: Vec<ImportCorpusCase>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ImportCorpusFile {
+    name: String,
+    sha256: String,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ImportCorpusCase {
+    id: String,
+    root: String,
+    modules: Vec<String>,
+    expect: String,
+    ordered_modules: Vec<String>,
+}
+
+#[test]
+fn exact_multifile_import_corpus_checks_closure_and_failure_classes() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../..")
+        .canonicalize()
+        .expect("project root");
+    let directory = root.join("fixtures/canonical/contract/imports");
+    let manifest: ImportCorpus = serde_json::from_slice(
+        &fs::read(directory.join("corpus.json")).expect("multi-file corpus manifest"),
+    )
+    .expect("closed multi-file corpus manifest");
+    assert_eq!(manifest.schema, "axiograph.axi_v1_import_closure_corpus");
+    assert_eq!(manifest.version, 1);
+    assert_eq!(manifest.files.len(), 12);
+    let declared = manifest
+        .files
+        .iter()
+        .map(|file| file.name.clone())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(declared.len(), manifest.files.len());
+    let mut present = BTreeSet::new();
+    for entry in fs::read_dir(&directory).expect("multi-file corpus directory") {
+        let entry = entry.expect("corpus directory entry");
+        if entry.path().extension().is_some_and(|ext| ext == "axi") {
+            assert!(entry.file_type().expect("entry type").is_file());
+            present.insert(entry.file_name().into_string().expect("UTF-8 fixture name"));
+        }
+    }
+    assert_eq!(
+        present, declared,
+        "every .axi import fixture needs a hash pin"
+    );
+    let ids = manifest
+        .cases
+        .iter()
+        .map(|case| case.id.as_str())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(ids.len(), manifest.cases.len());
+    assert_eq!(
+        ids,
+        [
+            "ordered_imported_instance",
+            "missing_import",
+            "duplicate_module",
+            "cyclic_import",
+            "ambiguous_imported_schema",
+            "unreachable_input",
+            "imported_equation_certificate_blocked",
+        ]
+        .into_iter()
+        .collect()
+    );
+    let mut sources = BTreeMap::new();
+    for file in manifest.files {
+        assert!(
+            file.name.ends_with(".axi")
+                && !file.name.starts_with('.')
+                && !file.name.contains("..")
+                && file
+                    .name
+                    .bytes()
+                    .all(|byte| { byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.') }),
+            "noncanonical fixture name: {}",
+            file.name
+        );
+        let bytes = fs::read(directory.join(&file.name)).expect("exact module source");
+        assert!(bytes.len() <= 4 * 1024 * 1024);
+        let digest = Sha256::digest(&bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        assert_eq!(digest, file.sha256);
+        let source = CanonicalModuleSource::parse(bytes).expect("canonical module source");
+        assert!(sources.insert(file.name, source).is_none());
+    }
+    let mut used = BTreeSet::new();
+    for case in manifest.cases {
+        assert!(!case.modules.is_empty() && case.modules.len() <= 4);
+        let modules = case
+            .modules
+            .iter()
+            .map(|name| {
+                used.insert(name.clone());
+                sources.get(name).expect("manifest-declared module").clone()
+            })
+            .collect();
+        let result = CanonicalCompiler::compile(KernelCompilationRequest {
+            repository_id: RepositoryIdV2::from_descriptor_bytes(b"eq16-u03-import-corpus"),
+            accepted_snapshot_id: SnapshotIdV2::from_canonical_fields(&[case.id.as_bytes()]),
+            root_module: case.root.clone(),
+            modules,
+        });
+        match (case.expect.as_str(), result) {
+            ("accepted", Ok(snapshot)) => {
+                let ordered = snapshot
+                    .ir()
+                    .ordered_module_closure()
+                    .iter()
+                    .map(|module| module.module_name.as_str())
+                    .collect::<Vec<_>>();
+                assert_eq!(ordered, case.ordered_modules, "{}", case.id);
+                let schema = snapshot
+                    .ir()
+                    .schema("Base", "Shared")
+                    .expect("imported schema");
+                let instance = snapshot
+                    .ir()
+                    .instance("Root", "Family")
+                    .expect("imported dependent instance");
+                assert_eq!(instance.schema_id, schema.schema_id);
+            }
+            ("unknown_import", Err(KernelCompileError::UnknownImport { module, import })) => {
+                assert_eq!(
+                    (module.as_str(), import.as_str()),
+                    ("MissingRoot", "Absent")
+                );
+            }
+            ("duplicate_module", Err(KernelCompileError::DuplicateModule(name))) => {
+                assert_eq!(name, "Base");
+            }
+            ("import_cycle", Err(KernelCompileError::ImportCycle(cycle))) => {
+                assert_eq!(cycle, "CycleA -> CycleB -> CycleA");
+            }
+            (
+                "ambiguous_visible_schema",
+                Err(KernelCompileError::DuplicateLabel { kind, label, scope }),
+            ) => {
+                assert_eq!(
+                    (kind, label.as_str(), scope.as_str()),
+                    ("visible schema", "Shared", "import closure of Ambiguous")
+                );
+            }
+            ("unreachable_module", Err(KernelCompileError::UnreachableModules(names))) => {
+                assert_eq!(names, "Left");
+            }
+            ("category_export_blocked", Ok(snapshot)) => {
+                let ordered = snapshot
+                    .ir()
+                    .ordered_module_closure()
+                    .iter()
+                    .map(|module| module.module_name.as_str())
+                    .collect::<Vec<_>>();
+                assert_eq!(ordered, case.ordered_modules, "{}", case.id);
+                let schema = snapshot
+                    .ir()
+                    .schema("Base", "Shared")
+                    .expect("imported equation schema");
+                assert_eq!(schema.equations.len(), 1);
+                let error = snapshot
+                    .category_kernel_certificate_json("Shared")
+                    .expect_err("one-module certificate cannot cover imported equation");
+                assert!(error.to_string().contains("import closure"), "{error}");
+            }
+            (other, result) => panic!("{}: expected {other}, got {result:?}", case.id),
+        }
+        if !matches!(case.expect.as_str(), "accepted" | "category_export_blocked") {
+            assert!(case.ordered_modules.is_empty(), "{}", case.id);
+        }
+    }
+    assert_eq!(used, sources.into_keys().collect());
 }
 
 #[test]

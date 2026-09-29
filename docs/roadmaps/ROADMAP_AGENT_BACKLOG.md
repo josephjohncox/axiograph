@@ -1,5 +1,14 @@
 # Agent Backlog
 
+**Claim status:** `design_target` and `current_implementation`. See the
+[claim-status taxonomy](../reference/CLAIM_STATUS.md).
+
+Checked and partial markers describe current implementation slices. Unchecked
+markers remain design targets. These markers do not create Lean trust, release
+evidence, or accepted-state authority. The
+[engineering-quality roadmap](ROADMAP_ENGINEERING_QUALITY.md) owns remediation
+status and its append-only evidence record.
+
 This roadmap preserves the active priorities and living checklist that were
 previously embedded in `AGENTS.md`. Keep `AGENTS.md` short; update this file or
 the domain roadmaps when priorities change.

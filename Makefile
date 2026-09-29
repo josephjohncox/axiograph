@@ -23,7 +23,7 @@
 	verify-lean-axi-v1 \
 	verify-identity-parity \
 	verify-w02-compiler verify-regulated-shipment \
-	verify-axi-parse-e2e \
+	verify-axi-v1-contract verify-axi-contract-differential verify-axi-parse-e2e \
 	verify-verus verify-rustsec verify-fuzz verify-miri verify-miri-required verify-loom \
 	verify-kani verify-kani-required \
 	verify-lean-resolution-v2 verify-lean-normalize-path-v2 verify-lean-path-equiv-v2 verify-lean-delta-f-v1 \
@@ -36,7 +36,7 @@
 	rust-test-semantics check-rust-toolchain check-node-toolchain check-clean-source-manifest check-example-catalog rust-fmt-check rust-test-locked rust-test-all-targets-features check-cli-feature-matrix lint-cli-feature-matrix verify-viz \
 	verify-release-fixtures verify-release-packaging rehearse-release-publication check-release-version \
 	release-gate check-no-unsafe check-no-panics verify-semantics verify-canonical-spine test-semantics test-backend-containers \
-	docs docs-rust book book-tool book-validate book-serve \
+	docs docs-rust book book-tool book-validate book-serve verify-doc-claims \
 	viz-install viz-build viz-dev \
 	demo test clean install help
 
@@ -349,7 +349,7 @@ verify-lean-certificates: lean
 
 verify-lean-certificate-rejections: lean-exe
 	@echo "━━━ Running approved-checker adversarial rejection tests ━━━"
-	python3 scripts/run_required_query_tests.py --cargo "$(CARGO)" --package axiograph-query --filter verifier_bridge::tests
+	python3 scripts/run_required_query_tests.py --cargo "$(CARGO)" --package axiograph-query --filter verifier_bridge::tests --serial
 	@echo "✓ Approved checker accepted exact V4 and rejected malformed, altered-digest, forged, extra, missing, duplicate, and truncated inputs"
 
 verify-lean-theory: dirs
@@ -483,7 +483,80 @@ verify-regulated-shipment: dirs
 		./examples/regulated_shipment/run_regulated_shipment_workflow.sh "$$run_dir"
 	@echo "✓ Regulated shipment bound exact finite-query receipts into typed category/refinement/transport/merge gates"
 
-verify-axi-parse-e2e: lean
+verify-axi-contract-differential: dirs
+	@echo "━━━ Bounded deterministic axi_v1 Rust ↔ Lean differential runner ━━━"
+	python3 -m unittest scripts.tests.test_axi_contract_conformance scripts.tests.test_axi_trusted_file_boundaries
+	cd $(RUST_DIR) && $(CARGO) build \
+		-p axiograph-dsl --bin axiograph_parse_axi_v1 \
+		-p axiograph-pathdb --bin axiograph_typecheck_axi \
+		-p axiograph-kernel --bin axiograph_revision_digest --bin axiograph_form_axi_v1
+	cd $(RUST_DIR) && $(CARGO) test --locked -p axiograph-kernel \
+		--test canonical_compiler_properties \
+		exact_multifile_import_corpus_checks_closure_and_failure_classes -- --exact
+	cd $(RUST_DIR) && $(CARGO) test --locked -p axiograph-kernel \
+		--test canonical_compiler_properties \
+		finite_category_object_declaration_count_accepts_n_and_blocks_n_plus_one -- --exact
+	cd $(RUST_DIR) && $(CARGO) test --locked -p axiograph-cli --bin axiograph \
+		axi_input::tests::import_overlay_count_accepts_n_and_rejects_n_plus_one -- --exact
+	cd $(LEAN_DIR) && $(LEAN_ENV) $(LAKE) build axiograph_axi_v1_parse axiograph_axi_v1_typecheck axiograph_verify
+	@set -eu; \
+		run_dir="$$(mktemp -d "$(BUILD_DIR)/axi-v1-differential.XXXXXX")"; \
+		trap 'rm -rf "$$run_dir"' EXIT; \
+		python3 scripts/check_axi_contract_conformance.py \
+			--root "$(CURDIR)" \
+			--rust-parse "$(CURDIR)/$(RUST_DIR)/target/debug/axiograph_parse_axi_v1" \
+			--lean-parse "$(CURDIR)/$(LEAN_DIR)/.lake/build/bin/axiograph_axi_v1_parse" \
+			--rust-typecheck "$(CURDIR)/$(RUST_DIR)/target/debug/axiograph_typecheck_axi" \
+			--lean-typecheck "$(CURDIR)/$(LEAN_DIR)/.lake/build/bin/axiograph_axi_v1_typecheck" \
+			--rust-digest "$(CURDIR)/$(RUST_DIR)/target/debug/axiograph_revision_digest" \
+			--lean-digest "$(CURDIR)/$(LEAN_DIR)/.lake/build/bin/axiograph_verify" \
+			--rust-formation "$(CURDIR)/$(RUST_DIR)/target/debug/axiograph_form_axi_v1" \
+			--report "$$run_dir/report-1.json"; \
+		python3 scripts/check_axi_contract_conformance.py \
+			--root "$(CURDIR)" \
+			--rust-parse "$(CURDIR)/$(RUST_DIR)/target/debug/axiograph_parse_axi_v1" \
+			--lean-parse "$(CURDIR)/$(LEAN_DIR)/.lake/build/bin/axiograph_axi_v1_parse" \
+			--rust-typecheck "$(CURDIR)/$(RUST_DIR)/target/debug/axiograph_typecheck_axi" \
+			--lean-typecheck "$(CURDIR)/$(LEAN_DIR)/.lake/build/bin/axiograph_axi_v1_typecheck" \
+			--rust-digest "$(CURDIR)/$(RUST_DIR)/target/debug/axiograph_revision_digest" \
+			--lean-digest "$(CURDIR)/$(LEAN_DIR)/.lake/build/bin/axiograph_verify" \
+			--rust-formation "$(CURDIR)/$(RUST_DIR)/target/debug/axiograph_form_axi_v1" \
+			--report "$$run_dir/report-2.json"; \
+		cmp "$$run_dir/report-1.json" "$$run_dir/report-2.json"; \
+		cat "$$run_dir/report-1.json"
+	@echo "✓ deterministic differential reports matched byte-for-byte"
+	@set -eu; \
+		run_dir="$$(mktemp -d "$(BUILD_DIR)/axi-v1-file-boundaries.XXXXXX")"; \
+		trap 'rm -rf "$$run_dir"' EXIT; \
+		for attempt in 1 2; do \
+			python3 -m scripts.check_axi_trusted_file_boundaries \
+				--root "$(CURDIR)" \
+				--rust-parse "$(CURDIR)/$(RUST_DIR)/target/debug/axiograph_parse_axi_v1" \
+				--lean-parse "$(CURDIR)/$(LEAN_DIR)/.lake/build/bin/axiograph_axi_v1_parse" \
+				--rust-digest "$(CURDIR)/$(RUST_DIR)/target/debug/axiograph_revision_digest" \
+				--lean-verify "$(CURDIR)/$(LEAN_DIR)/.lake/build/bin/axiograph_verify" \
+				--report "$$run_dir/boundary-$$attempt.json"; \
+		done; \
+		cmp "$$run_dir/boundary-1.json" "$$run_dir/boundary-2.json"
+	@echo "✓ trusted file-mode boundary reports matched byte-for-byte"
+
+verify-axi-v1-contract: verify-axi-contract-differential dirs
+	@echo "━━━ Canonical axi_v1 AST and exact-byte contract ━━━"
+	python3 -m unittest scripts.tests.test_axi_v1_contract_payloads
+	cd $(RUST_DIR) && $(CARGO) build -p axiograph-dsl --bin axiograph_parse_axi_v1 -p axiograph-pathdb --bin axiograph_typecheck_axi -p axiograph-kernel --bin axiograph_revision_digest
+	cd $(LEAN_DIR) && $(LEAN_ENV) $(LAKE) build axiograph_axi_v1_parse axiograph_axi_v1_typecheck axiograph_verify
+	python3 scripts/check_axi_v1_contract.py \
+		--root "$(CURDIR)" \
+		--rust-parse "$(CURDIR)/$(RUST_DIR)/target/debug/axiograph_parse_axi_v1" \
+		--lean-parse "$(CURDIR)/$(LEAN_DIR)/.lake/build/bin/axiograph_axi_v1_parse" \
+		--rust-typecheck "$(CURDIR)/$(RUST_DIR)/target/debug/axiograph_typecheck_axi" \
+		--lean-typecheck "$(CURDIR)/$(LEAN_DIR)/.lake/build/bin/axiograph_axi_v1_typecheck" \
+		--rust-digest "$(CURDIR)/$(RUST_DIR)/target/debug/axiograph_revision_digest" \
+		--lean-digest "$(CURDIR)/$(LEAN_DIR)/.lake/build/bin/axiograph_verify"
+	cd $(RUST_DIR) && $(CARGO) test -p axiograph-kernel --test axi_v1_contract -- --nocapture
+	@echo "✓ axi_v1 contract inventory, bytes, parser, typecheck, and formation checks passed"
+
+verify-axi-parse-e2e: lean verify-axi-v1-contract
 	@echo "━━━ Parsing canonical .axi corpus (Rust ↔ Lean, axi_v1) ━━━"
 	@ if command -v $(LAKE) >/dev/null 2>&1; then \
 		( cd $(RUST_DIR) && $(CARGO) run -q -p axiograph-dsl --bin axiograph_parse_axi_v1 -- ../examples/economics/EconomicFlows.axi > ../$(BUILD_DIR)/axi_v1_rust_economic.txt ) && \
@@ -686,7 +759,9 @@ check-release-version:
 
 verify-release-packaging:
 	@echo "━━━ Testing deterministic manifests, archives, corruption rejection, and publication ordering ━━━"
-	python3 -m unittest discover -s scripts/tests -p 'test_*.py' -v
+	@# The Git-decoy test changes HOME; keep rustup's installed toolchain independent of it.
+	RUSTUP_HOME="$${RUSTUP_HOME:-$${HOME}/.rustup}" CARGO_HOME="$${CARGO_HOME:-$${HOME}/.cargo}" \
+		python3 -m unittest discover -s scripts/tests -p 'test_*.py' -v
 	@echo "✓ Release manifests, bundles, corruption checks, and local publication rehearsal passed"
 
 rehearse-release-publication:
@@ -821,7 +896,11 @@ book-tool:
 		exit 1; \
 	}
 
-book-validate:
+verify-doc-claims:
+	@python3 scripts/check_documentation_claims.py
+	@python3 -m unittest scripts.tests.test_documentation_claims scripts.tests.test_book_validation
+
+book-validate: verify-doc-claims
 	@python3 scripts/check_book.py
 
 book: book-tool book-validate

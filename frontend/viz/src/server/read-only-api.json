@@ -10,6 +10,6 @@
   "limits": {"request_bytes":1048576,"response_bytes":16777216},
   "unsupported": ["mutation","certificates","llm","proposals","evidence_lookup","describe","snapshots","contexts","graph_highlighting"],
   "identity": "server_image_local_no_graph_binding",
-  "schema_scope": "descriptive_query_profile_not_serde_or_semantic_equivalence",
+  "schema_scope": "closed_query_transport_shape_with_rust_semantic_validation",
   "opaque": ["status.receipt","query_schema"]
 }

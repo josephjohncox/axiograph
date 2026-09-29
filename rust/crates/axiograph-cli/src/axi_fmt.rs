@@ -46,33 +46,6 @@ fn is_top_level_keyword(trimmed: &str) -> bool {
         || trimmed.starts_with("rewrite ")
 }
 
-fn fix_symmetric_where_shorthand(rest: &str) -> String {
-    // Support a small, fixable shorthand:
-    //   symmetric Rel where field in {A, B}
-    // by rewriting it into the canonical:
-    //   symmetric Rel where Rel.field in {A, B}
-    //
-    // This avoids `ConstraintV1::Unknown` for common, readable sources.
-    let rest = rest.trim();
-    let Some(after) = rest.strip_prefix("symmetric ").map(str::trim) else {
-        return rest.to_string();
-    };
-    let Some((relation, guard)) = after.split_once(" where ") else {
-        return rest.to_string();
-    };
-    let relation = relation.trim();
-    let guard = guard.trim();
-    let Some((lhs, rhs)) = guard.split_once(" in ") else {
-        return rest.to_string();
-    };
-    let lhs = lhs.trim();
-    let rhs = rhs.trim();
-    if lhs.contains('.') || relation.is_empty() {
-        return rest.to_string();
-    }
-    format!("symmetric {relation} where {relation}.{lhs} in {rhs}")
-}
-
 fn collect_relation_decl(
     lines: &[&str],
     start: usize,
@@ -219,8 +192,6 @@ fn format_axi_surface(text: &str) -> Result<String> {
             } else {
                 format!("{rest} {}", extra_parts.join(" "))
             };
-            let combined_rest = fix_symmetric_where_shorthand(&combined_rest);
-
             let constraint = axiograph_dsl::schema_v1::parse_constraint_v1(&combined_rest)
                 .map_err(|e| anyhow!("failed to parse constraint: {e}"))?;
             let formatted = axiograph_dsl::schema_v1::format_constraint_v1(&constraint)
@@ -293,14 +264,20 @@ schema Fam:
     }
 
     #[test]
-    fn canonicalizes_subtype_alias_to_canonical_surface() {
+    fn rejects_noncanonical_subtype_operator() {
         let input = r#"module Demo
 
 schema S:
   subtype Child <: Parent
 "#;
-        let rendered = format_axi_surface(input).expect("format axi");
+        format_axi_surface(input).expect_err("the formatter must not accept parser aliases");
+
+        let canonical = r#"module Demo
+
+schema S:
+  subtype Child < Parent
+"#;
+        let rendered = format_axi_surface(canonical).expect("format canonical axi");
         assert!(rendered.contains("subtype Child < Parent"));
-        assert!(!rendered.contains("<:"));
     }
 }

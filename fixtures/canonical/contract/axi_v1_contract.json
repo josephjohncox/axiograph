@@ -1,0 +1,2151 @@
+{
+  "schema": "axiograph.canonical_axi_v1_contract",
+  "version": 1,
+  "language": "axi_v1",
+  "status": "normative_for_declared_parser_contract",
+  "lexical_surface": {
+    "syntax_whitespace": "the explicit ASCII set HT, LF, CR, and space; VT, FF, and all non-ASCII whitespace are not syntax whitespace",
+    "non_ascii_boundary_whitespace": "rejected; no Unicode trimming is permitted",
+    "identifier_domain": "ASCII letters, ASCII digits after the first character, and underscore",
+    "unicode_content": "preserved byte-for-byte in supported opaque text and value atoms",
+    "headers": "schema, theory, instance, equation, rewrite, and named-constraint headers consume the complete header and accept zero or one trailing colon; module headers accept no colon; unrecognized constraint text containing a colon or no syntax whitespace is a named-header candidate",
+    "qualified_fields": "Relation.field is adjacent; syntax whitespace before or after the dot is rejected",
+    "call_interiors": "recursive type and refinement calls accept the explicit ASCII syntax-whitespace set immediately inside either parenthesis and around interior separators; VT, FF, and non-ASCII whitespace reject",
+    "reversible_separator": "@reversible requires one or more characters from the explicit ASCII syntax-whitespace set; attached and non-ASCII separators reject",
+    "value_atoms": "nonempty non-delimiter text may start with a digit and is preserved exactly without numeric canonicalization",
+    "finite_lists": "empty, interior-empty, and trailing elements are rejected; only the explicit empty set literal is an empty finite collection",
+    "u32_tokens": "nonempty ASCII digits only; no sign, interior whitespace, Unicode digits, or values above 4294967295",
+    "declaration_introducers": "physical-line declaration keywords include one literal ASCII space; general syntax whitespace applies only where the grammar owns a whitespace token"
+  },
+  "adversarial_matrix": {
+    "path": "fixtures/canonical/contract/axi_v1_adversarial_matrix.json",
+    "sha256": "0b37d5643e86f1f88ef7b83d531bbe4c0aafcfbf3f166f081a355ccbc088425b",
+    "runner": "scripts/check_axi_v1_contract.py",
+    "accepted_parse_rule": "compare independently normalized Rust and Lean ASTs",
+    "accepted_typecheck_rule": "run standalone Rust and Lean typecheck entry points and compare the declared result",
+    "coverage": "runner-validated generated Cartesian boundary cells for constraints, u32 tokens, rewrite Path forms, and recursive constructors"
+  },
+  "authority": {
+    "accepted_meaning": "exact_utf8_axi_bytes",
+    "normalized_ast_authoritative": false,
+    "rust_ast_or_ir_authoritative_for_lean": false,
+    "lean_reconstruction": "Lean reads the same exact UTF-8 source image and runs Axiograph.Axi.AxiV1.parseAxiV1 independently.",
+    "compiled_ir_role": "derived execution and citation substrate after canonical formation",
+    "source_map_role": "nonsemantic operational metadata outside this AST contract"
+  },
+  "exact_byte_anchor": {
+    "encoding": "UTF-8",
+    "bom": "not part of the grammar and rejected as an invalid module header",
+    "unicode_normalization": "none",
+    "newline_normalization": "none",
+    "comment_or_whitespace_normalization": "none",
+    "order_normalization": "none",
+    "identity_domain": "revision",
+    "wire_prefix": "axi:revision:v2:sha256:",
+    "preimage": {
+      "magic_ascii": "AXIOGRAPH-ID",
+      "version_u16_be": 2,
+      "domain_length_u16_be": 8,
+      "domain_ascii": "revision",
+      "field_count_u32_be": 1,
+      "field_length_u64_be": "exact UTF-8 byte length",
+      "field": "exact UTF-8 bytes"
+    },
+    "identity_significant": [
+      "comments",
+      "whitespace",
+      "LF versus CRLF",
+      "Unicode code-point encoding",
+      "import order",
+      "declaration order"
+    ]
+  },
+  "ordered_sequences": [
+    "SchemaV1Module.imports",
+    "SchemaV1Module.schemas",
+    "SchemaV1Module.theories",
+    "SchemaV1Module.instances",
+    "SchemaV1Schema.objects",
+    "SchemaV1Schema.subtypes",
+    "SchemaV1Schema.relations",
+    "SchemaV1Schema.generators",
+    "RelationDeclV1.fields",
+    "TypeExprV1.indexed.over_roles",
+    "TypeExprV1.refined.predicates",
+    "RefinementPredicateV1 member/key/enum values",
+    "SchemaV1Theory.constraints",
+    "SchemaV1Theory.equations",
+    "SchemaV1Theory.rewrite_rules",
+    "RewriteRuleV1.vars",
+    "SetLiteralV1.items",
+    "SetItemV1.tuple.fields",
+    "SchemaV1Instance.assignments"
+  ],
+  "ordering_note": "No parser, normalized comparison view, compiler, or checker may sort these arrays. The AST uses separate top-level declaration-family arrays; the exact source bytes retain the complete cross-family textual order.",
+  "ast_inventory": [
+    {
+      "canonical": "module",
+      "rust": {
+        "declaration": "SchemaV1Module",
+        "kind": "struct",
+        "fields": [
+          "module_name",
+          "imports",
+          "schemas",
+          "theories",
+          "instances"
+        ]
+      },
+      "lean": {
+        "declaration": "SchemaV1Module",
+        "kind": "structure",
+        "fields": [
+          "moduleName",
+          "imports",
+          "schemas",
+          "theories",
+          "instances"
+        ]
+      }
+    },
+    {
+      "canonical": "schema",
+      "rust": {
+        "declaration": "SchemaV1Schema",
+        "kind": "struct",
+        "fields": [
+          "name",
+          "objects",
+          "subtypes",
+          "relations",
+          "generators"
+        ]
+      },
+      "lean": {
+        "declaration": "SchemaV1Schema",
+        "kind": "structure",
+        "fields": [
+          "name",
+          "objects",
+          "subtypes",
+          "relations",
+          "generators"
+        ]
+      }
+    },
+    {
+      "canonical": "subtype_decl",
+      "rust": {
+        "declaration": "SubtypeDeclV1",
+        "kind": "struct",
+        "fields": [
+          "sub",
+          "sup",
+          "inclusion"
+        ]
+      },
+      "lean": {
+        "declaration": "SubtypeDeclV1",
+        "kind": "structure",
+        "fields": [
+          "sub",
+          "sup",
+          "inclusion"
+        ]
+      }
+    },
+    {
+      "canonical": "relation_decl",
+      "rust": {
+        "declaration": "RelationDeclV1",
+        "kind": "struct",
+        "fields": [
+          "name",
+          "fields"
+        ]
+      },
+      "lean": {
+        "declaration": "RelationDeclV1",
+        "kind": "structure",
+        "fields": [
+          "name",
+          "fields"
+        ]
+      }
+    },
+    {
+      "canonical": "field_decl",
+      "rust": {
+        "declaration": "FieldDeclV1",
+        "kind": "struct",
+        "fields": [
+          "field",
+          "ty",
+          "kind"
+        ]
+      },
+      "lean": {
+        "declaration": "FieldDeclV1",
+        "kind": "structure",
+        "fields": [
+          "field",
+          "ty",
+          "kind"
+        ]
+      }
+    },
+    {
+      "canonical": "generator_decl",
+      "rust": {
+        "declaration": "GeneratorDeclV1",
+        "kind": "struct",
+        "fields": [
+          "name",
+          "source",
+          "target",
+          "kind",
+          "reversible"
+        ]
+      },
+      "lean": {
+        "declaration": "GeneratorDeclV1",
+        "kind": "structure",
+        "fields": [
+          "name",
+          "source",
+          "target",
+          "kind",
+          "reversible"
+        ]
+      }
+    },
+    {
+      "canonical": "carrier_fields",
+      "rust": {
+        "declaration": "CarrierFieldsV1",
+        "kind": "struct",
+        "fields": [
+          "left_field",
+          "right_field"
+        ]
+      },
+      "lean": {
+        "declaration": "CarrierFieldsV1",
+        "kind": "structure",
+        "fields": [
+          "leftField",
+          "rightField"
+        ]
+      }
+    },
+    {
+      "canonical": "theory",
+      "rust": {
+        "declaration": "SchemaV1Theory",
+        "kind": "struct",
+        "fields": [
+          "name",
+          "schema",
+          "constraints",
+          "equations",
+          "rewrite_rules"
+        ]
+      },
+      "lean": {
+        "declaration": "SchemaV1Theory",
+        "kind": "structure",
+        "fields": [
+          "name",
+          "schema",
+          "constraints",
+          "equations",
+          "rewriteRules"
+        ]
+      }
+    },
+    {
+      "canonical": "equation",
+      "rust": {
+        "declaration": "EquationV1",
+        "kind": "struct",
+        "fields": [
+          "name",
+          "lhs",
+          "rhs"
+        ]
+      },
+      "lean": {
+        "declaration": "EquationV1",
+        "kind": "structure",
+        "fields": [
+          "name",
+          "lhs",
+          "rhs"
+        ]
+      }
+    },
+    {
+      "canonical": "rewrite_var_decl",
+      "rust": {
+        "declaration": "RewriteVarDeclV1",
+        "kind": "struct",
+        "fields": [
+          "name",
+          "ty"
+        ]
+      },
+      "lean": {
+        "declaration": "RewriteVarDeclV1",
+        "kind": "structure",
+        "fields": [
+          "name",
+          "ty"
+        ]
+      }
+    },
+    {
+      "canonical": "rewrite_rule",
+      "rust": {
+        "declaration": "RewriteRuleV1",
+        "kind": "struct",
+        "fields": [
+          "name",
+          "orientation",
+          "vars",
+          "lhs",
+          "rhs"
+        ]
+      },
+      "lean": {
+        "declaration": "RewriteRuleV1",
+        "kind": "structure",
+        "fields": [
+          "name",
+          "orientation",
+          "vars",
+          "lhs",
+          "rhs"
+        ]
+      }
+    },
+    {
+      "canonical": "instance",
+      "rust": {
+        "declaration": "SchemaV1Instance",
+        "kind": "struct",
+        "fields": [
+          "name",
+          "schema",
+          "assignments"
+        ]
+      },
+      "lean": {
+        "declaration": "SchemaV1Instance",
+        "kind": "structure",
+        "fields": [
+          "name",
+          "schema",
+          "assignments"
+        ]
+      }
+    },
+    {
+      "canonical": "instance_assignment",
+      "rust": {
+        "declaration": "InstanceAssignmentV1",
+        "kind": "struct",
+        "fields": [
+          "name",
+          "value"
+        ]
+      },
+      "lean": {
+        "declaration": "InstanceAssignmentV1",
+        "kind": "structure",
+        "fields": [
+          "name",
+          "value"
+        ]
+      }
+    },
+    {
+      "canonical": "set_literal",
+      "rust": {
+        "declaration": "SetLiteralV1",
+        "kind": "struct",
+        "fields": [
+          "items"
+        ]
+      },
+      "lean": {
+        "declaration": "SetLiteralV1",
+        "kind": "structure",
+        "fields": [
+          "items"
+        ]
+      }
+    },
+    {
+      "canonical": "type_expr",
+      "wire_discriminator": "kind",
+      "rust": {
+        "declaration": "TypeExprV1",
+        "kind": "enum",
+        "constructors": [
+          "Object",
+          "RelationObject",
+          "Indexed",
+          "Refined"
+        ]
+      },
+      "lean": {
+        "declaration": "TypeExprV1",
+        "kind": "inductive",
+        "constructors": [
+          "object",
+          "relationObject",
+          "indexed",
+          "refined"
+        ]
+      },
+      "wire_tags": [
+        "object",
+        "relation_object",
+        "indexed",
+        "refined"
+      ]
+    },
+    {
+      "canonical": "refinement_predicate",
+      "wire_discriminator": "kind",
+      "rust": {
+        "declaration": "RefinementPredicateV1",
+        "kind": "enum",
+        "constructors": [
+          "Equals",
+          "MemberOf",
+          "Cardinality",
+          "Key",
+          "Enum",
+          "Predicate"
+        ]
+      },
+      "lean": {
+        "declaration": "RefinementPredicateV1",
+        "kind": "inductive",
+        "constructors": [
+          "equals",
+          "memberOf",
+          "cardinality",
+          "key",
+          "enum",
+          "predicate"
+        ]
+      },
+      "wire_tags": [
+        "equals",
+        "member_of",
+        "cardinality",
+        "key",
+        "enum",
+        "predicate"
+      ]
+    },
+    {
+      "canonical": "role_kind",
+      "rust": {
+        "declaration": "RoleKindV1",
+        "kind": "enum",
+        "constructors": [
+          "Data",
+          "Context",
+          "World",
+          "Temporal",
+          "Parameter",
+          "Evidence"
+        ]
+      },
+      "lean": {
+        "declaration": "RoleKindV1",
+        "kind": "inductive",
+        "constructors": [
+          "data",
+          "context",
+          "world",
+          "temporal",
+          "parameter",
+          "evidence"
+        ]
+      },
+      "wire_tags": [
+        "data",
+        "context",
+        "world",
+        "temporal",
+        "parameter",
+        "evidence"
+      ]
+    },
+    {
+      "canonical": "generator_kind",
+      "rust": {
+        "declaration": "GeneratorKindV1",
+        "kind": "enum",
+        "constructors": [
+          "Aspect",
+          "Function"
+        ]
+      },
+      "lean": {
+        "declaration": "GeneratorKindV1",
+        "kind": "inductive",
+        "constructors": [
+          "aspect",
+          "function"
+        ]
+      },
+      "wire_tags": [
+        "aspect",
+        "function"
+      ]
+    },
+    {
+      "canonical": "constraint",
+      "wire_discriminator": "tag",
+      "rust": {
+        "declaration": "ConstraintV1",
+        "kind": "enum",
+        "constructors": [
+          "Functional",
+          "AtMost",
+          "Typing",
+          "SymmetricWhereIn",
+          "Symmetric",
+          "Transitive",
+          "Key",
+          "NamedBlock",
+          "Unknown"
+        ]
+      },
+      "lean": {
+        "declaration": "ConstraintV1",
+        "kind": "inductive",
+        "constructors": [
+          "functional",
+          "atMost",
+          "typing",
+          "symmetricWhereIn",
+          "symmetric",
+          "transitive",
+          "key",
+          "namedBlock",
+          "unknown"
+        ]
+      },
+      "wire_tags": [
+        "functional",
+        "at_most",
+        "typing",
+        "symmetric_where_in",
+        "symmetric",
+        "transitive",
+        "key",
+        "named_block",
+        "unknown"
+      ]
+    },
+    {
+      "canonical": "rewrite_orientation",
+      "rust": {
+        "declaration": "RewriteOrientationV1",
+        "kind": "enum",
+        "constructors": [
+          "Forward",
+          "Backward",
+          "Bidirectional"
+        ]
+      },
+      "lean": {
+        "declaration": "RewriteOrientationV1",
+        "kind": "inductive",
+        "constructors": [
+          "forward",
+          "backward",
+          "bidirectional"
+        ]
+      },
+      "wire_tags": [
+        "forward",
+        "backward",
+        "bidirectional"
+      ]
+    },
+    {
+      "canonical": "rewrite_var_type",
+      "wire_discriminator": "tag",
+      "rust": {
+        "declaration": "RewriteVarTypeV1",
+        "kind": "enum",
+        "constructors": [
+          "Object",
+          "Path"
+        ]
+      },
+      "lean": {
+        "declaration": "RewriteVarTypeV1",
+        "kind": "inductive",
+        "constructors": [
+          "object",
+          "path"
+        ]
+      },
+      "wire_tags": [
+        "object",
+        "path"
+      ]
+    },
+    {
+      "canonical": "path_expr",
+      "wire_discriminator": "type",
+      "rust": {
+        "declaration": "PathExprV3",
+        "kind": "enum",
+        "constructors": [
+          "Var",
+          "Reflexive",
+          "Step",
+          "Trans",
+          "Inv"
+        ]
+      },
+      "lean": {
+        "declaration": "PathExprV3",
+        "kind": "inductive",
+        "constructors": [
+          "var",
+          "reflexive",
+          "step",
+          "trans",
+          "inv"
+        ]
+      },
+      "wire_tags": [
+        "var",
+        "reflexive",
+        "step",
+        "trans",
+        "inv"
+      ]
+    },
+    {
+      "canonical": "set_item",
+      "wire_discriminator": "tag",
+      "rust": {
+        "declaration": "SetItemV1",
+        "kind": "enum",
+        "constructors": [
+          "Ident",
+          "Tuple"
+        ]
+      },
+      "lean": {
+        "declaration": "SetItemV1",
+        "kind": "inductive",
+        "constructors": [
+          "ident",
+          "tuple"
+        ]
+      },
+      "wire_tags": [
+        "ident",
+        "tuple"
+      ]
+    }
+  ],
+  "ast_payload_types": [
+    {
+      "canonical": "module",
+      "fields": {
+        "module_name": "name",
+        "imports": "ordered<name>",
+        "schemas": "ordered<schema>",
+        "theories": "ordered<theory>",
+        "instances": "ordered<instance>"
+      }
+    },
+    {
+      "canonical": "schema",
+      "fields": {
+        "name": "name",
+        "objects": "ordered<name>",
+        "subtypes": "ordered<subtype_decl>",
+        "relations": "ordered<relation_decl>",
+        "generators": "ordered<generator_decl>"
+      }
+    },
+    {
+      "canonical": "subtype_decl",
+      "fields": {
+        "sub": "name",
+        "sup": "name",
+        "inclusion": "optional<name>"
+      }
+    },
+    {
+      "canonical": "relation_decl",
+      "fields": {
+        "name": "name",
+        "fields": "ordered<field_decl>"
+      }
+    },
+    {
+      "canonical": "field_decl",
+      "fields": {
+        "field": "name",
+        "ty": "type_expr",
+        "kind": "role_kind"
+      }
+    },
+    {
+      "canonical": "generator_decl",
+      "fields": {
+        "name": "name",
+        "source": "name",
+        "target": "name",
+        "kind": "generator_kind",
+        "reversible": "bool"
+      }
+    },
+    {
+      "canonical": "carrier_fields",
+      "fields": {
+        "left_field": "name",
+        "right_field": "name"
+      }
+    },
+    {
+      "canonical": "theory",
+      "fields": {
+        "name": "name",
+        "schema": "name",
+        "constraints": "ordered<constraint>",
+        "equations": "ordered<equation>",
+        "rewrite_rules": "ordered<rewrite_rule>"
+      }
+    },
+    {
+      "canonical": "equation",
+      "fields": {
+        "name": "name",
+        "lhs": "utf8_text",
+        "rhs": "utf8_text"
+      }
+    },
+    {
+      "canonical": "rewrite_var_decl",
+      "fields": {
+        "name": "name",
+        "ty": "rewrite_var_type"
+      }
+    },
+    {
+      "canonical": "rewrite_rule",
+      "fields": {
+        "name": "name",
+        "orientation": "rewrite_orientation",
+        "vars": "ordered<rewrite_var_decl>",
+        "lhs": "path_expr",
+        "rhs": "path_expr"
+      }
+    },
+    {
+      "canonical": "instance",
+      "fields": {
+        "name": "name",
+        "schema": "name",
+        "assignments": "ordered<instance_assignment>"
+      }
+    },
+    {
+      "canonical": "instance_assignment",
+      "fields": {
+        "name": "name",
+        "value": "set_literal"
+      }
+    },
+    {
+      "canonical": "set_literal",
+      "fields": {
+        "items": "ordered<set_item>"
+      }
+    },
+    {
+      "canonical": "type_expr",
+      "constructors": {
+        "object": {
+          "name": "name"
+        },
+        "relation_object": {
+          "relation": "name"
+        },
+        "indexed": {
+          "base": "boxed<type_expr>",
+          "over_roles": "ordered<name>"
+        },
+        "refined": {
+          "base": "boxed<type_expr>",
+          "predicates": "ordered<refinement_predicate>"
+        }
+      }
+    },
+    {
+      "canonical": "refinement_predicate",
+      "constructors": {
+        "equals": {
+          "value": "name"
+        },
+        "member_of": {
+          "values": "ordered<name>"
+        },
+        "cardinality": {
+          "min": "u32",
+          "max": "u32"
+        },
+        "key": {
+          "roles": "ordered<name>"
+        },
+        "enum": {
+          "values": "ordered<name>"
+        },
+        "predicate": {
+          "name": "name",
+          "args": "ordered<name>"
+        }
+      }
+    },
+    {
+      "canonical": "role_kind",
+      "constructors": {
+        "data": {},
+        "context": {},
+        "world": {},
+        "temporal": {},
+        "parameter": {},
+        "evidence": {}
+      }
+    },
+    {
+      "canonical": "generator_kind",
+      "constructors": {
+        "aspect": {},
+        "function": {}
+      }
+    },
+    {
+      "canonical": "constraint",
+      "constructors": {
+        "functional": {
+          "relation": "name",
+          "src_field": "name",
+          "dst_field": "name"
+        },
+        "at_most": {
+          "relation": "name",
+          "src_field": "name",
+          "dst_field": "name",
+          "max": "u32",
+          "params": "optional<ordered<name>>"
+        },
+        "typing": {
+          "relation": "name",
+          "rule": "name"
+        },
+        "symmetric_where_in": {
+          "relation": "name",
+          "field": "name",
+          "values": "ordered<name>",
+          "carriers": "optional<carrier_fields>",
+          "params": "optional<ordered<name>>"
+        },
+        "symmetric": {
+          "relation": "name",
+          "carriers": "optional<carrier_fields>",
+          "params": "optional<ordered<name>>"
+        },
+        "transitive": {
+          "relation": "name",
+          "carriers": "optional<carrier_fields>",
+          "params": "optional<ordered<name>>"
+        },
+        "key": {
+          "relation": "name",
+          "fields": "ordered<name>"
+        },
+        "named_block": {
+          "name": "name",
+          "body": "ordered<utf8_text>"
+        },
+        "unknown": {
+          "text": "utf8_text"
+        }
+      }
+    },
+    {
+      "canonical": "rewrite_orientation",
+      "constructors": {
+        "forward": {},
+        "backward": {},
+        "bidirectional": {}
+      }
+    },
+    {
+      "canonical": "rewrite_var_type",
+      "constructors": {
+        "object": {
+          "ty": "name"
+        },
+        "path": {
+          "from": "name",
+          "to": "name"
+        }
+      }
+    },
+    {
+      "canonical": "path_expr",
+      "constructors": {
+        "var": {
+          "name": "name"
+        },
+        "reflexive": {
+          "entity": "name"
+        },
+        "step": {
+          "from": "name",
+          "rel": "name",
+          "to": "name"
+        },
+        "trans": {
+          "left": "boxed<path_expr>",
+          "right": "boxed<path_expr>"
+        },
+        "inv": {
+          "path": "boxed<path_expr>"
+        }
+      }
+    },
+    {
+      "canonical": "set_item",
+      "constructors": {
+        "ident": {
+          "name": "name"
+        },
+        "tuple": {
+          "label": "optional<name>",
+          "fields": "ordered<pair<name,name>>"
+        }
+      }
+    }
+  ],
+  "numeric_domains": {
+    "u32": {
+      "minimum": 0,
+      "maximum": 4294967295,
+      "rust_type": "u32",
+      "lean_type": "UInt32",
+      "surface": "nonempty ASCII decimal digits without sign or whitespace"
+    },
+    "uses": [
+      "RefinementPredicateV1.cardinality.min",
+      "RefinementPredicateV1.cardinality.max",
+      "ConstraintV1.at_most.max"
+    ],
+    "overflow_stage": "parse",
+    "overflow_class": "parse.numeric_domain"
+  },
+  "excluded_runtime_declarations": [
+    "SchemaV1ParseError",
+    "ParseError",
+    "Section",
+    "ParseState",
+    "CanonicalSourceMap",
+    "CanonicalSourceOccurrenceV1",
+    "CanonicalSyntacticAddressV1",
+    "RoleCarrierSpan",
+    "RoleTypePathStepV1",
+    "RefinementTermV1",
+    "ConstraintTermV1",
+    "RewritePathStepV1",
+    "RewritePathTermV1",
+    "RewriteSideV1",
+    "RewriteRuleBlockField"
+  ],
+  "surface_forms": {
+    "module": "module Name; this must be the first non-comment, non-whitespace canonical header",
+    "line_comment": "# or --; the first marker from left to right starts comment text",
+    "import": "import Name; imports must immediately follow the module header and precede all sections",
+    "schema_declarations": [
+      "object Name",
+      "subtype Sub < Sup",
+      "subtype Sub < Sup as Inclusion",
+      "relation Name(role: Type @kind, ...)",
+      "aspect name: Source -> Target",
+      "function name: Source -> Target @reversible"
+    ],
+    "type_expr": [
+      "Name",
+      "relation(Name)",
+      "indexed(Type; earlier_role|...)",
+      "refined(Type; predicate; ... )"
+    ],
+    "refinement_predicate": [
+      "eq(Value)",
+      "in(Value|...)",
+      "cardinality(Min|Max), where Min and Max are u32 values",
+      "key(earlier_role|...)",
+      "enum(Value|...)",
+      "predicate(Name|Arg|...)"
+    ],
+    "role_kinds": [
+      "@data",
+      "@context",
+      "@world",
+      "@temporal",
+      "@parameter",
+      "@evidence"
+    ],
+    "constraints": [
+      "functional Rel.src -> Rel.dst",
+      "at_most N Rel.src -> Rel.dst param (role, ...), where N is a u32 value",
+      "typing Rel: rule",
+      "symmetric Rel where Rel.role in {Value, ...} on (left, right) param (role, ...); the guard field must be qualified",
+      "symmetric Rel on (left, right) param (role, ...)",
+      "transitive Rel on (left, right) param (role, ...)",
+      "key Rel(role, ...)",
+      "Name with an optional single trailing colon, followed by an indented opaque body",
+      "an unrecognized nonempty constraint family is preserved explicitly as ConstraintV1.unknown",
+      "a malformed recognized functional/at_most/typing/symmetric/transitive/key form is a parse rejection"
+    ],
+    "equation": "equation Name with an optional single trailing colon, followed by one indented lhs = rhs body",
+    "equation_value_types": "checked PathExprV3 endpoint variables range over declared object types and declared relation objects in initial Rust, runtime Rust, and Lean checks; only object types have subtype edges",
+    "rewrite": "rewrite Name with an optional single trailing colon, exactly one vars, lhs, and rhs field, and at most one orientation field; rewrite object variables name object types only",
+    "rewrite_var": [
+      "name: ObjectType",
+      "name: Path(Source,Target)",
+      "name: Path Source Target"
+    ],
+    "path_expr": [
+      "bare_variable",
+      "refl(entity)",
+      "step(from,relation,to)",
+      "trans(left,right)",
+      "inv(path)"
+    ],
+    "instance": [
+      "Name = {Ident, ...}",
+      "Relation = {label: (role=value, ...), (role=value, ...)}"
+    ],
+    "headers": "schema, theory, instance, equation, rewrite, and named-constraint headers are all-consuming and accept at most one optional trailing colon; module accepts no colon",
+    "schema_header": "schema Name:; the name is one identifier and the optional trailing colon occurs at most once",
+    "object_spacing": "object Name uses exactly one ASCII space after object; an additional space or HT before Name rejects",
+    "finite_lists": "leading, interior-empty, and trailing comma or pipe elements reject; the explicit empty set literal remains valid",
+    "role_kind_spacing": "an explicit @kind must be separated from the role type by one or more characters from the declared syntax-whitespace set; attached forms reject",
+    "call_interior_spacing": "relation, indexed, refined, eq, in, enum, key, cardinality, and predicate calls accept the declared ASCII syntax whitespace immediately inside either parenthesis and around interior separators",
+    "reversible_spacing": "@reversible must be separated from the generator target by one or more HT, LF, CR, or space characters; attached, VT, FF, and non-ASCII separators reject",
+    "theory_key_spacing": "theory-level key Relation(field, ...) permits ASCII HT/LF/CR/space before and inside parentheses and around commas; this is distinct from recursive refinement key(earlier_role|...)"
+  },
+  "unsupported_forms": [
+    {
+      "form": "missing, repeated, or non-first module header; missing, repeated, or late import header",
+      "parse": "reject",
+      "later_stages": "not_run",
+      "class": "parse.header_order"
+    },
+    {
+      "form": "schema, theory, instance, equation, rewrite, or named-constraint header with a repeated trailing colon or trailing non-identifier text; module header with any colon",
+      "parse": "reject in both parsers",
+      "later_stages": "not_run",
+      "class": "parse.section_syntax"
+    },
+    {
+      "form": "leading, interior-empty, or trailing finite-list element around a comma or pipe",
+      "parse": "reject in both parsers without filtering the element",
+      "later_stages": "not_run",
+      "class": "parse.list_syntax"
+    },
+    {
+      "form": "VT, FF, or non-ASCII whitespace at a syntax boundary",
+      "parse": "reject in both parsers; supported Unicode content remains byte-preserved in value atoms and opaque text",
+      "later_stages": "not_run",
+      "class": "parse.lexical_domain"
+    },
+    {
+      "form": "attached role-kind annotation such as `A@data` without separating whitespace",
+      "parse": "reject in both parsers",
+      "later_stages": "not_run",
+      "class": "parse.noncanonical_alias"
+    },
+    {
+      "form": "relation-level axis shorthand such as relation R(a: A) @context",
+      "parse": "reject",
+      "later_stages": "not_run",
+      "class": "parse.relation_axis_shorthand"
+    },
+    {
+      "form": "unknown @role annotation",
+      "parse": "reject",
+      "later_stages": "not_run",
+      "class": "parse.role_kind"
+    },
+    {
+      "form": "unbalanced quote or (), [], {} nesting",
+      "parse": "reject in both parsers by the shared bounded global delimiter/quote scan",
+      "later_stages": "not_run",
+      "class": "parse.delimiter"
+    },
+    {
+      "form": "unrecognized nonempty constraint family, including text ending in `on (...)` or `param (...)`",
+      "parse": "accept the complete text as ConstraintV1.unknown in both parsers",
+      "typecheck": "may accept nonempty opaque text",
+      "formation": "retained as an out-of-fragment review obligation",
+      "class": "unsupported.opaque_constraint"
+    },
+    {
+      "form": "a cardinality or at_most integer above 4294967295",
+      "parse": "reject in both parsers",
+      "later_stages": "not_run",
+      "class": "parse.numeric_domain"
+    },
+    {
+      "form": "rewrite orientation alias `both`, rewrite path alias `id(...)`, or noncanonical `param (...) on (...)` closure-clause order",
+      "parse": "reject in both parsers; use `bidirectional` and `refl(...)`",
+      "later_stages": "not_run",
+      "class": "parse.noncanonical_alias"
+    },
+    {
+      "form": "bare symmetric guard field shorthand such as `where field in {...}`",
+      "parse": "reject in both parsers; use qualified `where Relation.field in {...}`",
+      "later_stages": "not_run",
+      "class": "parse.noncanonical_alias"
+    },
+    {
+      "form": "malformed recognized functional, at_most, typing, symmetric, transitive, or key family",
+      "parse": "reject in both parsers",
+      "later_stages": "not_run",
+      "class": "parse.constraint_shape"
+    },
+    {
+      "form": "rewrite missing vars/lhs/rhs, orientation without a value, or any repeated vars/lhs/rhs/orientation field",
+      "parse": "reject in both parsers",
+      "later_stages": "not_run",
+      "class": "parse.rewrite_shape"
+    },
+    {
+      "form": "named constraint block",
+      "parse": "accept as ConstraintV1.namedBlock",
+      "typecheck": "structural checks only",
+      "formation": "retained as an out-of-fragment review obligation",
+      "class": "unsupported.named_constraint_semantics"
+    },
+    {
+      "form": "generator tuple with repeated source or target fields in any order",
+      "parse": "accept and preserve every ordered field",
+      "typecheck": "reject in both standalone typecheckers before map insertion",
+      "formation": "not_run",
+      "class": "typecheck.duplicate_declaration"
+    },
+    {
+      "form": "unknown object/relation target, duplicate declaration, or subtype cycle",
+      "parse": "accept when syntactically valid",
+      "typecheck": "reject in both standalone typecheckers",
+      "formation": "reject",
+      "class": "typecheck.schema_formation"
+    },
+    {
+      "form": "theory constraint with an unknown relation/field; checked PathExprV3 equation with an unknown relation, incompatible inferred variable type, invalid composition, or unequal endpoints; duplicate equation name; or typed rewrite with an unknown type, endpoint, variable, relation, carrier pair, or incompatible endpoints",
+      "parse": "accept when syntactically valid",
+      "typecheck": "reject in both standalone typecheckers",
+      "formation": "not_run",
+      "class": "typecheck.theory_formation"
+    },
+    {
+      "form": "empty dependent-role index or index naming an unknown or non-earlier role",
+      "parse": "accept",
+      "typecheck": "reject in both standalone typecheckers",
+      "formation": "reject",
+      "class": "typecheck.dependent_role"
+    },
+    {
+      "form": "empty refinement, empty finite refinement, inverted cardinality, empty or invalid earlier-role key, or predicate other than non_empty",
+      "parse": "accept",
+      "typecheck": "reject in both standalone typecheckers",
+      "formation": "reject",
+      "class": "typecheck.refinement"
+    },
+    {
+      "form": "syntactically and type-valid key(...) role refinement",
+      "parse": "accept",
+      "standalone_typecheck": "accept",
+      "formation": "reject because no finite witness is implemented; use a theory key constraint",
+      "class": "formation.unsupported_refinement_witness"
+    },
+    {
+      "form": "missing imported module in supplied closure",
+      "parse": "accept",
+      "standalone_typecheck": "accept",
+      "formation": "reject",
+      "class": "formation.import_closure"
+    },
+    {
+      "form": "unsupported equation/path interpretation beyond the checked forward generator fragment",
+      "parse": "preserve equation strings",
+      "typecheck": "conservative checks",
+      "formation": "typed residual or reject according to the selected compiler/certificate fragment",
+      "class": "formation.unsupported_equation_fragment"
+    },
+    {
+      "form": "general DTT, HoTT, open-world closure, parser completeness, or arbitrary rewrite confluence claim",
+      "parse": "not a language constructor or claim",
+      "class": "non_claim"
+    }
+  ],
+  "acceptance_stages": [
+    {
+      "stage": "boundary",
+      "meaning": "single opened byte image is bounded and decoded as UTF-8; invalid UTF-8 has no AST or revision identity"
+    },
+    {
+      "stage": "parse",
+      "meaning": "independent parser constructs the declared AST without name resolution or semantic validation"
+    },
+    {
+      "stage": "typecheck",
+      "meaning": "independent Rust and Lean checks validate the conservative module/schema/theory/instance typing subset"
+    },
+    {
+      "stage": "formation",
+      "meaning": "CanonicalCompiler checks the supplied ordered import closure and builds the supported canonical IR; this Rust decision procedure is not a Lean proof"
+    },
+    {
+      "stage": "certificate_check",
+      "meaning": "VerifyMain reparses exact source and checks only imported certificate families; it does not deserialize Rust AST or kernel IR as source meaning"
+    }
+  ],
+  "operational_bounds": {
+    "status": "runtime limits, not theorems",
+    "rust_direct_parser": {
+      "source_bytes": 4194304,
+      "source_lines": 200000,
+      "line_bytes": 1048576,
+      "delimiter_depth": 64
+    },
+    "lean_trusted_file_loader": {
+      "source_bytes": 4194304
+    },
+    "lean_stdio_module_field": {
+      "source_bytes": 4194304
+    },
+    "closure_and_compiled_ir": "Call-site and canonical compiler collection bounds are documented in SECURITY_BOUNDARIES.md and KERNEL_IR.md; a passing bound does not establish semantic soundness.",
+    "limit_parity_scope": "This unit records current bounds. Generated boundary parity and expanded limit cases belong to EQ16-U03."
+  },
+  "normalized_comparison": {
+    "flag": "--contract-ast-v1",
+    "format": "the compact JSON shape emitted by Rust serde for SchemaV1Module and independently constructed by Lean contractAstJsonV1",
+    "array_order": "preserved exactly",
+    "object_member_order": "ignored by comparison",
+    "input_authority": false,
+    "digest_input": false,
+    "compiler_input": false,
+    "lean_input_from_rust": false,
+    "purpose": "finite test comparison only"
+  },
+  "differential_envelope": {
+    "schema": "axiograph.axi_v1_differential_envelope",
+    "version": 1,
+    "flag": "--contract-envelope-v1",
+    "implementations": [
+      "rust",
+      "lean"
+    ],
+    "requested_stages": [
+      "parse",
+      "typecheck",
+      "formation"
+    ],
+    "fields": [
+      "schema",
+      "version",
+      "implementation",
+      "requested_stage",
+      "observed_stage",
+      "decision",
+      "normalized_ast",
+      "summary",
+      "rejection_class",
+      "diagnostic"
+    ],
+    "decisions": [
+      "accepted",
+      "rejected"
+    ],
+    "closed_value_shapes": {
+      "version": "integer_literal_1_not_boolean",
+      "normalized_ast": "closed_shape_from_ast_inventory_and_ast_payload_types_or_null_by_stage",
+      "typecheck_summary": {
+        "module": "string",
+        "schemas": "nonnegative_integer_not_boolean",
+        "theories": "nonnegative_integer_not_boolean",
+        "instances": "nonnegative_integer_not_boolean",
+        "assignments": "nonnegative_integer_not_boolean",
+        "tuples": "nonnegative_integer_not_boolean"
+      },
+      "formation_summary": {
+        "module": "string",
+        "import_closure": "nonnegative_integer_not_boolean",
+        "schemas": "nonnegative_integer_not_boolean",
+        "theories": "nonnegative_integer_not_boolean",
+        "instances": "nonnegative_integer_not_boolean"
+      }
+    },
+    "parser_and_typechecker_self_classify_rejections": false,
+    "runner_derives_cross_language_class_from_stage_diagnostic_and_source": true,
+    "formation_is_rust_decision_procedure_not_lean_proof": true,
+    "normalized_ast_input_authority": false,
+    "rust_output_authoritative_for_lean": false
+  },
+  "rejection_classes": [
+    "boundary.invalid_utf8",
+    "parse.resource_depth",
+    "parse.delimiter",
+    "parse.header_order",
+    "parse.section_syntax",
+    "parse.relation_axis_shorthand",
+    "parse.role_kind",
+    "parse.constraint_shape",
+    "parse.rewrite_shape",
+    "parse.numeric_domain",
+    "parse.noncanonical_alias",
+    "parse.list_syntax",
+    "parse.lexical_domain",
+    "typecheck.duplicate_declaration",
+    "typecheck.schema_formation",
+    "typecheck.dependent_role",
+    "typecheck.refinement",
+    "typecheck.instance_formation",
+    "typecheck.theory_formation"
+  ],
+  "fixtures": [
+    {
+      "path": "fixtures/canonical/contract/all_constructors.axi",
+      "sha256": "15b9c86b85111f439a8d89af2dd4178f3181b820adde16db55598e44cb84ebf2",
+      "rust_parse": true,
+      "lean_parse": true,
+      "compare_normalized_ast": true,
+      "covers": "every AST enum constructor plus every structure"
+    },
+    {
+      "path": "fixtures/canonical/contract/exact_lf.axi",
+      "sha256": "5a85a3cfc4387574caf817a466964bc85de9a851c7c7ec46f2de47007c5bca72",
+      "rust_parse": true,
+      "lean_parse": true,
+      "rust_typecheck": true,
+      "lean_typecheck": true,
+      "compare_normalized_ast": true,
+      "compare_revision": true
+    },
+    {
+      "path": "fixtures/canonical/contract/exact_comment.axi",
+      "sha256": "17859b5be3a5ab94e7d2a34e6a78171ba5fe671bca810d9736bee0362d3337f6",
+      "rust_parse": true,
+      "lean_parse": true,
+      "rust_typecheck": true,
+      "lean_typecheck": true,
+      "compare_normalized_ast": true,
+      "compare_revision": true
+    },
+    {
+      "path": "fixtures/canonical/contract/exact_mixed_comment.axi",
+      "sha256": "619823a39381860178994b487b3d40ea5313bec8db53af12fed3c943b2bed5e4",
+      "rust_parse": true,
+      "lean_parse": true,
+      "rust_typecheck": true,
+      "lean_typecheck": true,
+      "compare_normalized_ast": true,
+      "compare_revision": true
+    },
+    {
+      "path": "fixtures/canonical/contract/exact_crlf.axi",
+      "sha256": "d754563c81838d77a9a1a2b7eaedeeb904bc364334192520bcc875d189c1d31c",
+      "rust_parse": true,
+      "lean_parse": true,
+      "rust_typecheck": true,
+      "lean_typecheck": true,
+      "compare_normalized_ast": true,
+      "compare_revision": true
+    },
+    {
+      "path": "fixtures/canonical/contract/missing_import.axi",
+      "sha256": "a81fdce954614c0521d1cb2f7685574ef2e67a93737394e4da7c7663ec657095",
+      "rust_parse": true,
+      "lean_parse": true,
+      "rust_typecheck": true,
+      "lean_typecheck": true,
+      "formation": false,
+      "class": "formation.import_closure",
+      "compare_normalized_ast": true,
+      "compare_revision": true
+    },
+    {
+      "path": "fixtures/canonical/contract/formation_reject_key_refinement.axi",
+      "sha256": "f55a5dbc71d5341436dca7216511bcdfd338044a10cea1f09bf604663e8de7e4",
+      "rust_parse": true,
+      "lean_parse": true,
+      "rust_typecheck": true,
+      "lean_typecheck": true,
+      "formation": false,
+      "class": "formation.unsupported_refinement_witness",
+      "compare_normalized_ast": true,
+      "compare_revision": true
+    },
+    {
+      "path": "fixtures/canonical/contract/reject_late_import.axi",
+      "sha256": "f3b06e1a147c2c2467471b25132f231822ca6280da951e09a3e70bdd79757b35",
+      "rust_parse": false,
+      "lean_parse": false,
+      "class": "parse.header_order",
+      "rust_error_contains": "imports must follow the module header",
+      "lean_error_contains": "imports must follow the module header"
+    },
+    {
+      "path": "fixtures/canonical/contract/reject_role_shorthand.axi",
+      "sha256": "e08d8fc303ddd328e4aa6a605673fc9915bae830a20c456d7d12124c275357df",
+      "rust_parse": false,
+      "lean_parse": false,
+      "class": "parse.relation_axis_shorthand",
+      "rust_error_contains": "relation-level axis shorthands are not canonical",
+      "lean_error_contains": "relation-level axis shorthands are not canonical"
+    },
+    {
+      "path": "fixtures/canonical/contract/reject_functional_shape.axi",
+      "sha256": "87a7673ab3a8435df1983076004e4b02fd62ba1feeb9abaa8cbe43b06a5d9d8a",
+      "rust_parse": false,
+      "lean_parse": false,
+      "class": "parse.constraint_shape",
+      "rust_error_contains": "functional expects:",
+      "lean_error_contains": "functional expects:"
+    },
+    {
+      "path": "fixtures/canonical/contract/reject_at_most_bound.axi",
+      "sha256": "1bb9f54f5e791f5a2a9dc098b7d55df446d029ee357b4c9d158d11cf137b2ac0",
+      "rust_parse": false,
+      "lean_parse": false,
+      "class": "parse.numeric_domain",
+      "rust_error_contains": "at_most expects a non-negative integer bound",
+      "lean_error_contains": "at_most expects a non-negative integer bound"
+    },
+    {
+      "path": "fixtures/canonical/contract/reject_typing_shape.axi",
+      "sha256": "a6e53aedceba5a1b0e1449d554e775317509cfc81d714b2621411d5596022f1d",
+      "rust_parse": false,
+      "lean_parse": false,
+      "class": "parse.constraint_shape",
+      "rust_error_contains": "typing expects:",
+      "lean_error_contains": "typing expects:"
+    },
+    {
+      "path": "fixtures/canonical/contract/reject_symmetric_shape.axi",
+      "sha256": "f042ab4b231ede2374e7e2a696f87e6e7a430ee30477c0a064b2bd1fe0f47a10",
+      "rust_parse": false,
+      "lean_parse": false,
+      "class": "parse.constraint_shape",
+      "rust_error_contains": "symmetric relation must be an identifier",
+      "lean_error_contains": "symmetric expects a relation name"
+    },
+    {
+      "path": "fixtures/canonical/contract/reject_transitive_shape.axi",
+      "sha256": "6ae37f56a858a28e40dbdb9137940b5eecfc7dcb846b90c2c8db812d9fc1b24d",
+      "rust_parse": false,
+      "lean_parse": false,
+      "class": "parse.constraint_shape",
+      "rust_error_contains": "transitive relation must be an identifier",
+      "lean_error_contains": "transitive expects one relation name"
+    },
+    {
+      "path": "fixtures/canonical/contract/reject_key_shape.axi",
+      "sha256": "189795f01cb6b30c5fd39b700620ec1229881da9aa958e71f03e68d9707471f5",
+      "rust_parse": false,
+      "lean_parse": false,
+      "class": "parse.constraint_shape",
+      "rust_error_contains": "key expects: `key Relation(field, ...)`",
+      "lean_error_contains": "key expects: `key Relation(field, ...)`"
+    },
+    {
+      "path": "fixtures/canonical/contract/reject_rewrite_missing_vars.axi",
+      "sha256": "18c3d7639cddc24fa3dad2fe6e63c650a75ffb9cb922b73cbd4fc5945af30caa",
+      "rust_parse": false,
+      "lean_parse": false,
+      "class": "parse.rewrite_shape",
+      "rust_error_contains": "missing `vars:`",
+      "lean_error_contains": "missing `vars:`"
+    },
+    {
+      "path": "fixtures/canonical/contract/reject_rewrite_missing_orientation_value.axi",
+      "sha256": "e141618ac5f1a7f8aa8459951e49ab6fb82c71c2195f41100fde59e3dfcac3d6",
+      "rust_parse": false,
+      "lean_parse": false,
+      "class": "parse.rewrite_shape",
+      "rust_error_contains": "missing orientation value",
+      "lean_error_contains": "missing orientation value"
+    },
+    {
+      "path": "fixtures/canonical/contract/reject_rewrite_duplicate_vars.axi",
+      "sha256": "20efe762ea37ac362cbaed5ac9dd6769a0e64cace6086fd455d2fb59827d07e0",
+      "rust_parse": false,
+      "lean_parse": false,
+      "class": "parse.rewrite_shape",
+      "rust_error_contains": "duplicate `vars:` field",
+      "lean_error_contains": "duplicate `vars:` field"
+    },
+    {
+      "path": "fixtures/canonical/contract/reject_rewrite_duplicate_lhs.axi",
+      "sha256": "1b17e0a9b08d8ab8b3a74587a75c8df856563420997eacdaa7a6863dbc211390",
+      "rust_parse": false,
+      "lean_parse": false,
+      "class": "parse.rewrite_shape",
+      "rust_error_contains": "duplicate `lhs:` field",
+      "lean_error_contains": "duplicate `lhs:` field"
+    },
+    {
+      "path": "fixtures/canonical/contract/reject_rewrite_duplicate_rhs.axi",
+      "sha256": "1192b614f103c44dda0b6d55966b7be81310fc967614299f316b806f05295e18",
+      "rust_parse": false,
+      "lean_parse": false,
+      "class": "parse.rewrite_shape",
+      "rust_error_contains": "duplicate `rhs:` field",
+      "lean_error_contains": "duplicate `rhs:` field"
+    },
+    {
+      "path": "fixtures/canonical/contract/reject_rewrite_duplicate_orientation.axi",
+      "sha256": "13dbecc00af830d58c4f69050a6d3422ff99f0a1fd6116b7f6bfbd04497f2410",
+      "rust_parse": false,
+      "lean_parse": false,
+      "class": "parse.rewrite_shape",
+      "rust_error_contains": "duplicate `orientation:` field",
+      "lean_error_contains": "duplicate `orientation:` field"
+    },
+    {
+      "path": "fixtures/canonical/contract/reject_bad_dependent_role.axi",
+      "sha256": "b9010cd349424005be28a84423df93facbd23987841507bfe4d50b775ad08c47",
+      "rust_parse": true,
+      "lean_parse": true,
+      "rust_typecheck": false,
+      "lean_typecheck": false,
+      "class": "typecheck.dependent_role",
+      "rust_typecheck_error_contains": "indexes unknown or non-earlier role `future`",
+      "lean_typecheck_error_contains": "indexes unknown or non-earlier role `future`",
+      "compare_normalized_ast": true,
+      "compare_revision": true
+    },
+    {
+      "path": "fixtures/canonical/contract/reject_unsupported_refinement.axi",
+      "sha256": "69cc8e33a942ab475cf4e6c348bf5c22aeafcede3fbb1d54c2572d4cb6d41056",
+      "rust_parse": true,
+      "lean_parse": true,
+      "rust_typecheck": false,
+      "lean_typecheck": false,
+      "class": "typecheck.refinement",
+      "rust_typecheck_error_contains": "uses unsupported predicate `custom_check`",
+      "lean_typecheck_error_contains": "uses unsupported predicate `custom_check`",
+      "compare_normalized_ast": true,
+      "compare_revision": true
+    },
+    {
+      "path": "fixtures/canonical/w02/reject_missing_header.axi",
+      "sha256": "b5af4a4e52b2cec51f6706890f92b0ed6edc65d61e7be54fbc797a0c8623294e",
+      "rust_parse": false,
+      "lean_parse": false,
+      "class": "parse.header_order",
+      "rust_error_contains": "module header must be the first canonical header",
+      "lean_error_contains": "module header must be the first canonical header"
+    },
+    {
+      "path": "fixtures/canonical/w02/reject_unknown_target.axi",
+      "sha256": "ac07f86df4a62ef478f4f7f35a12adf6a03b25916224244374a35b72fe4efd1a",
+      "rust_parse": true,
+      "lean_parse": true,
+      "rust_typecheck": false,
+      "lean_typecheck": false,
+      "class": "typecheck.schema_formation",
+      "rust_typecheck_error_contains": "unknown value type",
+      "lean_typecheck_error_contains": "unknown object",
+      "compare_normalized_ast": true,
+      "compare_revision": true
+    },
+    {
+      "path": "fixtures/canonical/contract/accept_unknown_constraint_suffix.axi",
+      "sha256": "ccacac7c6fdf082ca1d4208fc796346e7ab755c8f7849d1348241e0346bebd63",
+      "rust_parse": true,
+      "lean_parse": true,
+      "rust_typecheck": true,
+      "lean_typecheck": true,
+      "class": "unsupported.opaque_constraint",
+      "compare_normalized_ast": true,
+      "compare_revision": true
+    },
+    {
+      "path": "fixtures/canonical/contract/accept_u32_max.axi",
+      "sha256": "e665fa758c11989c6a70b9d26f04f6909f29cb8f707c399a92c225cfbfcf7b0f",
+      "rust_parse": true,
+      "lean_parse": true,
+      "rust_typecheck": true,
+      "lean_typecheck": true,
+      "compare_normalized_ast": true,
+      "compare_revision": true
+    },
+    {
+      "path": "fixtures/canonical/contract/reject_object_relation_collision.axi",
+      "sha256": "73dd114dbb593b2822b8c22abe909b70bd152eb5804d48615a3e126a5b412f1c",
+      "rust_parse": true,
+      "lean_parse": true,
+      "rust_typecheck": false,
+      "lean_typecheck": false,
+      "class": "typecheck.duplicate_declaration",
+      "rust_typecheck_error_contains": "declares both object and relation `Shared`",
+      "lean_typecheck_error_contains": "declares both object and relation `Shared`",
+      "compare_normalized_ast": true,
+      "compare_revision": true
+    },
+    {
+      "path": "fixtures/canonical/contract/reject_repeated_subtype.axi",
+      "sha256": "ef53c19ec73e8588986c03078d140f36a098c8703ce5a4d256035d183e11f096",
+      "rust_parse": true,
+      "lean_parse": true,
+      "rust_typecheck": false,
+      "lean_typecheck": false,
+      "class": "typecheck.duplicate_declaration",
+      "rust_typecheck_error_contains": "repeats subtype `Child < Parent`",
+      "lean_typecheck_error_contains": "repeats subtype `Child < Parent`",
+      "compare_normalized_ast": true,
+      "compare_revision": true
+    },
+    {
+      "path": "fixtures/canonical/contract/reject_self_subtype_cycle.axi",
+      "sha256": "9d067a58276ca654936feb63e930492e153147fc8e2e944c4d1b877afa72177f",
+      "rust_parse": true,
+      "lean_parse": true,
+      "rust_typecheck": false,
+      "lean_typecheck": false,
+      "class": "typecheck.schema_formation",
+      "rust_typecheck_error_contains": "has a subtype cycle involving `Node` and `Node`",
+      "lean_typecheck_error_contains": "has a subtype cycle involving `Node` and `Node`",
+      "compare_normalized_ast": true,
+      "compare_revision": true
+    },
+    {
+      "path": "fixtures/canonical/contract/reject_at_most_u32_overflow.axi",
+      "sha256": "84bfa3b7dca7ecb636137e1525470ee32c512b2779a187e44c8462d51697302e",
+      "rust_parse": false,
+      "lean_parse": false,
+      "class": "parse.numeric_domain"
+    },
+    {
+      "path": "fixtures/canonical/contract/reject_cardinality_u32_overflow.axi",
+      "sha256": "2e2b03e0f2b7a0cb8ad1a1c128bd4746367f4087ddc8c0e100f2a446f348e6e2",
+      "rust_parse": false,
+      "lean_parse": false,
+      "class": "parse.numeric_domain"
+    },
+    {
+      "path": "fixtures/canonical/contract/reject_rewrite_orientation_both.axi",
+      "sha256": "80d94a9b053425c356a65900ff8b5204418a4d57c556087c90a63117d11d753c",
+      "rust_parse": false,
+      "lean_parse": false,
+      "class": "parse.noncanonical_alias"
+    },
+    {
+      "path": "fixtures/canonical/contract/reject_rewrite_path_id.axi",
+      "sha256": "574e6dbe6ad44c79d5f81440833e9b6b76e71cfe748cedf9e22761edcdef4436",
+      "rust_parse": false,
+      "lean_parse": false,
+      "class": "parse.noncanonical_alias"
+    },
+    {
+      "path": "fixtures/canonical/contract/reject_late_module.axi",
+      "sha256": "f5d23478692c284a4fac97400fa2f6139fb05957e2a34cc2d1f7b9073a78b1e0",
+      "rust_parse": false,
+      "lean_parse": false,
+      "class": "parse.header_order",
+      "rust_error_contains": "module header must be the first canonical header",
+      "lean_error_contains": "module header must be the first canonical header"
+    },
+    {
+      "path": "fixtures/canonical/contract/reject_unbalanced_constraint_bracket.axi",
+      "sha256": "9ea2594b6e3a00be08da56ec50f480090948739ef35373df99f66a72e908b457",
+      "rust_parse": false,
+      "lean_parse": false,
+      "class": "parse.delimiter",
+      "rust_error_contains": "unbalanced quoted string or syntax delimiter",
+      "lean_error_contains": "unbalanced quoted string or syntax delimiter"
+    },
+    {
+      "path": "fixtures/canonical/contract/reject_unbalanced_constraint_quote.axi",
+      "sha256": "9d04180ca42204b9f62a1b9805cc10c633daf30ca8836a738eb10835e3d7d038",
+      "rust_parse": false,
+      "lean_parse": false,
+      "class": "parse.delimiter",
+      "rust_error_contains": "unbalanced quoted string or syntax delimiter",
+      "lean_error_contains": "unbalanced quoted string or syntax delimiter"
+    },
+    {
+      "path": "fixtures/canonical/contract/reject_symmetric_bare_guard_field.axi",
+      "sha256": "b47cf1824fcb6b82a699622418bb9765250d7e9232c8ce45320ae4f6d852608d",
+      "rust_parse": false,
+      "lean_parse": false,
+      "class": "parse.noncanonical_alias",
+      "rust_error_contains": "symmetric guard must use canonical qualified",
+      "lean_error_contains": "symmetric expects a relation name and optional canonical"
+    },
+    {
+      "path": "fixtures/canonical/contract/reject_constraint_unknown_relation.axi",
+      "sha256": "1a78a2b9888e85a44a55faeb3f575a9721d2739c489e31104bbba222941256b0",
+      "rust_parse": true,
+      "lean_parse": true,
+      "rust_typecheck": false,
+      "lean_typecheck": false,
+      "class": "typecheck.theory_formation",
+      "rust_typecheck_error_contains": "unknown relation `Missing`",
+      "lean_typecheck_error_contains": "unknown relation `Missing`",
+      "compare_normalized_ast": true,
+      "compare_revision": true
+    },
+    {
+      "path": "fixtures/canonical/contract/reject_constraint_unknown_field.axi",
+      "sha256": "8dcd6b1819cda99a6f91b749f0a9b0d9c60bb1ae0b692e6cf94d1756778a9662",
+      "rust_parse": true,
+      "lean_parse": true,
+      "rust_typecheck": false,
+      "lean_typecheck": false,
+      "class": "typecheck.theory_formation",
+      "rust_typecheck_error_contains": "has no field `missing`",
+      "lean_typecheck_error_contains": "has no field `missing`",
+      "compare_normalized_ast": true,
+      "compare_revision": true
+    },
+    {
+      "path": "fixtures/canonical/contract/reject_rewrite_unknown_relation.axi",
+      "sha256": "e3f75a8efca2a8fe41184049f7f15b2acf0fe8953c75020aba433c73dc1b9aed",
+      "rust_parse": true,
+      "lean_parse": true,
+      "rust_typecheck": false,
+      "lean_typecheck": false,
+      "class": "typecheck.theory_formation",
+      "rust_typecheck_error_contains": "unknown relation `Missing`",
+      "lean_typecheck_error_contains": "unknown relation `Missing`",
+      "compare_normalized_ast": true,
+      "compare_revision": true
+    },
+    {
+      "path": "fixtures/canonical/contract/accept_typed_theory_references.axi",
+      "sha256": "0296c65e2a2e8608d392f0f6a3c560c5eb34af921ed9fac3bc3b9829c797384d",
+      "rust_parse": true,
+      "lean_parse": true,
+      "rust_typecheck": true,
+      "lean_typecheck": true,
+      "compare_normalized_ast": true,
+      "compare_revision": true
+    },
+    {
+      "path": "fixtures/canonical/contract/reject_noncanonical_closure_clause_order.axi",
+      "sha256": "204f8e1cdcbd3d68f63f3ebd628ca347b8f8e269a170ab1697d3e95c62bc062f",
+      "rust_parse": false,
+      "lean_parse": false,
+      "class": "parse.noncanonical_alias",
+      "rust_error_contains": "canonical `on (...) param (...)` order",
+      "lean_error_contains": "symmetric expects a relation name and optional canonical"
+    },
+    {
+      "path": "fixtures/canonical/contract/reject_schema_repeated_colon.axi",
+      "sha256": "a678633d32678a7c41fe7722072b8c09d5edc6c4b5b494e73697cf4cdeeb1ac9",
+      "rust_parse": false,
+      "lean_parse": false,
+      "class": "parse.section_syntax",
+      "rust_error_contains": "schema header expects",
+      "lean_error_contains": "schema header expects"
+    },
+    {
+      "path": "fixtures/canonical/contract/reject_attached_role_kind.axi",
+      "sha256": "8f3b500ccad178fdf689da9a54e39dbe121c2693b3bc243fdc21d75b05afd723",
+      "rust_parse": false,
+      "lean_parse": false,
+      "class": "parse.noncanonical_alias",
+      "rust_error_contains": "requires canonical separating whitespace"
+    },
+    {
+      "path": "fixtures/canonical/contract/reject_equation_unknown_relation.axi",
+      "sha256": "7b5b9f150eeaa1e8e82f564eac551696acb7575dfc16cdaf7711c667c8146449",
+      "rust_parse": true,
+      "lean_parse": true,
+      "rust_typecheck": false,
+      "lean_typecheck": false,
+      "class": "typecheck.theory_formation",
+      "rust_typecheck_error_contains": "unknown relation `Missing`",
+      "lean_typecheck_error_contains": "unknown relation `Missing`",
+      "compare_normalized_ast": true,
+      "compare_revision": true
+    },
+    {
+      "path": "fixtures/canonical/contract/reject_equation_composition.axi",
+      "sha256": "1d8935ab390ca05222be952aa0b37e93f37f33fa230afd0ef11b83c1aceaad37",
+      "rust_parse": true,
+      "lean_parse": true,
+      "rust_typecheck": false,
+      "lean_typecheck": false,
+      "class": "typecheck.theory_formation",
+      "rust_typecheck_error_contains": "cannot compose paths",
+      "lean_typecheck_error_contains": "cannot compose paths",
+      "compare_normalized_ast": true,
+      "compare_revision": true
+    },
+    {
+      "path": "fixtures/canonical/contract/reject_equation_endpoints.axi",
+      "sha256": "6259b7943864b20b9c0102814fa901aeca32e3125b3111242ce7f032af74181e",
+      "rust_parse": true,
+      "lean_parse": true,
+      "rust_typecheck": false,
+      "lean_typecheck": false,
+      "class": "typecheck.theory_formation",
+      "rust_typecheck_error_contains": "mismatched path endpoints",
+      "lean_typecheck_error_contains": "mismatched path endpoints",
+      "compare_normalized_ast": true,
+      "compare_revision": true
+    },
+    {
+      "path": "fixtures/canonical/contract/reject_duplicate_equation.axi",
+      "sha256": "ebf9222ae2bd491ba962ee671e6e61b9de9bad3cb1ab3148fc9110cc92cffda9",
+      "rust_parse": true,
+      "lean_parse": true,
+      "rust_typecheck": false,
+      "lean_typecheck": false,
+      "class": "typecheck.duplicate_declaration",
+      "rust_typecheck_error_contains": "duplicate equation",
+      "lean_typecheck_error_contains": "duplicate equation",
+      "compare_normalized_ast": true,
+      "compare_revision": true
+    },
+    {
+      "path": "fixtures/canonical/contract/accept_equation_declared_order_carrier.axi",
+      "sha256": "7b273bb253f53d3738b539e2e1a9be238d2d68b86541507bb9a041b52a66a013",
+      "rust_parse": true,
+      "lean_parse": true,
+      "rust_typecheck": true,
+      "lean_typecheck": true,
+      "compare_normalized_ast": true,
+      "compare_revision": true
+    },
+    {
+      "path": "fixtures/canonical/contract/reject_equation_repeated_colon.axi",
+      "sha256": "e97a04da55295b1e02240392db9372c03ae7e795fd635bdc1536bfeaf185e3e6",
+      "rust_parse": false,
+      "lean_parse": false,
+      "class": "parse.section_syntax"
+    },
+    {
+      "path": "fixtures/canonical/contract/reject_rewrite_repeated_colon.axi",
+      "sha256": "6dcb07d09f894d70bc32998c715ec6120a7bfc322a712684684991e00afe2784",
+      "rust_parse": false,
+      "lean_parse": false,
+      "class": "parse.section_syntax"
+    },
+    {
+      "path": "fixtures/canonical/contract/reject_named_constraint_repeated_colon.axi",
+      "sha256": "80aa8f25733a941703d812625f42b4b12e4fa663298e9b67cfd3eb9cf8c36857",
+      "rust_parse": false,
+      "lean_parse": false,
+      "class": "parse.section_syntax"
+    },
+    {
+      "path": "fixtures/canonical/contract/accept_equation_relation_object_carrier.axi",
+      "sha256": "59453302ea3a4d73e0840e3652cf16a3d75fea3d36620a72aa51f1f236ceb284",
+      "rust_parse": true,
+      "lean_parse": true,
+      "rust_typecheck": true,
+      "lean_typecheck": true,
+      "compare_normalized_ast": true,
+      "compare_revision": true
+    },
+    {
+      "path": "fixtures/canonical/contract/reject_generator_duplicate_source.axi",
+      "sha256": "873af60730d4ae0d3120e79da7baacb2fdf5b7b83efd9fcb0ae76064ae742b5c",
+      "rust_parse": true,
+      "lean_parse": true,
+      "rust_typecheck": false,
+      "lean_typecheck": false,
+      "class": "typecheck.duplicate_declaration",
+      "rust_typecheck_error_contains": "repeats field `source`",
+      "lean_typecheck_error_contains": "repeats field `source`",
+      "compare_normalized_ast": true,
+      "compare_revision": true
+    },
+    {
+      "path": "fixtures/canonical/contract/reject_generator_duplicate_target.axi",
+      "sha256": "07b10b767b413c3f5c454a204e7b7921ba2d8b58a3e0d68692f38a3e8dca5443",
+      "rust_parse": true,
+      "lean_parse": true,
+      "rust_typecheck": false,
+      "lean_typecheck": false,
+      "class": "typecheck.duplicate_declaration",
+      "rust_typecheck_error_contains": "repeats field `target`",
+      "lean_typecheck_error_contains": "repeats field `target`",
+      "compare_normalized_ast": true,
+      "compare_revision": true
+    },
+    {
+      "path": "fixtures/canonical/contract/reject_generator_duplicate_mixed_order.axi",
+      "sha256": "673620ce1f26ce6bdd752e7b07ce3828ff74bf2e49bdd5cc333de5794152aa73",
+      "rust_parse": true,
+      "lean_parse": true,
+      "rust_typecheck": false,
+      "lean_typecheck": false,
+      "class": "typecheck.duplicate_declaration",
+      "rust_typecheck_error_contains": "repeats field `source`",
+      "lean_typecheck_error_contains": "repeats field `source`",
+      "compare_normalized_ast": true,
+      "compare_revision": true
+    },
+    {
+      "path": "fixtures/canonical/contract/reject_nbsp_boundary.axi",
+      "sha256": "b51f7f4469ae07322aa5b7546499ebe735fde44796d106664f04adc53857afd0",
+      "rust_parse": false,
+      "lean_parse": false,
+      "class": "parse.lexical_domain"
+    },
+    {
+      "path": "fixtures/canonical/contract/reject_em_space_boundary.axi",
+      "sha256": "4c658596d344dc94cedd6abeb6c2d291d71efa1bea9d64d6f4705087283441f3",
+      "rust_parse": false,
+      "lean_parse": false,
+      "class": "parse.lexical_domain"
+    },
+    {
+      "path": "fixtures/canonical/contract/accept_unicode_opaque_text.axi",
+      "sha256": "ed6f23ed13714db86b5238d7e46531e242f6626226f10651f4a30d625f773cc6",
+      "rust_parse": true,
+      "lean_parse": true,
+      "rust_typecheck": true,
+      "lean_typecheck": true,
+      "class": "unsupported.named_constraint_semantics",
+      "compare_normalized_ast": true,
+      "compare_revision": true
+    },
+    {
+      "path": "fixtures/canonical/contract/accept_value_atoms_preserved.axi",
+      "sha256": "75a1860c82d0e865fdd18ffbfa527362a909c09b5b0e280275cfa69821a6132e",
+      "rust_parse": true,
+      "lean_parse": true,
+      "rust_typecheck": true,
+      "lean_typecheck": true,
+      "compare_normalized_ast": true,
+      "compare_revision": true
+    },
+    {
+      "path": "fixtures/canonical/contract/reject_named_constraint_trailing_text.axi",
+      "sha256": "a8174345a5ab7d3ec6c33bce75e22a0dea3dad6e0cac671d95cf7353299306f8",
+      "rust_parse": false,
+      "lean_parse": false,
+      "class": "parse.section_syntax"
+    },
+    {
+      "path": "fixtures/canonical/contract/reject_named_constraint_extra_name.axi",
+      "sha256": "d3638d8bfd7fea6b6240d335e313bf2d2f515053746bf0f0f75f3e68a238cdd8",
+      "rust_parse": false,
+      "lean_parse": false,
+      "class": "parse.section_syntax"
+    },
+    {
+      "path": "fixtures/canonical/contract/reject_functional_rel_field_whitespace.axi",
+      "sha256": "5a7588448aabbdf6ab3a9957500797dabc8686c14fbd4c89733231252422b9f9",
+      "rust_parse": false,
+      "lean_parse": false,
+      "class": "parse.constraint_shape"
+    },
+    {
+      "path": "fixtures/canonical/contract/reject_at_most_rel_field_whitespace.axi",
+      "sha256": "783523b06dd9fdc70ad9ed68db3b4517e229f4cdf8c6bb845f625251ce61cc79",
+      "rust_parse": false,
+      "lean_parse": false,
+      "class": "parse.constraint_shape"
+    },
+    {
+      "path": "fixtures/canonical/contract/reject_symmetric_rel_field_whitespace.axi",
+      "sha256": "8824112b888f24a8d5b5f967cec3d0579edda0a7de6ed79e6394fd8db40aa279",
+      "rust_parse": false,
+      "lean_parse": false,
+      "class": "parse.constraint_shape"
+    },
+    {
+      "path": "fixtures/canonical/contract/reject_rewrite_duplicate_path_var.axi",
+      "sha256": "dbbf484051a7e682356cf2a1ffb06579a13f3f0245438752b39bbc7da4955689",
+      "rust_parse": true,
+      "lean_parse": true,
+      "rust_typecheck": false,
+      "lean_typecheck": false,
+      "class": "typecheck.duplicate_declaration",
+      "rust_typecheck_error_contains": "duplicate variable `p`",
+      "lean_typecheck_error_contains": "duplicate variable `p`",
+      "compare_normalized_ast": true,
+      "compare_revision": true
+    },
+    {
+      "path": "fixtures/canonical/contract/reject_rewrite_path_object_name_collision.axi",
+      "sha256": "e60420147591ba68b51af449c27ed1c0881b62730ecda17f09aae7ccfb54812d",
+      "rust_parse": true,
+      "lean_parse": true,
+      "rust_typecheck": false,
+      "lean_typecheck": false,
+      "class": "typecheck.duplicate_declaration",
+      "rust_typecheck_error_contains": "duplicate variable `p`",
+      "lean_typecheck_error_contains": "duplicate variable `p`",
+      "compare_normalized_ast": true,
+      "compare_revision": true
+    },
+    {
+      "path": "fixtures/canonical/contract/accept_rewrite_path_prefix_objects.axi",
+      "sha256": "c5b1a992fbcd61a7b421afd59fa1ddb9973d0d5bcf636c37d99c25c963f62ddf",
+      "rust_parse": true,
+      "lean_parse": true,
+      "rust_typecheck": true,
+      "lean_typecheck": true,
+      "compare_normalized_ast": true,
+      "compare_revision": true
+    },
+    {
+      "path": "fixtures/canonical/contract/accept_call_interior_whitespace.axi",
+      "sha256": "ec4048fd1273a6f53cbfbf28079aaa761046c6bb64def3220a87cfb23bdb6621",
+      "rust_parse": true,
+      "lean_parse": true,
+      "rust_typecheck": true,
+      "lean_typecheck": true,
+      "compare_normalized_ast": true,
+      "compare_revision": true
+    },
+    {
+      "path": "fixtures/canonical/contract/accept_reversible_ht_separator.axi",
+      "sha256": "c41b389a1f53ec7ae81869cfa4dd5f85cff9b6939cb34752a21ca1cc42c90fb3",
+      "rust_parse": true,
+      "lean_parse": true,
+      "rust_typecheck": true,
+      "lean_typecheck": true,
+      "compare_normalized_ast": true,
+      "compare_revision": true
+    },
+    {
+      "path": "fixtures/canonical/contract/accept_reversible_cr_separator.axi",
+      "sha256": "66762c622fdfac8856c0e07b8a28eaa4814d96aaa03fd07d046d4bcf73153c42",
+      "rust_parse": true,
+      "lean_parse": true,
+      "rust_typecheck": true,
+      "lean_typecheck": true,
+      "compare_normalized_ast": true,
+      "compare_revision": true
+    }
+  ],
+  "diagnostic_taxonomy": {
+    "version": 1,
+    "scope": "class, rejection-stage, and source-specific diagnostic-reason parity derived from each language's exit status, stderr family, and exact source stimulus; diagnostic strings need not be equal",
+    "closed_stage_class_mapping": [
+      {
+        "class": "boundary.invalid_utf8",
+        "stage": "boundary"
+      },
+      {
+        "class": "parse.resource_depth",
+        "stage": "parse"
+      },
+      {
+        "class": "parse.delimiter",
+        "stage": "parse"
+      },
+      {
+        "class": "parse.header_order",
+        "stage": "parse"
+      },
+      {
+        "class": "parse.section_syntax",
+        "stage": "parse"
+      },
+      {
+        "class": "parse.relation_axis_shorthand",
+        "stage": "parse"
+      },
+      {
+        "class": "parse.role_kind",
+        "stage": "parse"
+      },
+      {
+        "class": "parse.constraint_shape",
+        "stage": "parse"
+      },
+      {
+        "class": "parse.rewrite_shape",
+        "stage": "parse"
+      },
+      {
+        "class": "parse.numeric_domain",
+        "stage": "parse"
+      },
+      {
+        "class": "parse.noncanonical_alias",
+        "stage": "parse"
+      },
+      {
+        "class": "parse.list_syntax",
+        "stage": "parse"
+      },
+      {
+        "class": "parse.lexical_domain",
+        "stage": "parse"
+      },
+      {
+        "class": "typecheck.duplicate_declaration",
+        "stage": "typecheck"
+      },
+      {
+        "class": "typecheck.schema_formation",
+        "stage": "typecheck"
+      },
+      {
+        "class": "typecheck.dependent_role",
+        "stage": "typecheck"
+      },
+      {
+        "class": "typecheck.refinement",
+        "stage": "typecheck"
+      },
+      {
+        "class": "typecheck.instance_formation",
+        "stage": "typecheck"
+      },
+      {
+        "class": "typecheck.theory_formation",
+        "stage": "typecheck"
+      }
+    ],
+    "non_cross_language_outcome_classes": [
+      "formation.import_closure",
+      "formation.unsupported_refinement_witness",
+      "formation.finite_model",
+      "formation.unsupported_equation_fragment",
+      "unsupported.opaque_constraint",
+      "unsupported.named_constraint_semantics",
+      "non_claim"
+    ]
+  },
+  "non_cross_language_outcome_classes": [
+    "formation.import_closure",
+    "formation.unsupported_refinement_witness",
+    "formation.finite_model",
+    "formation.unsupported_equation_fragment",
+    "unsupported.opaque_constraint",
+    "unsupported.named_constraint_semantics",
+    "non_claim"
+  ]
+}

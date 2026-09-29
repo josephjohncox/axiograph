@@ -57,7 +57,7 @@ fn authoring_diagnostics_pretty_chains_preserve_typed_causes_without_duplicate_m
     );
     let error = crate::axi_input::compile_canonical_axi_path_with_root_bytes(
         &path,
-        b"module Root\nschema S:\n object Company\n subtype Compny <: Company\n".to_vec(),
+        b"module Root\nschema S:\n object Company\n subtype Compny < Company\n".to_vec(),
         &[service.root().to_path_buf()],
     )
     .unwrap_err();
@@ -88,7 +88,7 @@ fn authoring_diagnostics_exact_unsaved_and_imported_occurrences() -> Result<()> 
             "  object Company",
             "  relation Employment(",
             "    first: refined(Company; eq(Compny)), # Compny",
-            "\u{2003} next: indexed(refined(Compny; eq(Compny)); first),",
+            "\t next: indexed(refined(Compny; eq(Compny)); first),",
             "    last: Missing)",
         ]
         .join(newline);
@@ -117,7 +117,10 @@ fn authoring_diagnostics_exact_unsaved_and_imported_occurrences() -> Result<()> 
                 location.byte_start,
                 image.find("Compny; eq(Compny)").unwrap()
             );
-            assert_eq!(location.module_name, if imported { "Base" } else { "Root" });
+            assert_eq!(
+                location.module_name.as_deref(),
+                Some(if imported { "Base" } else { "Root" })
+            );
             assert_eq!(
                 Path::new(&location.path),
                 service
@@ -128,13 +131,23 @@ fn authoring_diagnostics_exact_unsaved_and_imported_occurrences() -> Result<()> 
                 location.revision_digest,
                 axiograph_kernel::RevisionDigestV2::from_accepted_text(image).as_str()
             );
-            assert_eq!(location.syntactic_role_carrier.schema_index, 1);
-            assert_eq!(location.syntactic_role_carrier.role_index, 1);
+            let crate::axi_input::diagnostics::DiagnosticSubjectV1::Syntactic {
+                subject:
+                    crate::axi_input::diagnostics::SyntacticDiagnosticSubjectV1::RoleTypeCarrier {
+                        schema_index,
+                        role_index,
+                        ..
+                    },
+            } = &location.subject
+            else {
+                panic!("syntactic role carrier subject")
+            };
+            assert_eq!((*schema_index, *role_index), (1, 1));
             assert_eq!(location.suggested_name.as_deref(), Some("Company"));
             assert_eq!(location.start.line, 10);
             assert_eq!(location.start.lsp_line, 9);
             assert_eq!(location.end.lsp_character - location.start.lsp_character, 6);
-            assert!(location.excerpt.starts_with('\u{2003}'));
+            assert!(location.excerpt.starts_with("\t "));
             assert!(!location.excerpt.contains('\r'));
             let prefix = &image[..location.byte_start];
             let line_prefix = prefix.rsplit('\n').next().unwrap();
@@ -161,6 +174,7 @@ fn authoring_diagnostics_namespace_ties_excerpt_bounds_and_unlocated_fallback() 
         ("module Root\nschema S:\n object Company\n object Compnay\n relation R(x: Compny)\n", None),
         ("module Root\nschema S:\n object Company\n relation Employment(x: Company)\n relation R(x: relation(Employmnt))\n", Some("Employment")),
         ("module Root\nschema S:\n object Company\n relation R(x: Unknown)\n", None),
+        ("module Root\nschema S:\n object Per\n relation R(x: Pers)\n", None),
     ] {
         request.axi_text = Some(source.into());
         let report = service.execute(request.clone())?;
@@ -176,20 +190,398 @@ fn authoring_diagnostics_namespace_ties_excerpt_bounds_and_unlocated_fallback() 
     assert!(location.excerpt_truncated);
     assert!(location.excerpt.chars().count() <= 240);
     assert!(location.excerpt.contains("Compny"));
-    for source in [
-        "module Root\nschema S:\n object Company\n subtype Compny <: Company\n",
-        "module Root\nimport Absent\n",
-        "module Root\nschema S:\n relation R(x: )\n",
+    for (source, located) in [
+        (
+            "module Root\nschema S:\n object Company\n subtype Compny < Company\n",
+            false,
+        ),
+        ("module Root\nimport Absent\n", true),
+        ("module Root\nschema S:\n relation R(x: )\n", true),
     ] {
         request.axi_text = Some(source.into());
         let report = service.execute(request.clone())?;
         assert!(!report.ok);
-        assert!(report.diagnostics[0].location.is_none());
-        assert!(report.diagnostics[0].path.is_none());
+        assert_eq!(report.diagnostics[0].location.is_some(), located);
+        assert_eq!(report.diagnostics[0].path.is_some(), located);
         let lsp = authoring_diagnostic_to_lsp(report.diagnostics[0].clone());
-        assert_eq!(lsp.data.unwrap()["sourceLocated"], false);
-        assert_eq!(lsp.range.start, lsp.range.end);
+        assert_eq!(lsp.data.unwrap()["sourceLocated"], located);
+        assert_eq!(lsp.range.start == lsp.range.end, !located);
     }
+    Ok(())
+}
+
+#[test]
+fn authoring_diagnostics_collect_multiple_root_import_errors_in_exact_source_order() -> Result<()> {
+    let (temp, service, mut request) = setup()?;
+    let base = "module Base\r\n# Compny Compny 😀\r\nschema Shared:\r\n  object Company\r\n  relation Employment(company: Compny)\r\n  relation Referral(company: Compny)\r\n";
+    std::fs::write(temp.path().join("Base.axi"), base)?;
+    request.axi_text = Some(
+        "module Root\nimport Base\nschema Local:\n  object Person\n  relation First(person: Persn)\n  relation Second(person: Persn)\n"
+            .into(),
+    );
+    let first = service.execute(request.clone())?;
+    let second = service.execute(request)?;
+    assert_eq!(first.diagnostics, second.diagnostics);
+    assert!(!first.ok);
+    assert!(!first.validation.canonical_axi_valid);
+    assert!(!first.validation.compiled_kernel_ir_valid);
+    assert!(!first.promotion.candidate_reviewable);
+    assert!(!first.promotion.protected_main_eligible);
+    assert_eq!(first.diagnostic_collection.observed_errors, 4);
+    assert_eq!(first.diagnostic_collection.returned_errors, 4);
+    assert_eq!(first.diagnostic_collection.omitted_observed_errors, 0);
+    assert!(!first.diagnostic_collection.truncated);
+    let modules = first
+        .diagnostics
+        .iter()
+        .map(|diagnostic| {
+            diagnostic
+                .location
+                .as_ref()
+                .and_then(|location| location.module_name.as_deref())
+                .unwrap()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(modules, ["Base", "Base", "Root", "Root"]);
+    for (diagnostic, expected, suggestion) in first
+        .diagnostics
+        .iter()
+        .zip(["Compny", "Compny", "Persn", "Persn"])
+        .zip(["Company", "Company", "Person", "Person"])
+        .map(|((diagnostic, expected), suggestion)| (diagnostic, expected, suggestion))
+    {
+        let location = diagnostic.location.as_ref().unwrap();
+        let image = if location.module_name.as_deref() == Some("Base") {
+            base
+        } else {
+            "module Root\nimport Base\nschema Local:\n  object Person\n  relation First(person: Persn)\n  relation Second(person: Persn)\n"
+        };
+        assert_eq!(&image[location.byte_start..location.byte_end], expected);
+        assert_eq!(location.suggested_name.as_deref(), Some(suggestion));
+        assert!(!location.excerpt.contains('\r'));
+        assert!(matches!(
+            location.subject,
+            crate::axi_input::diagnostics::DiagnosticSubjectV1::Syntactic { .. }
+        ));
+    }
+    Ok(())
+}
+
+#[test]
+fn independent_collection_retains_unlocated_authoritative_compiler_error() -> Result<()> {
+    let (_temp, service, mut request) = setup()?;
+    request.axi_text = Some(
+        "module Root\nschema S:\n  object Company\n  object Company\n  relation R(x: Compny)\n"
+            .into(),
+    );
+    let report = service.execute(request)?;
+    assert_eq!(report.diagnostic_collection.observed_errors, 2);
+    assert_eq!(report.diagnostic_collection.returned_errors, 2);
+    assert_eq!(report.diagnostics.len(), 2);
+    assert_eq!(
+        report.diagnostics[0].code,
+        "authoring_canonical_compile_failed"
+    );
+    assert!(report.diagnostics[0]
+        .message
+        .contains("duplicate object label"));
+    assert!(report.diagnostics[0].location.is_none());
+    assert_eq!(
+        report.diagnostics[1].code,
+        "authoring_canonical_type_failed"
+    );
+    assert!(report.diagnostics[1].location.is_some());
+    assert!(!report.ok);
+    assert!(!report.promotion.candidate_reviewable);
+    Ok(())
+}
+
+#[test]
+fn missing_imports_follow_resolved_import_closure_order() -> Result<()> {
+    let (temp, service, mut request) = setup()?;
+    std::fs::write(
+        temp.path().join("Base.axi"),
+        "module Base\nschema Shared:\n  object Company\n  relation R(x: Compny)\n",
+    )?;
+    request.axi_text = Some(
+        "module Root\nimport Missing\nimport Base\nschema Local:\n  object Person\n  relation R(x: Persn)\n"
+            .into(),
+    );
+    let report = service.execute(request)?;
+    let subjects = report
+        .diagnostics
+        .iter()
+        .map(|diagnostic| {
+            let location = diagnostic.location.as_ref().unwrap();
+            (
+                location.module_name.as_deref().unwrap(),
+                location.byte_start,
+                diagnostic.code.as_str(),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        subjects,
+        [
+            ("Base", 60, "authoring_canonical_type_failed"),
+            ("Root", 19, "authoring_canonical_import_failed"),
+            ("Root", 85, "authoring_canonical_type_failed"),
+        ]
+    );
+    assert!(!report.ok);
+    assert!(!report.promotion.candidate_reviewable);
+    Ok(())
+}
+
+#[test]
+fn authoring_diagnostics_collect_missing_imports_and_keep_hidden_errors_blocking() -> Result<()> {
+    let (_temp, service, mut request) = setup()?;
+    request.axi_text = Some("module Root\nimport MissingA\nimport MissingB\nschema S:\n  object Company\n  relation R1(x: Compny)\n".into());
+    let report = service.execute(request.clone())?;
+    assert_eq!(report.diagnostic_collection.observed_errors, 3);
+    assert_eq!(report.diagnostics.len(), 3);
+    assert_eq!(
+        report.diagnostics[0].code,
+        "authoring_canonical_import_failed"
+    );
+    assert_eq!(
+        report.diagnostics[1].code,
+        "authoring_canonical_import_failed"
+    );
+    assert_eq!(
+        report.diagnostics[2].code,
+        "authoring_canonical_type_failed"
+    );
+    assert_eq!(
+        report.diagnostics[0].location.as_ref().unwrap().excerpt,
+        "import MissingA"
+    );
+    assert_eq!(
+        report.diagnostics[1].location.as_ref().unwrap().excerpt,
+        "import MissingB"
+    );
+    assert!(!report.ok);
+    assert!(!report.promotion.candidate_reviewable);
+
+    let relations = (0..(axiograph_kernel::MAX_KERNEL_DIAGNOSTIC_ITEMS + 1))
+        .map(|index| format!("  relation R{index}(x: Missing{index})"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    request.axi_text = Some(format!(
+        "module Root\nschema S:\n  object Present\n{relations}\n"
+    ));
+    request.presentation.detail = AuthoringDetailV1::Standard;
+    request.presentation.sections = Some(vec![projection::AuthoringSectionV1::Diagnostics]);
+    request.presentation.limit = 1;
+    let response = serde_json::to_value(service.execute_response(request)?)?;
+    assert_eq!(response["ok"], false);
+    assert_eq!(
+        response["validation"]["diagnostic_errors"],
+        axiograph_kernel::MAX_KERNEL_DIAGNOSTIC_ITEMS + 1
+    );
+    assert_eq!(
+        response["validation"]["diagnostic_collection"]["truncated"],
+        true
+    );
+    assert_eq!(
+        response["validation"]["diagnostic_collection"]["omitted_observed_errors"],
+        1
+    );
+    let page = response["sections"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|page| page["section"] == "diagnostics")
+        .unwrap();
+    assert_eq!(
+        page["total"],
+        axiograph_kernel::MAX_KERNEL_DIAGNOSTIC_ITEMS + 1
+    );
+    assert_eq!(page["returned"], 1);
+    assert_eq!(
+        page["omitted"],
+        axiograph_kernel::MAX_KERNEL_DIAGNOSTIC_ITEMS
+    );
+    assert!(page["next_cursor"].is_null());
+    Ok(())
+}
+
+#[test]
+fn exhausted_collection_appends_a_blocker_when_prior_warnings_exist() -> Result<()> {
+    let (_temp, service, request) = setup()?;
+    let mut report = service.execute(request)?;
+    report.diagnostics.push(AuthoringDiagnosticV1 {
+        severity: AuthoringDiagnosticSeverityV1::Warning,
+        code: "preexisting_warning".into(),
+        message: "warning before baseline compilation".into(),
+        path: None,
+        line: None,
+        repair_hint: None,
+        location: None,
+    });
+    append_canonical_diagnostic_collection(
+        &mut report,
+        &crate::axi_input::diagnostics::CanonicalSourceDiagnosticCollection {
+            diagnostics: Vec::new(),
+            observed_errors: 0,
+            omitted_observed_errors: 0,
+            work_units: axiograph_kernel::MAX_KERNEL_DIAGNOSTIC_WORK,
+            work_exhausted: true,
+        },
+        "baseline",
+    );
+    assert!(report.diagnostics.iter().any(|diagnostic| {
+        diagnostic.severity == AuthoringDiagnosticSeverityV1::Error
+            && diagnostic.code == "baseline_canonical_diagnostic_bound"
+    }));
+    assert_eq!(report.diagnostic_collection.observed_errors, 1);
+    assert_eq!(report.diagnostic_collection.returned_errors, 0);
+    assert_eq!(report.diagnostic_collection.omitted_observed_errors, 1);
+    assert!(report.diagnostic_collection.work_exhausted);
+    assert!(report.diagnostic_collection.truncated);
+
+    report.diagnostics.push(AuthoringDiagnosticV1 {
+        severity: AuthoringDiagnosticSeverityV1::Error,
+        code: "later_query_error".into(),
+        message: "later query failure".into(),
+        path: None,
+        line: None,
+        repair_hint: None,
+        location: None,
+    });
+    refresh_diagnostic_collection(&mut report);
+    assert_eq!(report.diagnostic_collection.observed_errors, 2);
+    assert_eq!(report.diagnostic_collection.returned_errors, 1);
+    assert_eq!(report.diagnostic_collection.omitted_observed_errors, 1);
+    assert_eq!(
+        report.diagnostic_collection.message_bytes,
+        "later query failure".len()
+    );
+
+    for index in 0..70 {
+        report.diagnostics.push(AuthoringDiagnosticV1 {
+            severity: AuthoringDiagnosticSeverityV1::Error,
+            code: format!("later_error_{index}"),
+            message: format!("later bounded error {index}"),
+            path: None,
+            line: None,
+            repair_hint: None,
+            location: None,
+        });
+    }
+    refresh_diagnostic_collection(&mut report);
+    assert_eq!(
+        report.diagnostic_collection.returned_errors,
+        axiograph_kernel::MAX_KERNEL_DIAGNOSTIC_ITEMS
+    );
+    assert!(
+        report.diagnostic_collection.message_bytes
+            <= axiograph_kernel::MAX_KERNEL_DIAGNOSTIC_MESSAGE_BYTES
+    );
+    assert_eq!(report.diagnostic_collection.observed_errors, 72);
+    assert_eq!(report.diagnostic_collection.omitted_observed_errors, 8);
+    assert!(report
+        .diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.code == "baseline_canonical_diagnostic_bound"));
+    assert!(report.diagnostic_collection.truncated);
+    Ok(())
+}
+
+#[test]
+fn authoring_import_parse_failure_does_not_hide_independent_import_errors() -> Result<()> {
+    let (temp, service, mut request) = setup()?;
+    std::fs::write(
+        temp.path().join("Broken.axi"),
+        "module Broken\nschema Bad:\n  relation R(x: )\n",
+    )?;
+    std::fs::write(
+        temp.path().join("Typed.axi"),
+        "module Typed\nschema T:\n  object Person\n  relation R(x: Persn)\n",
+    )?;
+    request.axi_text = Some("module Root\nimport Broken\nimport Typed\n".into());
+    let report = service.execute(request)?;
+    assert_eq!(report.diagnostic_collection.observed_errors, 2);
+    assert_eq!(report.diagnostics.len(), 2);
+    assert_eq!(
+        report.diagnostics[0]
+            .location
+            .as_ref()
+            .unwrap()
+            .module_name
+            .as_deref(),
+        Some("Typed")
+    );
+    assert!(report.diagnostics[1]
+        .message
+        .contains("named candidate parse failure"));
+    assert!(report.diagnostics[1].message.contains("line 3"));
+    assert_eq!(
+        report.diagnostics[1].location.as_ref().unwrap().excerpt,
+        "import Broken"
+    );
+    assert!(!report.ok);
+    assert!(!report.promotion.candidate_reviewable);
+    Ok(())
+}
+
+#[test]
+fn authoring_parse_error_uses_truthful_line_subject_without_a_module_ref() -> Result<()> {
+    let (_temp, service, mut request) = setup()?;
+    request.axi_text =
+        Some("module Root\r\nschema S:\r\n  object Company\r\n  relation Broken(x: )\r\n".into());
+    let report = service.execute(request)?;
+    assert_eq!(report.diagnostics.len(), 1);
+    let diagnostic = &report.diagnostics[0];
+    assert_eq!(diagnostic.code, "authoring_canonical_parse_failed");
+    let location = diagnostic.location.as_ref().unwrap();
+    assert_eq!(location.module_name, None);
+    assert_eq!(location.start.line, 4);
+    assert_eq!(location.excerpt, "  relation Broken(x: )");
+    assert!(matches!(
+        location.subject,
+        crate::axi_input::diagnostics::DiagnosticSubjectV1::Syntactic {
+            subject: crate::axi_input::diagnostics::SyntacticDiagnosticSubjectV1::ParseLine {
+                line: 4
+            }
+        }
+    ));
+    assert!(report.source.is_none());
+    assert!(!report.ok);
+    assert!(!report.promotion.candidate_reviewable);
+    Ok(())
+}
+
+#[test]
+fn oversized_parse_message_is_omitted_without_crossing_the_byte_ceiling() -> Result<()> {
+    let (_temp, service, mut request) = setup()?;
+    request.axi_text = Some(format!(
+        "module Root\nschema S:\n{}\n",
+        "not_a_declaration".repeat(8_000)
+    ));
+    let report = service.execute(request.clone())?;
+    assert!(!report.ok);
+    assert!(!report.promotion.candidate_reviewable);
+    assert_eq!(report.diagnostics.len(), 1);
+    assert_eq!(
+        report.diagnostics[0].code,
+        "authoring_canonical_diagnostic_bound"
+    );
+    assert_eq!(report.diagnostic_collection.observed_errors, 1);
+    assert_eq!(report.diagnostic_collection.returned_errors, 0);
+    assert_eq!(report.diagnostic_collection.omitted_observed_errors, 1);
+    assert_eq!(report.diagnostic_collection.message_bytes, 0);
+    assert!(report.diagnostic_collection.truncated);
+
+    request.presentation.detail = AuthoringDetailV1::Standard;
+    request.presentation.sections = Some(vec![projection::AuthoringSectionV1::Diagnostics]);
+    request.presentation.limit = 10;
+    let response = serde_json::to_value(service.execute_response(request)?)?;
+    let page = response["sections"].as_array().unwrap().first().unwrap();
+    assert_eq!(page["total"], 2);
+    assert_eq!(page["returned"], 1);
+    assert_eq!(page["omitted"], 1);
+    assert!(page["next_cursor"].is_null());
     Ok(())
 }
 
@@ -202,6 +594,31 @@ fn authoring_diagnostics_http_mcp_lsp_full_compact_schema_parity() -> Result<()>
         .enable_all()
         .build()?;
     let validator = jsonschema::validator_for(&projection::response_schema())?;
+    let mut excessive_errors = full.clone();
+    excessive_errors["diagnostics"] = serde_json::Value::Array(
+        (0..66)
+            .map(|index| {
+                serde_json::json!({
+                    "severity":"error",
+                    "code":format!("error_{index}"),
+                    "message":"bounded"
+                })
+            })
+            .collect(),
+    );
+    assert!(!validator.is_valid(&excessive_errors));
+    for (field, invalid) in [
+        ("max_items", serde_json::json!(0)),
+        ("max_message_bytes", serde_json::json!(65537)),
+        ("max_work", serde_json::json!(65537)),
+        ("work_units", serde_json::json!(65537)),
+        ("returned_errors", serde_json::json!(65)),
+        ("order", serde_json::json!("filesystem_order")),
+    ] {
+        let mut malformed = full.clone();
+        malformed["diagnostic_collection"][field] = invalid;
+        assert!(!validator.is_valid(&malformed), "schema accepted {field}");
+    }
     for detail in [
         AuthoringDetailV1::Full,
         AuthoringDetailV1::Summary,
@@ -335,18 +752,23 @@ fn authoring_diagnostics_lsp_changed_import_and_new_file_are_explicitly_unlocate
     assert!(change
         .iter()
         .any(|p| p["uri"] == base_uri && p["diagnostics"] == json!([])));
-    let stale = &change.iter().find(|p| p["uri"] == root_uri).unwrap()["diagnostics"][0];
-    assert_eq!(stale["data"]["sourceLocated"], false);
-    assert_eq!(stale["range"]["start"], stale["range"]["end"]);
+    // Base's open buffer now fixes the typo. Root's import resolves against
+    // that unsaved overlay closure, so the previously cached error is
+    // invalidated to empty rather than merely unlocated.
+    // `change` may contain root's publication twice: once immediately
+    // invalidated to unlocated when Base's own diagnostics republish, and
+    // once corrected by the dependent-importer revalidation that didOpen
+    // now triggers. The last one is authoritative.
+    let root_after_open = change.iter().rev().find(|p| p["uri"] == root_uri).unwrap();
+    assert_eq!(root_after_open["diagnostics"], json!([]));
     let revalidate = notify(
         &mut state,
         "textDocument/didChange",
         json!({"textDocument":{"uri":root_uri},"contentChanges":[{"text":"module Root\nimport Base\n"}]}),
     );
     assert_eq!(
-        revalidate.iter().find(|p| p["uri"] == root_uri).unwrap()["diagnostics"][0]["data"]
-            ["sourceLocated"],
-        false
+        revalidate.iter().find(|p| p["uri"] == root_uri).unwrap()["diagnostics"],
+        json!([])
     );
     let missing = notify(
         &mut state,
@@ -375,11 +797,16 @@ fn authoring_diagnostics_baseline_and_ambiguous_import_do_not_borrow_root_locati
     assert!(!report.ok);
     assert_eq!(
         report.diagnostics[0].code,
-        "authoring_baseline_compile_failed"
+        "authoring_baseline_canonical_type_failed"
     );
     assert_eq!(
-        report.diagnostics[0].location.as_ref().unwrap().module_name,
-        "Base"
+        report.diagnostics[0]
+            .location
+            .as_ref()
+            .unwrap()
+            .module_name
+            .as_deref(),
+        Some("Base")
     );
     request.baseline_axi_path = None;
     request.axi_text = Some("module Root\nimport Base\n".into());
@@ -387,8 +814,31 @@ fn authoring_diagnostics_baseline_and_ambiguous_import_do_not_borrow_root_locati
     let report = service.execute(request.clone())?;
     assert!(!report.ok);
     assert!(report.diagnostics[0].message.contains("ambiguous"));
-    assert!(report.diagnostics[0].location.is_none());
-    assert!(report.diagnostics[0].path.is_none());
+    assert!(
+        report.diagnostic_collection.message_bytes
+            <= axiograph_kernel::MAX_KERNEL_DIAGNOSTIC_MESSAGE_BYTES
+    );
+    assert_eq!(
+        report.diagnostic_collection.message_bytes,
+        report
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.severity == AuthoringDiagnosticSeverityV1::Error)
+            .map(|diagnostic| diagnostic.message.len())
+            .sum::<usize>()
+    );
+    let import_location = report.diagnostics[0].location.as_ref().unwrap();
+    assert_eq!(import_location.module_name.as_deref(), Some("Root"));
+    assert_eq!(import_location.excerpt, "import Base");
+    assert!(matches!(
+        import_location.subject,
+        crate::axi_input::diagnostics::DiagnosticSubjectV1::Syntactic {
+            subject: crate::axi_input::diagnostics::SyntacticDiagnosticSubjectV1::ImportName {
+                import_index: 0,
+                ..
+            }
+        }
+    ));
     request.presentation.sections = Some(vec![projection::AuthoringSectionV1::Diagnostics]);
     request.presentation.cursor = Some("untrusted-cursor".into());
     assert!(service

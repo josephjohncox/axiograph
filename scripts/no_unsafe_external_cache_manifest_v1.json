@@ -1,0 +1,265 @@
+{
+  "records": [
+    {
+      "cache_home_paths": [
+        "build/engineering-quality/release-roadmap/complete-kani-with-verified-path-20260908T044738Z/tools/kani-home/kani-0.67.0",
+        "build/engineering-quality/release-roadmap/recover-kani-and-prepare-candidate-20260908T042334Z/tools/kani-home/kani-0.67.0"
+      ],
+      "directories": [
+        {
+          "archive_member": "kani-0.67.0/library/kani",
+          "path": "kani"
+        },
+        {
+          "archive_member": "kani-0.67.0/library/kani/src",
+          "path": "kani/src"
+        },
+        {
+          "archive_member": "kani-0.67.0/library/kani/src/models",
+          "path": "kani/src/models"
+        },
+        {
+          "archive_member": "kani-0.67.0/library/kani_macros",
+          "path": "kani_macros"
+        },
+        {
+          "archive_member": "kani-0.67.0/library/kani_macros/src",
+          "path": "kani_macros/src"
+        },
+        {
+          "archive_member": "kani-0.67.0/library/kani_macros/src/sysroot",
+          "path": "kani_macros/src/sysroot"
+        },
+        {
+          "archive_member": "kani-0.67.0/library/kani_macros/src/sysroot/contracts",
+          "path": "kani_macros/src/sysroot/contracts"
+        },
+        {
+          "archive_member": "kani-0.67.0/library/kani_macros/src/sysroot/loop_contracts",
+          "path": "kani_macros/src/sysroot/loop_contracts"
+        },
+        {
+          "archive_member": "kani-0.67.0/library/std",
+          "path": "std"
+        },
+        {
+          "archive_member": "kani-0.67.0/library/std/src",
+          "path": "std/src"
+        }
+      ],
+      "distribution": {
+        "archive_bytes": 137826806,
+        "archive_name": "kani-0.67.0-aarch64-unknown-linux-gnu.tar.gz",
+        "archive_root": "kani-0.67.0",
+        "archive_sha256": "974128f44dd43618a06d21e5fe6d9ff67188de5986fe0bc57b534b0e4639efb9",
+        "library_member_prefix": "kani-0.67.0/library/",
+        "original_bytes_definition": "For each regular member, SHA-256 is over exactly the decompressed tar payload bytes returned for that member, with no text decoding, newline conversion, metadata, path, padding, or other normalization."
+      },
+      "files": [
+        {
+          "archive_member": "kani-0.67.0/library/kani/Cargo.toml",
+          "bytes": 371,
+          "path": "kani/Cargo.toml",
+          "sha256": "f2256b8c485f2ecc6f8baa2558c0059d7d60c3f98e836f19f6546bacc7904b65"
+        },
+        {
+          "archive_member": "kani-0.67.0/library/kani/build.rs",
+          "bytes": 205,
+          "path": "kani/build.rs",
+          "sha256": "5ab93eafbf57b56c13767247a46a86b4ec33cdd2bdba33946e10830220141dcb"
+        },
+        {
+          "archive_member": "kani-0.67.0/library/kani/kani_lib.c",
+          "bytes": 5982,
+          "path": "kani/kani_lib.c",
+          "sha256": "4a3c653c5cf540de061dc6044b85cad196b1321119f936621e692e13a88cd6b6"
+        },
+        {
+          "archive_member": "kani-0.67.0/library/kani/src/arbitrary.rs",
+          "bytes": 605,
+          "path": "kani/src/arbitrary.rs",
+          "sha256": "ae733af15e1808f246ec873e24dcca71735bc24d238e1950b23ee8ad636ea283"
+        },
+        {
+          "archive_member": "kani-0.67.0/library/kani/src/bounded_arbitrary.rs",
+          "bytes": 2537,
+          "path": "kani/src/bounded_arbitrary.rs",
+          "sha256": "24f765ee294984ab3c99ff56ddeca2bae654a45a5f46e38bea01b8ff2b3b79fb"
+        },
+        {
+          "archive_member": "kani-0.67.0/library/kani/src/concrete_playback.rs",
+          "bytes": 3204,
+          "path": "kani/src/concrete_playback.rs",
+          "sha256": "26d6332001525cb728509a2d2804edba5841800a469dafe1b1fc7bccd088b9da"
+        },
+        {
+          "archive_member": "kani-0.67.0/library/kani/src/contracts.rs",
+          "bytes": 12629,
+          "path": "kani/src/contracts.rs",
+          "sha256": "05b329fa34923824ffe0f6e488a61bf06ff6bf99d2a0be990f951d50a1dc38ac"
+        },
+        {
+          "archive_member": "kani-0.67.0/library/kani/src/futures.rs",
+          "bytes": 10266,
+          "path": "kani/src/futures.rs",
+          "sha256": "d44107d0f6034da5923fcde1ccb0ed8e4ea30342b62b9bd3881462672fa6df78"
+        },
+        {
+          "archive_member": "kani-0.67.0/library/kani/src/invariant.rs",
+          "bytes": 3986,
+          "path": "kani/src/invariant.rs",
+          "sha256": "ae370648e8df04a5843d3a1d4a223adc76bbbc49aa369163d7aaea70e738a2e1"
+        },
+        {
+          "archive_member": "kani-0.67.0/library/kani/src/iter.rs",
+          "bytes": 637,
+          "path": "kani/src/iter.rs",
+          "sha256": "c49b3ce607824ca0886f5148eebca766c93d61dafaca1b1192f9d1f7ed2119d0"
+        },
+        {
+          "archive_member": "kani-0.67.0/library/kani/src/lib.rs",
+          "bytes": 2836,
+          "path": "kani/src/lib.rs",
+          "sha256": "b6d11752f9d5cc47c54e5fda8240472c8f8d4c7a98842aff0cc4ba5a309f6555"
+        },
+        {
+          "archive_member": "kani-0.67.0/library/kani/src/models/mod.rs",
+          "bytes": 12276,
+          "path": "kani/src/models/mod.rs",
+          "sha256": "61e11837be75259207de91184cad7e31a868c9b26a07f88a1dc310258ba4c71f"
+        },
+        {
+          "archive_member": "kani-0.67.0/library/kani/src/shadow.rs",
+          "bytes": 3032,
+          "path": "kani/src/shadow.rs",
+          "sha256": "a3e9fe9fa8b844ae05ab51d03a391c178016e7fa3d33b8d4a458647eae97fe65"
+        },
+        {
+          "archive_member": "kani-0.67.0/library/kani/src/tuple.rs",
+          "bytes": 992,
+          "path": "kani/src/tuple.rs",
+          "sha256": "9a3adf6d0b7ea79314c0e59d1b528842f5480440b95971666cc7a0736808d8fa"
+        },
+        {
+          "archive_member": "kani-0.67.0/library/kani/src/vec.rs",
+          "bytes": 952,
+          "path": "kani/src/vec.rs",
+          "sha256": "ecd0454090ea8f9861c821a7f216d827a269bac7215c4b555493774f4e6df467"
+        },
+        {
+          "archive_member": "kani-0.67.0/library/kani_macros/Cargo.toml",
+          "bytes": 602,
+          "path": "kani_macros/Cargo.toml",
+          "sha256": "7afbaa51a848b1ccddc3156f072899f98470c26f833e9ac419d34ccbd338f999"
+        },
+        {
+          "archive_member": "kani-0.67.0/library/kani_macros/build.rs",
+          "bytes": 205,
+          "path": "kani_macros/build.rs",
+          "sha256": "5ab93eafbf57b56c13767247a46a86b4ec33cdd2bdba33946e10830220141dcb"
+        },
+        {
+          "archive_member": "kani-0.67.0/library/kani_macros/src/derive.rs",
+          "bytes": 20251,
+          "path": "kani_macros/src/derive.rs",
+          "sha256": "a912ef3f47a9ac9c5f5a287787f7cad97441ae64d533181321bedb1406857ecb"
+        },
+        {
+          "archive_member": "kani-0.67.0/library/kani_macros/src/derive_bounded.rs",
+          "bytes": 5850,
+          "path": "kani_macros/src/derive_bounded.rs",
+          "sha256": "5507a00508f9bb4642e2c238f8beaac79f48e6eb902b60de2a8e41e485c28a66"
+        },
+        {
+          "archive_member": "kani-0.67.0/library/kani_macros/src/lib.rs",
+          "bytes": 24151,
+          "path": "kani_macros/src/lib.rs",
+          "sha256": "f566f25c0595acbc7c4ad6b428463bad91261c35ac838001f3ae358e37ff4749"
+        },
+        {
+          "archive_member": "kani-0.67.0/library/kani_macros/src/sysroot/contracts/assert.rs",
+          "bytes": 3566,
+          "path": "kani_macros/src/sysroot/contracts/assert.rs",
+          "sha256": "091e4d62618b2ecebd90e424b16372d07b27b99ee512d563325cb0ad626fc7d6"
+        },
+        {
+          "archive_member": "kani-0.67.0/library/kani_macros/src/sysroot/contracts/bootstrap.rs",
+          "bytes": 7870,
+          "path": "kani_macros/src/sysroot/contracts/bootstrap.rs",
+          "sha256": "889e33d011fda102a6fa592c5036f55dd6cbe054ea452429617152280b1c2f36"
+        },
+        {
+          "archive_member": "kani-0.67.0/library/kani_macros/src/sysroot/contracts/check.rs",
+          "bytes": 8459,
+          "path": "kani_macros/src/sysroot/contracts/check.rs",
+          "sha256": "6a694010ecf8dc4ee4f2dd1389daacb989877ff2e9097533fffdf51e20a39be2"
+        },
+        {
+          "archive_member": "kani-0.67.0/library/kani_macros/src/sysroot/contracts/helpers.rs",
+          "bytes": 7427,
+          "path": "kani_macros/src/sysroot/contracts/helpers.rs",
+          "sha256": "94ba323170d62c89ef87767c3fc22fdda69680197fabc1d0d5fbfed7df4d4962"
+        },
+        {
+          "archive_member": "kani-0.67.0/library/kani_macros/src/sysroot/contracts/initialize.rs",
+          "bytes": 3815,
+          "path": "kani_macros/src/sysroot/contracts/initialize.rs",
+          "sha256": "779daea7ed44cc9f2bd2a1d626a34fd079cc50a6db5e9e880c8b2515b60bae3e"
+        },
+        {
+          "archive_member": "kani-0.67.0/library/kani_macros/src/sysroot/contracts/mod.rs",
+          "bytes": 31133,
+          "path": "kani_macros/src/sysroot/contracts/mod.rs",
+          "sha256": "b1891d393767517ac01b1000e800ff2cd5f996374a65489a4a1c612da235e5ba"
+        },
+        {
+          "archive_member": "kani-0.67.0/library/kani_macros/src/sysroot/contracts/replace.rs",
+          "bytes": 6669,
+          "path": "kani_macros/src/sysroot/contracts/replace.rs",
+          "sha256": "e124bcbf1e89bac4403fe3b9399414bd1873458038793db8324b081f606cc0f6"
+        },
+        {
+          "archive_member": "kani-0.67.0/library/kani_macros/src/sysroot/contracts/shared.rs",
+          "bytes": 9190,
+          "path": "kani_macros/src/sysroot/contracts/shared.rs",
+          "sha256": "1fc40a88a01c916b17c000d5cf2aaed454e5f7532557c746ba2712a96d842f50"
+        },
+        {
+          "archive_member": "kani-0.67.0/library/kani_macros/src/sysroot/loop_contracts/mod.rs",
+          "bytes": 26752,
+          "path": "kani_macros/src/sysroot/loop_contracts/mod.rs",
+          "sha256": "b9d3ac70d367cbcce7728de4819343c14d2ce610ea90d82f0352a601219d21f9"
+        },
+        {
+          "archive_member": "kani-0.67.0/library/std/Cargo.toml",
+          "bytes": 395,
+          "path": "std/Cargo.toml",
+          "sha256": "cfe3cc329e51363b270c1ef5ecfdd9b366ce2df4198c53947b4f7d1da002955a"
+        },
+        {
+          "archive_member": "kani-0.67.0/library/std/src/lib.rs",
+          "bytes": 9128,
+          "path": "std/src/lib.rs",
+          "sha256": "f3a9a374664964e32d7988c6fd1ed978977167acad465747b11021aaed6abd35"
+        },
+        {
+          "archive_member": "kani-0.67.0/library/std/src/process.rs",
+          "bytes": 393,
+          "path": "std/src/process.rs",
+          "sha256": "366282f235e1eaf12b144165e45cdbaabaa9d1cb7267643f740c8703fc102e1d"
+        }
+      ],
+      "library_relative_path": "library",
+      "ownership_class": "upstream-tool-distribution-cache",
+      "rationale": "Declared upstream tool library bytes are outside the first-party lexical no-unsafe policy; this is not a safety claim about the bytes.",
+      "record_id": "kani-0.67.0-aarch64-unknown-linux-gnu-library",
+      "source_owner": "model-checking/kani",
+      "tool": {
+        "name": "kani",
+        "target": "aarch64-unknown-linux-gnu",
+        "version": "0.67.0"
+      }
+    }
+  ],
+  "schema": "axiograph-no-unsafe-external-cache-manifest-v1"
+}

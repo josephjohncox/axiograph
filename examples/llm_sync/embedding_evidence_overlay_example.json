@@ -10,7 +10,8 @@
       "candidate_ref": "MachinistLearning.TitaniumChatterMitigationRule",
       "relationship_kind": "candidate_supports_rule",
       "score": 0.82,
-      "score_semantics": "cosine_similarity_demo",
+      "metric": "cosine",
+      "method": "deterministic_pairwise_cosine_demo_v1",
       "suggested_refinement": {
         "kind": "runtime_refinement_handle_v1",
         "action": "review_candidate_rule_support",

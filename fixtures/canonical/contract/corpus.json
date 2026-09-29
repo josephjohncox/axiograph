@@ -1,0 +1,622 @@
+{
+  "schema": "axiograph.axi_v1_differential_corpus",
+  "version": 1,
+  "description": "Bounded deterministic hand-golden and generated Rust/Lean parse, digest, typecheck, formation, and rejection-class differential corpus.",
+  "contract": {
+    "path": "fixtures/canonical/contract/axi_v1_contract.json",
+    "sha256": "28f4b042735fc2690ac852248f6ec02dd91ac90746e1bce1f951c03269c57908",
+    "version": 1
+  },
+  "required_contract_sections": [
+    "lexical_surface",
+    "adversarial_matrix",
+    "authority",
+    "exact_byte_anchor",
+    "ordered_sequences",
+    "ast_inventory",
+    "ast_payload_types",
+    "numeric_domains",
+    "excluded_runtime_declarations",
+    "surface_forms",
+    "unsupported_forms",
+    "acceptance_stages",
+    "operational_bounds",
+    "normalized_comparison",
+    "differential_envelope",
+    "rejection_classes",
+    "fixtures",
+    "diagnostic_taxonomy",
+    "non_cross_language_outcome_classes"
+  ],
+  "generator": {
+    "schema": "axiograph.axi_v1_differential_generator",
+    "version": 2,
+    "algorithm": "splitmix64-grammar-permutation-v2",
+    "seed": "0x6a09e667f3bcc909",
+    "case_count": 24,
+    "maximums": {
+      "source_bytes": 4096,
+      "syntax_depth": 8,
+      "lines": 96,
+      "declarations": 64,
+      "roles_per_relation": 8
+    },
+    "stable_order": "ascending generated case id",
+    "expected_cases_sha256": "13603f622fb4817e6bc03b703a723101aa90f3a870986e0f83f4cc177c1dceec"
+  },
+  "bounds": {
+    "max_cases": 40,
+    "max_source_bytes": 4096,
+    "max_syntax_depth": 8,
+    "max_lines": 96,
+    "max_declarations": 64,
+    "max_roles_per_relation": 8,
+    "per_process_timeout_seconds": 30,
+    "total_timeout_seconds": 600,
+    "max_stdout_bytes": 1048576,
+    "max_stderr_bytes": 262144
+  },
+  "hand_cases": [
+    {
+      "id": "hand-positive",
+      "path": "fixtures/canonical/contract/seeds/hand_positive.axi",
+      "sha256": "bf04e2b07f1564211726777a23a8bcecd8ab12beb75d6abb0b6c83a8bead0adf",
+      "revision_digest_v2": "axi:revision:v2:sha256:b087cb5ba69929eeb6d4c1bbe654ba83adb368bb0ee74ac6099cdd65a8772640",
+      "expected": {
+        "parse": true,
+        "typecheck": true,
+        "formation": true,
+        "outcome_class": "accepted"
+      },
+      "normalized_ast_golden": {
+        "module_name": "HandPositive",
+        "imports": [],
+        "schemas": [
+          {
+            "name": "S",
+            "objects": [
+              "A",
+              "B"
+            ],
+            "subtypes": [],
+            "relations": [],
+            "generators": []
+          }
+        ],
+        "theories": [],
+        "instances": []
+      },
+      "coverage_probes": {
+        "authority": "exact-source-hash-and-revision",
+        "exact_byte_anchor": "exact-source-hash-and-revision",
+        "normalized_comparison": "hand-normalized-ast-golden",
+        "differential_envelope": "rust-and-lean-envelope-execution",
+        "fixtures": "fixture-path-hash-and-revision"
+      }
+    },
+    {
+      "id": "hand-numeric-max",
+      "path": "fixtures/canonical/contract/seeds/hand_numeric_max.axi",
+      "sha256": "6f40c0221ab377ec213aa72747cad7fe4f1d2b350aed75fdd7747efcdf01e1ec",
+      "revision_digest_v2": "axi:revision:v2:sha256:66fa365f354cfd21fd6928a89bbcdf7fa56163801ef72697ae8f4e4dbe6a5daa",
+      "expected": {
+        "parse": true,
+        "typecheck": true,
+        "formation": true,
+        "outcome_class": "accepted"
+      },
+      "normalized_ast_golden": {
+        "module_name": "HandNumeric",
+        "imports": [],
+        "schemas": [
+          {
+            "name": "S",
+            "objects": [
+              "A"
+            ],
+            "subtypes": [],
+            "relations": [
+              {
+                "name": "R",
+                "fields": [
+                  {
+                    "field": "value",
+                    "ty": {
+                      "kind": "refined",
+                      "base": {
+                        "kind": "object",
+                        "name": "A"
+                      },
+                      "predicates": [
+                        {
+                          "kind": "cardinality",
+                          "min": 0,
+                          "max": 4294967295
+                        }
+                      ]
+                    },
+                    "kind": "data"
+                  }
+                ]
+              }
+            ],
+            "generators": []
+          }
+        ],
+        "theories": [],
+        "instances": []
+      },
+      "coverage_probes": {
+        "lexical_surface": "numeric-ascii-token",
+        "numeric_domains": "u32-cardinality-payload"
+      }
+    },
+    {
+      "id": "hand-parse-alias",
+      "path": "fixtures/canonical/contract/seeds/hand_parse_alias.axi",
+      "sha256": "3d647ad48e9f144f6bf94486338a2094f2c68d1327f40547cd9d7ab87359797a",
+      "revision_digest_v2": "axi:revision:v2:sha256:fe99c7d88214ee7ab21bf812b20068d437ad9fa99d46513008fc882e437e451c",
+      "expected": {
+        "parse": false,
+        "typecheck": null,
+        "formation": null,
+        "outcome_class": "parse.noncanonical_alias"
+      },
+      "coverage_probes": {
+        "adversarial_matrix": "cross-language-parse-rejection",
+        "unsupported_forms": "noncanonical-alias-rejection",
+        "rejection_classes": "derived-parse-rejection-class",
+        "diagnostic_taxonomy": "source-specific-rejection-diagnostic"
+      }
+    },
+    {
+      "id": "hand-unsupported-constraint",
+      "path": "fixtures/canonical/contract/seeds/hand_unsupported_constraint.axi",
+      "sha256": "121cbd9bdd1dfa731dc22a6a739cfa590a665d8f9a41c53a646989f59be4e62d",
+      "revision_digest_v2": "axi:revision:v2:sha256:1b58782bcdc416aeeb25409c212bde850d1539163f747292cb44f9d40dd55419",
+      "expected": {
+        "parse": true,
+        "typecheck": true,
+        "formation": true,
+        "outcome_class": "unsupported.opaque_constraint"
+      },
+      "normalized_ast_golden": {
+        "module_name": "HandUnsupported",
+        "imports": [],
+        "schemas": [
+          {
+            "name": "S",
+            "objects": [
+              "A"
+            ],
+            "subtypes": [],
+            "relations": [],
+            "generators": []
+          }
+        ],
+        "theories": [
+          {
+            "name": "T",
+            "schema": "S",
+            "constraints": [
+              {
+                "tag": "unknown",
+                "text": "review material"
+              }
+            ],
+            "equations": [],
+            "rewrite_rules": []
+          }
+        ],
+        "instances": []
+      },
+      "coverage_probes": {
+        "excluded_runtime_declarations": "opaque-constraint-constructor",
+        "non_cross_language_outcome_classes": "unsupported-success-class"
+      }
+    },
+    {
+      "id": "hand-formation-refinement",
+      "path": "fixtures/canonical/contract/seeds/hand_formation_refinement.axi",
+      "sha256": "6c206a2e0fa1a28f3e82d1c4cf169aff7a25dfa6730e9a7955878b0bb28fa29d",
+      "revision_digest_v2": "axi:revision:v2:sha256:1fa750e334d7e7fa81c3510b7cace2568fb7a1ffff504c40f465ee8653898d95",
+      "expected": {
+        "parse": true,
+        "typecheck": true,
+        "formation": false,
+        "outcome_class": "formation.unsupported_refinement_witness"
+      },
+      "coverage_probes": {
+        "acceptance_stages": "parse-and-typecheck-before-formation-rejection"
+      }
+    },
+    {
+      "id": "hand-typecheck-dependent",
+      "path": "fixtures/canonical/contract/seeds/hand_typecheck_dependent.axi",
+      "sha256": "3c43bde1342b401708d297a497b3dffbdf12babfa644a2e432b59310e89edea1",
+      "revision_digest_v2": "axi:revision:v2:sha256:803fec646107e50943abe622fcf0cff88d5b5a38798a6957c5b3bbfd6ed32359",
+      "expected": {
+        "parse": true,
+        "typecheck": false,
+        "formation": null,
+        "outcome_class": "typecheck.dependent_role"
+      },
+      "coverage_probes": {
+        "surface_forms": "indexed-dependent-role-surface"
+      }
+    },
+    {
+      "id": "hand-bound-at-max",
+      "path": "fixtures/canonical/contract/seeds/hand_bound_at_max.axi",
+      "sha256": "9d90a897b643de18434d66c80163538287d43061f3f25cf4c4d89d96f0c1ecb2",
+      "revision_digest_v2": "axi:revision:v2:sha256:968f3b6ac9fd90928c341bf41384237ea01b30892c2508ad02550be3f412b732",
+      "coverage_probes": {
+        "operational_bounds": "exact-n-and-runner-n-plus-one"
+      },
+      "expected": {
+        "parse": true,
+        "typecheck": true,
+        "formation": true,
+        "outcome_class": "accepted"
+      },
+      "normalized_ast_golden": {
+        "module_name": "HandBound",
+        "imports": [],
+        "schemas": [
+          {
+            "name": "S",
+            "objects": [
+              "A"
+            ],
+            "subtypes": [],
+            "relations": [],
+            "generators": []
+          }
+        ],
+        "theories": [],
+        "instances": []
+      }
+    },
+    {
+      "id": "hand-all-constructors",
+      "path": "fixtures/canonical/contract/all_constructors.axi",
+      "sha256": "15b9c86b85111f439a8d89af2dd4178f3181b820adde16db55598e44cb84ebf2",
+      "revision_digest_v2": "axi:revision:v2:sha256:12d6d633cb0e82da41d778ba0f219ed5ea56ef2e4f2fce5c2981b7d3829b3558",
+      "coverage_probes": {
+        "ordered_sequences": "all-ast-constructors-and-ordered-payloads",
+        "ast_inventory": "all-ast-constructors-and-ordered-payloads",
+        "ast_payload_types": "all-ast-constructors-and-ordered-payloads"
+      },
+      "ordered_sequence_golden": {
+        "SchemaV1Module.imports": [
+          "Zed",
+          "Alpha"
+        ],
+        "SchemaV1Module.schemas": [
+          "Surface"
+        ],
+        "SchemaV1Module.theories": [
+          "SurfaceTheory"
+        ],
+        "SchemaV1Module.instances": [
+          "SurfaceData"
+        ],
+        "SchemaV1Schema.objects": [
+          [
+            "A",
+            "B",
+            "Context",
+            "World",
+            "Time",
+            "Parameter",
+            "Evidence"
+          ]
+        ],
+        "SchemaV1Schema.subtypes": [
+          [
+            "B<A:",
+            "A<B:a_to_b"
+          ]
+        ],
+        "SchemaV1Schema.relations": [
+          [
+            "Base",
+            "EveryRole"
+          ]
+        ],
+        "SchemaV1Schema.generators": [
+          [
+            "observe",
+            "return_to_a"
+          ]
+        ],
+        "RelationDeclV1.fields": [
+          [
+            "left",
+            "right"
+          ],
+          [
+            "first",
+            "relation_value",
+            "indexed_value",
+            "refined_value",
+            "time",
+            "parameter",
+            "evidence"
+          ]
+        ],
+        "TypeExprV1.indexed.over_roles": [
+          [
+            "first"
+          ]
+        ],
+        "TypeExprV1.refined.predicates": [
+          [
+            "equals",
+            "member_of",
+            "cardinality",
+            "key",
+            "enum",
+            "predicate"
+          ]
+        ],
+        "RefinementPredicateV1 member/key/enum values": [
+          {
+            "kind": "member_of",
+            "values": [
+              "A0",
+              "A1"
+            ]
+          },
+          {
+            "kind": "key",
+            "values": [
+              "first"
+            ]
+          },
+          {
+            "kind": "enum",
+            "values": [
+              "A0",
+              "A1"
+            ]
+          }
+        ],
+        "SchemaV1Theory.constraints": [
+          [
+            "functional",
+            "at_most",
+            "typing",
+            "symmetric_where_in",
+            "symmetric",
+            "transitive",
+            "key",
+            "named_block",
+            "unknown"
+          ]
+        ],
+        "SchemaV1Theory.equations": [
+          [
+            "identity_text"
+          ]
+        ],
+        "SchemaV1Theory.rewrite_rules": [
+          [
+            "forward_rule",
+            "backward_rule",
+            "bidirectional_rule"
+          ]
+        ],
+        "RewriteRuleV1.vars": [
+          [
+            "x",
+            "p"
+          ],
+          [
+            "x",
+            "y"
+          ],
+          [
+            "x",
+            "y",
+            "z"
+          ]
+        ],
+        "SetLiteralV1.items": [
+          [
+            "ident:A0",
+            "ident:A1"
+          ],
+          [
+            "ident:B0"
+          ],
+          [
+            "ident:C0"
+          ],
+          [
+            "ident:W0"
+          ],
+          [
+            "ident:T0"
+          ],
+          [
+            "ident:P0"
+          ],
+          [
+            "ident:E0"
+          ],
+          [
+            "tuple:base0:left=A0|right=B0",
+            "tuple::left=A1|right=B0"
+          ],
+          [
+            "tuple::first=A0|relation_value=base0|indexed_value=A0|refined_value=A0|time=T0|parameter=P0|evidence=E0"
+          ],
+          [
+            "tuple::source=A0|target=B0"
+          ],
+          [
+            "tuple::source=B0|target=A0"
+          ]
+        ],
+        "SetItemV1.tuple.fields": [
+          [
+            [
+              "left",
+              "A0"
+            ],
+            [
+              "right",
+              "B0"
+            ]
+          ],
+          [
+            [
+              "left",
+              "A1"
+            ],
+            [
+              "right",
+              "B0"
+            ]
+          ],
+          [
+            [
+              "first",
+              "A0"
+            ],
+            [
+              "relation_value",
+              "base0"
+            ],
+            [
+              "indexed_value",
+              "A0"
+            ],
+            [
+              "refined_value",
+              "A0"
+            ],
+            [
+              "time",
+              "T0"
+            ],
+            [
+              "parameter",
+              "P0"
+            ],
+            [
+              "evidence",
+              "E0"
+            ]
+          ],
+          [
+            [
+              "source",
+              "A0"
+            ],
+            [
+              "target",
+              "B0"
+            ]
+          ],
+          [
+            [
+              "source",
+              "B0"
+            ],
+            [
+              "target",
+              "A0"
+            ]
+          ]
+        ],
+        "SchemaV1Instance.assignments": [
+          [
+            "A",
+            "B",
+            "Context",
+            "World",
+            "Time",
+            "Parameter",
+            "Evidence",
+            "Base",
+            "EveryRole",
+            "observe",
+            "return_to_a"
+          ]
+        ]
+      },
+      "expected": {
+        "parse": true,
+        "typecheck": false,
+        "formation": null,
+        "outcome_class": "typecheck.refinement"
+      }
+    },
+    {
+      "id": "u03-dependent-positive",
+      "path": "fixtures/canonical/contract/dependent_roles/positive.axi",
+      "sha256": "2c052d2524abd6b98d7e3cbf87f91eead04fcb749d6f013abecf226f6ca46e9a",
+      "revision_digest_v2": "axi:revision:v2:sha256:e11a2cd417823d6fe4e4ebbb1ef445de7739b82bc05c5a171f1d1f3c6e47e5a7",
+      "coverage_probes": {"authority": "exact-source-hash-and-revision", "differential_envelope": "rust-and-lean-envelope-execution"},
+      "expected": {"parse": true, "typecheck": true, "formation": true, "outcome_class": "accepted"}
+    },
+    {
+      "id": "u03-dependent-forward",
+      "path": "fixtures/canonical/contract/dependent_roles/forward_reference.axi",
+      "sha256": "516d94577d163f55f9a23c4342ce9cec8fbeadfa270bcdd2480f8b6f832b5cc1",
+      "revision_digest_v2": "axi:revision:v2:sha256:6e68793db55c8904458c9bf238a35cdf6edbb6926777b9a751a4ceb362f06870",
+      "coverage_probes": {"surface_forms": "indexed-dependent-role-surface", "authority": "exact-source-hash-and-revision"},
+      "expected": {"parse": true, "typecheck": false, "formation": null, "outcome_class": "typecheck.dependent_role"}
+    },
+    {
+      "id": "u03-refinement-positive",
+      "path": "fixtures/canonical/contract/refinements/finite_cardinality.axi",
+      "sha256": "371faaf2ec10cc629eb8568fecb099d00252c15dfb0a8a17843617befe30e7e6",
+      "revision_digest_v2": "axi:revision:v2:sha256:6a9678794ff24f0d6d2b00baaadb5b1553cfc7953d5e4f7a197f4670c3b7544a",
+      "coverage_probes": {"authority": "exact-source-hash-and-revision", "differential_envelope": "rust-and-lean-envelope-execution"},
+      "expected": {"parse": true, "typecheck": true, "formation": true, "outcome_class": "accepted"}
+    },
+    {
+      "id": "u03-refinement-unsupported-predicate",
+      "path": "fixtures/canonical/contract/refinements/unsupported_predicate.axi",
+      "sha256": "9602606765cf6a6d5c9d9836366e75698df16df153ce3495d6558bc61e8104ec",
+      "revision_digest_v2": "axi:revision:v2:sha256:2023e00f07bd4658b63c902d5ecaeb85c9fac1c9ee8a8a6704a7350ebf04171e",
+      "coverage_probes": {"authority": "exact-source-hash-and-revision", "differential_envelope": "rust-and-lean-envelope-execution"},
+      "expected": {"parse": true, "typecheck": false, "formation": null, "outcome_class": "typecheck.refinement"}
+    },
+    {
+      "id": "u03-scope-positive",
+      "path": "fixtures/canonical/contract/scopes/valid_rewrite.axi",
+      "sha256": "4d280056bda55eb5e8902e48fbf1e23a9e22d083e25c96a936ae0ac5ec4520f6",
+      "revision_digest_v2": "axi:revision:v2:sha256:95138f44e7294f1271076fd961f33ec7f5147e369e3dda1704b9df6b6a4006df",
+      "coverage_probes": {"authority": "exact-source-hash-and-revision", "differential_envelope": "rust-and-lean-envelope-execution"},
+      "expected": {"parse": true, "typecheck": true, "formation": true, "outcome_class": "accepted"}
+    },
+    {
+      "id": "u03-scope-duplicate-variable",
+      "path": "fixtures/canonical/contract/scopes/duplicate_variable.axi",
+      "sha256": "f6d62eceeb67f126e91694336e8645bc1ce4c1bc8dd2a9069b5fa62f4b61f97c",
+      "revision_digest_v2": "axi:revision:v2:sha256:c2a4d1d1e7115bc7f9900f7e2632fc6b6b209c67680f3a53225906cac251fdad",
+      "coverage_probes": {"authority": "exact-source-hash-and-revision", "differential_envelope": "rust-and-lean-envelope-execution"},
+      "expected": {"parse": true, "typecheck": false, "formation": null, "outcome_class": "typecheck.duplicate_declaration"}
+    },
+    {
+      "id": "u03-equation-opaque-review",
+      "path": "fixtures/canonical/contract/equations/opaque_text.axi",
+      "sha256": "9d62e05efde018f2d7046463b160c794c47f98b9dfcb66cf3696b89bc7d16a60",
+      "revision_digest_v2": "axi:revision:v2:sha256:471730e9ee6e89027f107daac52cbf2c7305aaf00233f209055efb817f833665",
+      "coverage_probes": {"authority": "exact-source-hash-and-revision", "differential_envelope": "rust-and-lean-envelope-execution"},
+      "expected": {"parse": true, "typecheck": true, "formation": true, "outcome_class": "accepted"}
+    },
+    {
+      "id": "u03-equation-endpoint-mismatch",
+      "path": "fixtures/canonical/contract/equations/endpoint_mismatch.axi",
+      "sha256": "b045ae498ac34dd24bc037dacd4774b71fdb6cde1a04d018a889b221c971a403",
+      "revision_digest_v2": "axi:revision:v2:sha256:4d09a5a2c8c537cd3e04e380408bd8794b85c32ad88fdd3ed37ca6e08c92ce32",
+      "coverage_probes": {"authority": "exact-source-hash-and-revision", "differential_envelope": "rust-and-lean-envelope-execution"},
+      "expected": {"parse": true, "typecheck": false, "formation": null, "outcome_class": "typecheck.theory_formation"}
+    }
+  ]
+}

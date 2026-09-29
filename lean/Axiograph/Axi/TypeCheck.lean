@@ -13,15 +13,11 @@ It is intentionally conservative and mirrors the Rust-side checker used for
 
 ## What is checked?
 
-For each instance in a module:
-
-1. The referenced schema exists.
-2. Every object assignment is to a declared object type.
-3. Every relation assignment is to a declared relation.
-4. Every tuple has **exactly** the declared fields (no missing/extra/duplicate fields).
-5. Relation tuples may introduce objects implicitly, but subtyping-based reuse is
-   checked for ambiguity: using a name at a supertype must not be ambiguous across
-   multiple subtype inhabitants with that name.
+For each module, this checker validates schema declarations, dependent role and
+refinement types, supported theory constraint references, typed rewrite
+references and endpoints, and instance assignments. Relation tuples must have
+exactly the declared fields. Relation tuples may introduce objects implicitly,
+but subtyping-based reuse is checked for ambiguity.
 
 This check is designed to keep the trusted kernel small:
 Lean can re-run it directly on the parsed `.axi` AST.
@@ -76,6 +72,21 @@ def SchemaIndex.isSubtype (idx : SchemaIndex) (sub sup : Name) : Bool :=
   match idx.supertypesOf.get? sub with
   | none => sub == sup
   | some supers => supers.contains sup
+
+def SchemaIndex.isValueType (idx : SchemaIndex) (ty : Name) : Bool :=
+  idx.objectTypes.contains ty || idx.relationDecls.contains ty
+
+def SchemaIndex.relationDecl (idx : SchemaIndex) (relation : Name) : Except String RelationDeclV1 :=
+  match idx.relationDecls.get? relation with
+  | some declaration => pure declaration
+  | none => throw s!"unknown relation `{relation}` in schema"
+
+def SchemaIndex.fieldDecl
+    (idx : SchemaIndex) (relation field : Name) : Except String FieldDeclV1 := do
+  let declaration ← idx.relationDecl relation
+  match declaration.fields.find? (fun candidate => candidate.field == field) with
+  | some found => pure found
+  | none => throw s!"relation `{relation}` has no field `{field}`"
 
 def SchemaIndex.relatedTypesIncludingSelf (idx : SchemaIndex) (ty : Name) : List Name := Id.run do
   let mut related : Std.HashSet Name := {}
@@ -215,7 +226,7 @@ def validateSchema (schema : SchemaV1Schema) : Except String SchemaIndex := do
     if !objects.contains subtype.sup then
       throw s!"schema `{schema.name}` subtype references unknown supertype `{subtype.sup}`"
     if subtypeEdges.contains (subtype.sub, subtype.sup) then
-      throw s!"schema `{schema.name}` repeats subtype `{subtype.sub} <: {subtype.sup}`"
+      throw s!"schema `{schema.name}` repeats subtype `{subtype.sub} < {subtype.sup}`"
     subtypeEdges := subtypeEdges.insert (subtype.sub, subtype.sup)
 
   let index := SchemaIndex.ofSchema schema
@@ -233,6 +244,174 @@ def validateSchema (schema : SchemaV1Schema) : Except String SchemaIndex := do
         throw s!"schema `{schema.name}` generator `{generator.name}` references unknown endpoint `{endpoint}`"
 
   pure index
+
+def findNamedCarrierPair
+    (relation : RelationDeclV1) : List (Name × Name) → Option (FieldDeclV1 × FieldDeclV1)
+  | [] => none
+  | (left, right) :: rest =>
+      match relation.fields.find? (fun field => field.field == left),
+          relation.fields.find? (fun field => field.field == right) with
+      | some leftField, some rightField => some (leftField, rightField)
+      | _, _ => findNamedCarrierPair relation rest
+
+def relationNameHintsHomotopy (name : Name) : Bool :=
+  let lowered := name.toLower
+  (lowered.splitOn "equiv").length > 1 || (lowered.splitOn "homotopy").length > 1
+
+def relationCarrierPair? (relation : RelationDeclV1) : Option (FieldDeclV1 × FieldDeclV1) :=
+  let homotopy := findNamedCarrierPair relation [
+    ("lhs", "rhs"), ("route1", "route2"), ("path1", "path2"),
+    ("rel1", "rel2"), ("i1", "i2"), ("s1", "s2"), ("left", "right")]
+  let endpoint := findNamedCarrierPair relation [
+    ("from", "to"), ("source", "target"), ("src", "dst")]
+  let dataFields := relation.fields.filter (fun field => field.kind == .data)
+  let declaredOrder :=
+    match dataFields[0]?, dataFields[1]?, dataFields[2]? with
+    | some sourceRole, some targetRole, none => some (sourceRole, targetRole)
+    | _, _, _ => none
+  match homotopy with
+  | some pair =>
+      if endpoint.isSome || relationNameHintsHomotopy relation.name then
+        some pair
+      else
+        declaredOrder
+  | none =>
+      match endpoint with
+      | some pair => some pair
+      | none => declaredOrder
+
+structure RewriteTypeEnv where
+  objectVars : Std.HashMap Name Name := {}
+  pathVars : Std.HashMap Name (Name × Name) := {}
+
+def inferRewriteEndpoints
+    (index : SchemaIndex) (env : RewriteTypeEnv) : PathExprV3 → Except String (Name × Name)
+  | .var name =>
+      match env.pathVars.get? name with
+      | some endpoints => pure endpoints
+      | none => throw s!"unbound path variable `{name}`"
+  | .reflexive entity =>
+      if env.objectVars.contains entity then pure (entity, entity)
+      else throw s!"unbound object variable `{entity}`"
+  | .step src relation dst => do
+      let declaration ← index.relationDecl relation
+      let some (sourceRole, targetRole) := relationCarrierPair? declaration
+        | throw s!"relation `{relation}` does not expose a compiled carrier pair"
+      let some sourceType := env.objectVars.get? src
+        | throw s!"unbound object variable `{src}`"
+      let some targetType := env.objectVars.get? dst
+        | throw s!"unbound object variable `{dst}`"
+      if !index.isSubtype sourceType sourceRole.ty.referencedName then
+        throw s!"`{src}` has type `{sourceType}`, expected subtype of `{sourceRole.ty.referencedName}`"
+      if !index.isSubtype targetType targetRole.ty.referencedName then
+        throw s!"`{dst}` has type `{targetType}`, expected subtype of `{targetRole.ty.referencedName}`"
+      pure (src, dst)
+  | .trans left right => do
+      let (a, b) ← inferRewriteEndpoints index env left
+      let (c, d) ← inferRewriteEndpoints index env right
+      if b != c then
+        throw s!"cannot compose paths because the left path ends at `{b}` and the right path starts at `{c}`"
+      pure (a, d)
+  | .inv path => do
+      let (a, b) ← inferRewriteEndpoints index env path
+      pure (b, a)
+
+def validateRewriteRule
+    (theoryName : Name) (index : SchemaIndex) (rule : RewriteRuleV1) : Except String Unit := do
+  let mut env : RewriteTypeEnv := {}
+  let mut seenVariableNames : Std.HashSet Name := {}
+  let mut pendingPathVars : Array (Name × Name × Name) := #[]
+  for rewriteVar in rule.vars do
+    if seenVariableNames.contains rewriteVar.name then
+      throw s!"theory `{theoryName}` rewrite rule `{rule.name}` declares duplicate variable `{rewriteVar.name}`"
+    seenVariableNames := seenVariableNames.insert rewriteVar.name
+    match rewriteVar.ty with
+    | .object ty =>
+        if !index.objectTypes.contains ty then
+          throw s!"theory `{theoryName}` rewrite rule `{rule.name}` references unknown object type `{ty}` for variable `{rewriteVar.name}`"
+        env := { env with objectVars := env.objectVars.insert rewriteVar.name ty }
+    | .path src dst =>
+        pendingPathVars := pendingPathVars.push (rewriteVar.name, src, dst)
+  for (pathVar, src, dst) in pendingPathVars do
+    if !env.objectVars.contains src then
+      throw s!"theory `{theoryName}` rewrite rule `{rule.name}` path variable `{pathVar}` references unknown endpoint `{src}`"
+    if !env.objectVars.contains dst then
+      throw s!"theory `{theoryName}` rewrite rule `{rule.name}` path variable `{pathVar}` references unknown endpoint `{dst}`"
+    env := { env with pathVars := env.pathVars.insert pathVar (src, dst) }
+  let lhsEndpoints ← inferRewriteEndpoints index env rule.lhs
+  let rhsEndpoints ← inferRewriteEndpoints index env rule.rhs
+  if lhsEndpoints != rhsEndpoints then
+    throw s!"theory `{theoryName}` rewrite rule `{rule.name}` has mismatched endpoints"
+
+def validateUniqueConstraintFields
+    (context : String) (fields : Array Name) : Except String Unit := do
+  let mut seen : Std.HashSet Name := {}
+  for field in fields do
+    if seen.contains field then
+      throw s!"{context} repeats field `{field}`"
+    seen := seen.insert field
+
+def validateConstraint
+    (theoryName : Name) (index : SchemaIndex) : ConstraintV1 → Except String Unit
+  | .functional relation srcField dstField => do
+      let _ ← index.fieldDecl relation srcField
+      let _ ← index.fieldDecl relation dstField
+  | .atMost relation srcField dstField _ params => do
+      let _ ← index.fieldDecl relation srcField
+      let _ ← index.fieldDecl relation dstField
+      let parameters := params.getD #[]
+      validateUniqueConstraintFields s!"theory `{theoryName}` at_most constraint on relation `{relation}`" parameters
+      for parameter in parameters do
+        let _ ← index.fieldDecl relation parameter
+  | .typing relation rule => do
+      let _ ← index.relationDecl relation
+      if rule.trimAscii.toString.isEmpty then
+        throw s!"theory `{theoryName}` typing constraint on relation `{relation}` has an empty rule name"
+  | .symmetricWhereIn relation field values carriers params => do
+      let _ ← index.fieldDecl relation field
+      if values.isEmpty then
+        throw s!"theory `{theoryName}` symmetric-where-in constraint on relation `{relation}` must list at least one value"
+      match carriers with
+      | some pair =>
+          if pair.leftField == pair.rightField then
+            throw s!"theory `{theoryName}` symmetric where-in constraint on relation `{relation}` must name distinct carrier fields"
+          let _ ← index.fieldDecl relation pair.leftField
+          let _ ← index.fieldDecl relation pair.rightField
+      | none => pure ()
+      let parameters := params.getD #[]
+      validateUniqueConstraintFields s!"theory `{theoryName}` symmetric where-in constraint on relation `{relation}`" parameters
+      for parameter in parameters do
+        let _ ← index.fieldDecl relation parameter
+  | .symmetric relation carriers params | .transitive relation carriers params => do
+      let _ ← index.relationDecl relation
+      match carriers with
+      | some pair =>
+          if pair.leftField == pair.rightField then
+            throw s!"theory `{theoryName}` closure constraint on relation `{relation}` must name distinct carrier fields"
+          let _ ← index.fieldDecl relation pair.leftField
+          let _ ← index.fieldDecl relation pair.rightField
+      | none => pure ()
+      let parameters := params.getD #[]
+      validateUniqueConstraintFields s!"theory `{theoryName}` closure constraint on relation `{relation}`" parameters
+      for parameter in parameters do
+        let _ ← index.fieldDecl relation parameter
+  | .key relation fields => do
+      let _ ← index.relationDecl relation
+      if fields.isEmpty then
+        throw s!"theory `{theoryName}` key constraint on relation `{relation}` must name at least one field"
+      validateUniqueConstraintFields s!"theory `{theoryName}` key constraint on relation `{relation}`" fields
+      for field in fields do
+        let _ ← index.fieldDecl relation field
+  | .namedBlock name body =>
+      if name.trimAscii.toString.isEmpty then
+        throw s!"theory `{theoryName}` has a named constraint block with an empty name"
+      else if body.all (fun line => line.trimAscii.toString.isEmpty) then
+        throw s!"theory `{theoryName}` named constraint block `{name}` must not be empty"
+      else pure ()
+  | .unknown text =>
+      if text.trimAscii.toString.isEmpty then
+        throw s!"theory `{theoryName}` contains an empty unknown constraint"
+      else pure ()
 
 inductive AssignmentKind where
   | object
@@ -386,9 +565,72 @@ def typecheckInstance
 
   pure ()
 
-def looksLikeUnsupportedFreePathVariable (source : String) : Bool :=
-  let text := source.trimAscii.toString
-  !text.isEmpty && text.toList.all (fun c => c.isAlphanum || c == '_')
+structure EquationTypeEnv where
+  objectVars : Std.HashMap Name Name := {}
+
+structure EquationEndpointInference where
+  env : EquationTypeEnv
+  source : Name
+  target : Name
+
+
+def unifyEquationValueRequirement
+    (index : SchemaIndex) (env : EquationTypeEnv) (variableName expectedType : Name) :
+    Except String EquationTypeEnv := do
+  if !index.isValueType expectedType then
+    throw s!"unknown value type `{expectedType}` in schema"
+  match env.objectVars.get? variableName with
+  | none => pure { env with objectVars := env.objectVars.insert variableName expectedType }
+  | some existing =>
+      if existing == expectedType then
+        pure env
+      else if index.isSubtype expectedType existing then
+        pure { env with objectVars := env.objectVars.insert variableName expectedType }
+      else if index.isSubtype existing expectedType then
+        pure env
+      else
+        throw s!"variable `{variableName}` is required to have incompatible object types `{existing}` and `{expectedType}`"
+
+partial def inferEquationEndpoints
+    (index : SchemaIndex) (env : EquationTypeEnv) : PathExprV3 →
+    Except String EquationEndpointInference
+  | .var name =>
+      throw s!"free path variable `{name}` is not yet supported in runtime-checked path equations"
+  | .reflexive entity =>
+      pure { env, source := entity, target := entity }
+  | .step src relation dst => do
+      let declaration ← index.relationDecl relation
+      let some (sourceRole, targetRole) := relationCarrierPair? declaration
+        | throw s!"relation `{relation}` does not expose a compiled carrier pair"
+      let env ← unifyEquationValueRequirement index env src sourceRole.ty.referencedName
+      let env ← unifyEquationValueRequirement index env dst targetRole.ty.referencedName
+      pure { env, source := src, target := dst }
+  | .trans left right => do
+      let leftResult ← inferEquationEndpoints index env left
+      let rightResult ← inferEquationEndpoints index leftResult.env right
+      if leftResult.target != rightResult.source then
+        throw s!"cannot compose paths because the left path ends at `{leftResult.target}` and the right path starts at `{rightResult.source}`"
+      pure { env := rightResult.env, source := leftResult.source, target := rightResult.target }
+  | .inv path => do
+      let result ← inferEquationEndpoints index env path
+      pure { env := result.env, source := result.target, target := result.source }
+
+
+def validateEquation
+    (theoryName : Name) (index : SchemaIndex) (equation : EquationV1) : Except String Unit := do
+  if equation.lhs.trimAscii.toString.isEmpty || equation.rhs.trimAscii.toString.isEmpty then
+    throw s!"theory `{theoryName}` equation `{equation.name}` must have non-empty lhs and rhs"
+  match parsePathExprV3FromString equation.lhs, parsePathExprV3FromString equation.rhs with
+  | .ok lhs, .ok rhs =>
+      let lhsResult ←
+        inferEquationEndpoints index {} lhs |>.mapError (fun message =>
+          s!"theory `{theoryName}` equation `{equation.name}` lhs ill-typed: {message}")
+      let rhsResult ←
+        inferEquationEndpoints index lhsResult.env rhs |>.mapError (fun message =>
+          s!"theory `{theoryName}` equation `{equation.name}` rhs ill-typed: {message}")
+      if lhsResult.source != rhsResult.source || lhsResult.target != rhsResult.target then
+        throw s!"theory `{theoryName}` equation `{equation.name}` has mismatched path endpoints lhs=Path({lhsResult.source},{lhsResult.target}) rhs=Path({rhsResult.source},{rhsResult.target})"
+  | _, _ => pure ()
 
 def typecheckModule (m : Axiograph.Axi.AxiV1.AxiV1Module) : Except String TypeCheckSummaryV1 := do
   let mut schemas : Std.HashMap Name SchemaIndex := {}
@@ -403,11 +645,22 @@ def typecheckModule (m : Axiograph.Axi.AxiV1.AxiV1Module) : Except String TypeCh
       throw s!"theory `{theory.name}` references unknown schema `{theory.schema}`"
     if theories.contains (theory.schema, theory.name) then
       throw s!"duplicate theory `{theory.name}` on schema `{theory.schema}`"
+    let some index := schemas.get? theory.schema
+      | throw s!"theory `{theory.name}` references unknown schema `{theory.schema}`"
+    let mut equationNames : Std.HashSet Name := {}
     for equation in theory.equations do
-      if equation.lhs.trimAscii.toString.isEmpty || equation.rhs.trimAscii.toString.isEmpty then
-        throw s!"theory `{theory.name}` equation `{equation.name}` must have non-empty sides"
-      if looksLikeUnsupportedFreePathVariable equation.lhs && looksLikeUnsupportedFreePathVariable equation.rhs then
-        throw s!"theory `{theory.name}` equation `{equation.name}` uses unsupported free path variables"
+      if equationNames.contains equation.name then
+        throw s!"theory `{theory.name}` declares duplicate equation `{equation.name}`"
+      equationNames := equationNames.insert equation.name
+      validateEquation theory.name index equation
+    let mut rewriteNames : Std.HashSet Name := {}
+    for rule in theory.rewriteRules do
+      if rewriteNames.contains rule.name then
+        throw s!"theory `{theory.name}` declares duplicate rewrite rule `{rule.name}`"
+      rewriteNames := rewriteNames.insert rule.name
+      validateRewriteRule theory.name index rule
+    for constraint in theory.constraints do
+      validateConstraint theory.name index constraint
     theories := theories.insert (theory.schema, theory.name)
 
   let mut instances : Std.HashSet (Name × Name) := {}

@@ -367,12 +367,19 @@ pub fn validate_embeddings_file_v1(file: &EmbeddingsFileV1) -> Result<()> {
                 item.vector.len()
             ));
         }
-        for (component_idx, component) in item.vector.iter().enumerate() {
+        let mut norm2 = 0.0f64;
+        for (component_idx, component) in item.vector.iter().copied().enumerate() {
             if !component.is_finite() {
                 return Err(anyhow!(
                     "embeddings file item at index {idx} has non-finite vector component at {component_idx}"
                 ));
             }
+            norm2 += f64::from(component) * f64::from(component);
+        }
+        if !norm2.is_finite() || norm2 <= 0.0 {
+            return Err(anyhow!(
+                "embeddings file item at index {idx} must have a finite non-zero vector norm"
+            ));
         }
         if let Some(text_digest) = &item.text_digest {
             ensure_non_empty(
@@ -1348,39 +1355,45 @@ pub fn decode_embeddings_file_v1(bytes: &[u8]) -> Result<EmbeddingsFileV1> {
 
 #[derive(Debug, Clone)]
 pub struct ResolvedEmbeddingRowV1 {
-    pub id: u32,
-    pub vector: Vec<f32>,
+    pub(crate) id: u32,
+    pub(crate) vector: Vec<f32>,
     #[allow(dead_code)]
-    pub text_digest: Option<String>,
+    pub(crate) text_digest: Option<String>,
 }
 
 #[derive(Debug, Clone)]
 pub struct ResolvedEmbeddingsTargetV1 {
-    pub backend: String,
-    pub model: String,
-    pub dim: usize,
-    pub rows: Vec<ResolvedEmbeddingRowV1>,
+    pub(crate) backend: String,
+    pub(crate) model: String,
+    pub(crate) dim: usize,
+    pub(crate) rows: Vec<ResolvedEmbeddingRowV1>,
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct ResolvedEmbeddingsIndexV1 {
     db_token: Option<DbToken>,
-    pub docchunks: Option<ResolvedEmbeddingsTargetV1>,
-    pub entities: Option<ResolvedEmbeddingsTargetV1>,
+    pub(crate) docchunks: Option<ResolvedEmbeddingsTargetV1>,
+    pub(crate) entities: Option<ResolvedEmbeddingsTargetV1>,
 }
 
-fn normalize_in_place(v: &mut [f32]) {
-    let mut norm2 = 0.0f32;
-    for x in v.iter() {
-        norm2 += x * x;
+fn normalize_in_place(v: &mut [f32]) -> Result<()> {
+    let mut norm2 = 0.0f64;
+    for (index, component) in v.iter().copied().enumerate() {
+        if !component.is_finite() {
+            return Err(anyhow!(
+                "embedding vector has non-finite component at {index}"
+            ));
+        }
+        norm2 += f64::from(component) * f64::from(component);
     }
-    if norm2 <= 0.0 {
-        return;
+    if !norm2.is_finite() || norm2 <= 0.0 {
+        return Err(anyhow!("embedding vector must have a finite non-zero norm"));
     }
-    let inv = 1.0f32 / norm2.sqrt();
-    for x in v.iter_mut() {
-        *x *= inv;
+    let inv = 1.0f64 / norm2.sqrt();
+    for component in v.iter_mut() {
+        *component = (f64::from(*component) * inv) as f32;
     }
+    Ok(())
 }
 
 impl ResolvedEmbeddingsIndexV1 {
@@ -1408,6 +1421,9 @@ impl ResolvedEmbeddingsIndexV1 {
         db: &axiograph_pathdb::PathDB,
         file: EmbeddingsFileV1,
     ) -> Result<()> {
+        // Direct Rust callers receive the same fail-closed validation as CBOR
+        // callers before any provider label or vector reaches retrieval state.
+        validate_embeddings_file_v1(&file)?;
         let token = db.db_token();
         if let Some(existing) = self.db_token {
             if existing != token {
@@ -1489,7 +1505,7 @@ impl ResolvedEmbeddingsIndexV1 {
             };
 
             let mut v = item.vector;
-            normalize_in_place(&mut v);
+            normalize_in_place(&mut v)?;
             rows.push(ResolvedEmbeddingRowV1 {
                 id,
                 vector: v,
@@ -1619,7 +1635,7 @@ mod tests {
                 metric: EmbeddingSimilarityMetricV1::Cosine,
                 score: 0.82,
                 rank: Some(1),
-                method: "ann_cosine_top_k".to_string(),
+                method: "deterministic_pairwise_cosine_test_fixture_v1".to_string(),
                 caveats: vec!["similarity is not semantic equivalence".to_string()],
             }],
             relationships: vec![EmbeddingRelationshipEvidenceV1 {
@@ -1733,6 +1749,15 @@ mod tests {
             decoded.metadata.get("note").map(|s| s.as_str()),
             Some("test")
         );
+    }
+
+    #[test]
+    fn embeddings_file_v1_rejects_zero_norm_vectors() {
+        let mut file = sample_embeddings_file_for_sidecar();
+        file.items[0].vector = vec![0.0, 0.0];
+
+        let error = validate_embeddings_file_v1(&file).expect_err("zero norm must fail closed");
+        assert!(error.to_string().contains("finite non-zero vector norm"));
     }
 
     #[test]

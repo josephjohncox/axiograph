@@ -17,6 +17,55 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
+      - name: Normalize checkout's disabled sparse settings
+        run: |
+          set -euo pipefail
+          test -d .git && test ! -L .git
+          control=.git/config.worktree
+          if [ -e "$control" ] || [ -L "$control" ]; then
+            test -f "$control" && test ! -L "$control"
+            test "$(stat -c %s "$control")" -le 128
+            keys="$(git config --file "$control" --name-only --list)"
+            expected="$(printf '%s\n' \
+              core.sparsecheckout core.sparsecheckoutcone index.sparse)"
+            test "$keys" = "$expected"
+            for key in \
+              core.sparsecheckout core.sparsecheckoutcone index.sparse; do
+              test "$(git config --file "$control" \
+                --get-all --bool "$key")" = false
+            done
+            rm -- "$control"
+            test ! -e "$control" && test ! -L "$control"
+            echo 'Removed exact disabled sparse-worktree checkout control'
+          fi
+          for key in \
+            core.sparsecheckout core.sparsecheckoutcone index.sparse; do
+            if value="$(git config --get --bool "$key")"; then
+              test "$value" = false
+            else
+              test "$?" -eq 1
+            fi
+          done
+      - name: Prepare exact no-unsafe scanner fixtures
+        timeout-minutes: 12
+        run: |
+          set -euo pipefail
+          archive='build/engineering-quality/release-roadmap/prepare-compatible-release-20260908T035930Z/tools/kani-home/kani-0.67.0-aarch64-unknown-linux-gnu.tar.gz'
+          downloaded="$RUNNER_TEMP/kani-0.67.0-aarch64-unknown-linux-gnu.tar.gz"
+          test ! -e "$downloaded" && test ! -L "$downloaded"
+          curl --proto '=https' --tlsv1.2 --fail --location \
+            --retry 3 --retry-all-errors --max-time 540 \
+            --max-filesize 137826806 --output "$downloaded" \
+            'https://github.com/model-checking/kani/releases/download/kani-0.67.0/kani-0.67.0-aarch64-unknown-linux-gnu.tar.gz'
+          test "$(stat -c %s "$downloaded")" = 137826806
+          printf '%s  %s\n' \
+            '974128f44dd43618a06d21e5fe6d9ff67188de5986fe0bc57b534b0e4639efb9' \
+            "$downloaded" | sha256sum --check --strict
+          mkdir -p "$(dirname "$archive")"
+          test ! -e "$archive" && test ! -L "$archive"
+          mv "$downloaded" "$archive"
+          python3 -m scripts.prepare_no_unsafe_ci_fixtures
+          mkdir -p build/engineering-quality/roadmap-wave-01-full-loop
       # actions/setup-node pinned to an immutable commit.
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:

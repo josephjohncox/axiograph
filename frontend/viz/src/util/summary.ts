@@ -1,8 +1,15 @@
-// @ts-nocheck
-
 import { entityTypeDisplayLabel } from "./labels";
+import type { EdgeMap, GraphNode, NodeMap } from "../types";
 
-export function makeSummaries(ctx) {
+interface SummaryContext {
+  nodeById: NodeMap;
+  outEdgesBySource: EdgeMap;
+  nodeShortLabel: (node: GraphNode | null | undefined) => string;
+  parseRelationSignatureFieldOrder: (signature: unknown) => string[] | null;
+  isTupleLike: (node: GraphNode | null | undefined) => boolean;
+}
+
+export function makeSummaries(ctx: SummaryContext) {
   const {
     nodeById,
     outEdgesBySource,
@@ -11,7 +18,7 @@ export function makeSummaries(ctx) {
     isTupleLike,
   } = ctx;
 
-  function firstOutTargetId(srcId, edgeLabel) {
+  function firstOutTargetId(srcId: number, edgeLabel: string): number | null {
     const edges = outEdgesBySource.get(srcId) || [];
     for (const e of edges) {
       if (!e || e.kind !== "relation") continue;
@@ -21,14 +28,14 @@ export function makeSummaries(ctx) {
     return null;
   }
 
-  function tupleFallbackSummary(n) {
+  function tupleFallbackSummary(n: GraphNode | null | undefined): string | null {
     if (!n || !isTupleLike(n)) return null;
 
     const rel = (n.attrs && n.attrs.axi_relation)
       ? String(n.attrs.axi_relation)
       : entityTypeDisplayLabel(n.entity_type || "Tuple");
     const order = parseRelationSignatureFieldOrder(n.attrs && n.attrs.axi_overlay_relation_signature);
-    const rank = new Map();
+    const rank = new Map<string, number>();
     if (order) {
       for (let i = 0; i < order.length; i++) rank.set(order[i], i);
     }
@@ -51,8 +58,8 @@ export function makeSummaries(ctx) {
     if (!fields.length) return rel;
 
     fields.sort((a, b) => {
-      const ra = rank.has(a.label) ? rank.get(a.label) : 10_000;
-      const rb = rank.has(b.label) ? rank.get(b.label) : 10_000;
+      const ra = rank.get(a.label) ?? 10_000;
+      const rb = rank.get(b.label) ?? 10_000;
       if (ra !== rb) return ra - rb;
       return a.label.localeCompare(b.label);
     });
@@ -61,12 +68,12 @@ export function makeSummaries(ctx) {
     return `${rel}(${parts.join(", ")})`;
   }
 
-  function factSummary(n) {
+  function factSummary(n: GraphNode | null | undefined): string | null {
     if (!n || n.kind !== "fact") return null;
 
     const rel = (n.attrs && n.attrs.axi_relation) ? String(n.attrs.axi_relation) : String(n.entity_type || "Fact");
     const order = parseRelationSignatureFieldOrder(n.attrs && n.attrs.axi_overlay_relation_signature);
-    const rank = new Map();
+    const rank = new Map<string, number>();
     if (order) {
       for (let i = 0; i < order.length; i++) rank.set(order[i], i);
     }
@@ -89,8 +96,8 @@ export function makeSummaries(ctx) {
     if (!fields.length) return rel;
 
     fields.sort((a, b) => {
-      const ra = rank.has(a.label) ? rank.get(a.label) : 10_000;
-      const rb = rank.has(b.label) ? rank.get(b.label) : 10_000;
+      const ra = rank.get(a.label) ?? 10_000;
+      const rb = rank.get(b.label) ?? 10_000;
       if (ra !== rb) return ra - rb;
       return a.label.localeCompare(b.label);
     });
@@ -99,7 +106,7 @@ export function makeSummaries(ctx) {
     return `${rel}(${parts.join(", ")})`;
   }
 
-  function morphismSummary(n) {
+  function morphismSummary(n: GraphNode | null | undefined): string | null {
     if (!n || n.kind !== "morphism") return null;
     const rel = (n.attrs && n.attrs.axi_relation) ? String(n.attrs.axi_relation) : String(n.entity_type || "Morphism");
     const fromId = firstOutTargetId(n.id, "from");
@@ -110,7 +117,7 @@ export function makeSummaries(ctx) {
     return tupleFallbackSummary(n) || rel;
   }
 
-  function homotopySummary(n) {
+  function homotopySummary(n: GraphNode | null | undefined): string | null {
     if (!n || n.kind !== "homotopy") return null;
     const rel = (n.attrs && n.attrs.axi_relation)
       ? String(n.attrs.axi_relation)
@@ -123,14 +130,14 @@ export function makeSummaries(ctx) {
     return tupleFallbackSummary(n) || rel;
   }
 
-  function shortenHash(h) {
+  function shortenHash(h: unknown): string {
     const s = String(h || "").trim();
     if (!s) return "";
     if (s.length <= 10) return s;
     return s.slice(0, 10) + "…";
   }
 
-  function shortLocator(loc) {
+  function shortLocator(loc: unknown): string {
     const s0 = String(loc || "").trim();
     if (!s0) return "";
     const s = s0.replace(/[?#].*$/, "");
@@ -139,7 +146,7 @@ export function makeSummaries(ctx) {
     return s0.length > 36 ? s0.slice(0, 36) + "…" : s0;
   }
 
-  function proposalRunSummary(n) {
+  function proposalRunSummary(n: GraphNode | null | undefined): string | null {
     if (!n || n.entity_type !== "ProposalRun") return null;
     const attrs = n.attrs || {};
     const digest = shortenHash(attrs.proposals_digest);
@@ -153,7 +160,7 @@ export function makeSummaries(ctx) {
     return tag;
   }
 
-  function documentSummary(n) {
+  function documentSummary(n: GraphNode | null | undefined): string | null {
     if (!n || n.entity_type !== "Document") return null;
     const attrs = n.attrs || {};
     const doc = shortLocator(attrs.document_id || n.name || "");
@@ -161,7 +168,7 @@ export function makeSummaries(ctx) {
     return `doc ${doc}`;
   }
 
-  function docChunkSummary(n) {
+  function docChunkSummary(n: GraphNode | null | undefined): string | null {
     if (!n || n.entity_type !== "DocChunk") return null;
     const attrs = n.attrs || {};
     const chunk = shortLocator(attrs.chunk_id || n.name || "");

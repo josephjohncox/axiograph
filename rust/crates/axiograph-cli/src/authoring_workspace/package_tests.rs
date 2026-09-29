@@ -35,6 +35,7 @@ fn authoring_workspace_package_metadata_only_is_not_a_data_import() -> Result<()
     let compiled = service.compile_source(
         service.root().join("Extension.axi"),
         "module Extension\nimport Base\n".into(),
+        &BTreeMap::new(),
     )?;
     assert_eq!(compiled.db.find_by_axi_type("Shared", "Person").len(), 0);
     assert!(compiled
@@ -122,9 +123,15 @@ fn authoring_workspace_package_imported_theory_remains_review_only() -> Result<(
 #[test]
 fn authoring_workspace_package_invalid_missing_and_cyclic_imports_stay_errors() -> Result<()> {
     let (temp, service, request) = setup(BASE, EXTENSION)?;
-    for invalid in [
-        "module Base\nimport Extension\n",
-        "module Base\nschema Shared:\n  relation Broken(from: Missing)\n",
+    for (invalid, expected_code) in [
+        (
+            "module Base\nimport Extension\n",
+            "authoring_canonical_import_failed",
+        ),
+        (
+            "module Base\nschema Shared:\n  relation Broken(from: Missing)\n",
+            "authoring_canonical_type_failed",
+        ),
     ] {
         std::fs::write(temp.path().join("Base.axi"), invalid)?;
         let report = service.execute(request.clone())?;
@@ -133,7 +140,7 @@ fn authoring_workspace_package_invalid_missing_and_cyclic_imports_stay_errors() 
         assert!(report
             .diagnostics
             .iter()
-            .any(|d| d.code == "authoring_canonical_compile_failed"));
+            .any(|diagnostic| diagnostic.code == expected_code));
         assert!(!report.promotion.protected_main_eligible);
     }
     std::fs::remove_file(temp.path().join("Base.axi"))?;

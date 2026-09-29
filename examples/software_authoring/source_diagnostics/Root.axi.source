@@ -1,0 +1,5 @@
+module Root
+import Base
+schema LocalHiring:
+  object Person
+  relation Interview(candidate: Persn)

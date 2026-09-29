@@ -31,7 +31,8 @@ use the same file, JSON, and process primitives.
 | Surface | Enforced boundary |
 | --- | --- |
 | Regular-file input | Open the final component with no-follow/reparse-point handling; verify regular-file type and size on that handle; stream at most `limit + 1` bytes. |
-| Canonical `.axi` | 4 MiB per CLI module, plus line, line-length, syntax-depth, import-count, search-entry, search-depth, and import-closure limits. |
+| No-unsafe scanner and generator input | Metadata-open with Linux `O_PATH` and no-follow. Reject special files before a data open. Upgrade only the held regular inode through the internal descriptor portal with `O_NONBLOCK`. |
+| Canonical `.axi` | 4 MiB per CLI module, plus line, line-length, syntax-depth, import-count, search-entry, search-depth, and import-closure limits. The exact parser limits and stage taxonomy are in `CANONICAL_AXI_V1_CONTRACT.md`. |
 | JSON | Call-specific byte limit, at most 128 nested containers before Serde allocation, then type-specific item/string/aggregate validation. |
 | Verified CBOR | 64 MiB envelope, explicit recursion limit 64, exact schema version, zero unknown flags, no trailing value, and type-specific collection/counter/weight limits. |
 | Protobuf descriptors | Bounded descriptor bytes, file/node/nesting counts, and bounded external `buf` execution. |
@@ -106,6 +107,21 @@ metadata-service, `.local`, or `.internal` addresses as public HTTP targets. A
 local custom proposal service should use the bounded command adapter rather
 than the public HTTP adapter.
 
+## Canonical `.axi` Parser Stages
+
+The canonical parser contract separates boundary decoding, parsing, typecheck,
+canonical formation, and certificate checking. A parser pass does not prove
+formation or type safety. A formation pass does not create a Lean proof.
+
+Rust and Lean reconstruct their ASTs from the exact UTF-8 source. The
+`--contract-ast-v1` JSON output supports tests only. It is not a trusted input,
+a digest input, or a compatibility format.
+
+The Rust direct parser limits source bytes, lines, line bytes, and delimiter
+depth. The Lean trusted loader limits source bytes. These controls are
+operational limits, not theorems. See
+[`CANONICAL_AXI_V1_CONTRACT.md`](CANONICAL_AXI_V1_CONTRACT.md).
+
 ## Deserialization And Allocation
 
 A byte limit alone is not a structural limit. Each format adds the limits its
@@ -154,15 +170,111 @@ family.
 
 ## Unsafe-Code Policy
 
-Every first-party workspace crate inherits `unsafe_code = "forbid"`. The
-checked-in Rust source contains no first-party `unsafe` block or function. Run:
+Every first-party workspace crate inherits `unsafe_code = "forbid"`.
+The lexical scanner also reads ignored, untracked, unattached, and disabled Rust source.
+It skips only six fixed ordinary directory names.
+Run this gate:
 
 ```bash
 make check-no-unsafe
 ```
 
-This is a first-party policy. It is not a claim that transitive dependencies use
-no unsafe implementation internally.
+The scanner has one narrow external ownership rule.
+`scripts/no_unsafe_external_cache_manifest_v1.json` pins two Kani 0.67.0 library caches.
+The manifest pins 10 directories and 32 files from the official ARM64 archive.
+A candidate must match every file size and SHA-256 value.
+Git and Cargo ownership always cancel the exception.
+A matching cache proves byte identity and external ownership only.
+It does not prove safety or semantic correctness.
+
+The scanner and generator use a Linux type-first file protocol.
+They first open a no-follow `O_PATH` metadata descriptor.
+They reject links and special files before a data-capable open.
+They data-open only the same held regular inode through `/proc/self/fd`.
+The data open includes `O_NONBLOCK` and an immediate identity check.
+Bounded incremental `getdents64` reads replace whole-directory materialization.
+An exact directory-byte ceiling permits an EOF probe but no additional record.
+Candidate and source aggregate sizes are charged from held metadata before data reads.
+The generator replays each held input parent before the initial data upgrade and
+replays the output parent before probe, bounded enumeration, and exclusive create.
+They fail closed with scanner- or generator-specific unsupported causes if a required
+flag, descriptor portal, bounded enumeration, or `openat2` primitive is unavailable.
+
+The offline generator reads one fixed official archive.
+It hashes that descriptor before it starts the bounded gzip and tar parser.
+It uses the same descriptor for both passes.
+It checks the complete physical stream and selected library inventory.
+Each valid physical header is charged before path, kind, and size precedence.
+GNU control names have explicit framing grammar. Supported global PAX state persists,
+and a local path overrides the global path for one ordinary member. The parser rejects
+unsupported semantic keys and sparse PAX keys instead of ignoring their effects.
+It then compares the generated object with the checked-in manifest.
+
+The generator writes only to a fixed name in a preexisting empty evidence directory.
+It probes that name before it checks other directory entries.
+It uses exclusive creation, file and directory sync, and two final name observations.
+It never replaces, renames, or deletes an output object.
+A failed post-create operation leaves a non-authoritative residue for manual inspection.
+
+Generator failures retain one primary cause and an ordered, deduplicated tuple
+of additional close or residue causes. Production-helper tests cover checked
+manifest and archive original/observation closes, archive race conversion,
+output verification close, fixed-name probe close, and parent cleanup after a
+parent-open failure. A failed close of a successfully opened fixed-name probe
+is additional `E_REGEN_OUTPUT_PROBE`, not generic `E_REGEN_CLOSE`.
+
+The no-unsafe row evidence map is a closed contract bound to the reviewed
+regression-matrix hash and a fixed map digest. Local cases bind exact method
+source, test or subtest parameters, execution level, normative row purpose,
+assertion site, stable assertion-site occurrence, and assertion arguments. A
+present `normative_cause` must occur in a pinned source argument and match an
+exact or wildcard cause in the same matrix row. The runner records repeated
+assertion calls as separate ordered observations. A recorded occurrence can
+satisfy only one predicate across the complete map; duplicate reuse rejects.
+Map generation removes predicates that repeat the same source, stimulus, and
+pinned arguments. The read-only verifier also requires malformed variants of
+actual evidence to reject. Its wrong-cause mutation disables map-digest
+enforcement, substitutes a different cause that remains normative for the same
+row, validates that map, and then requires rejection against the executed
+observation. A fabricated normative cause rejects separately. A digest mismatch
+is therefore not the semantic wrong-cause rejection. This is finite operational
+evidence. It does not prove arbitrary
+Python semantics or authenticate an otherwise exact fabricated transcript.
+TYPE-05 combines local FIFO/socket CLI and zero-target-data-open evidence with
+the pinned hosted device receipt. CHECK-03 combines local parent
+link/non-directory/escape CLI evidence with the pinned hosted mount receipt.
+The local runner does not claim privileged execution for either hosted case.
+
+The dedicated hosted capability workflow tests two Linux boundaries that need
+root-created fixtures. The workflow uses `sudo` only for one setup helper and
+one cleanup helper. It does not use `sudo` for tools, tests, or production
+CLIs. The setup helper creates one owned mode `000` character device and one
+hardened bind mount.
+
+The setup helper records the device identity before it creates the mount. It
+records the mount ID, non-root mount root, backing device, and source and target
+identities before hardening the mount. Hardening validates and carries the
+pre-mount target identity into the persisted ready state. A setup failure starts
+identity-checked rollback in mount-first order. The cleanup helper uses the same
+records. It refuses an unrecorded or replaced object. These guarantees apply to observed
+operations. They are not crash-atomic and do not apply to a future path
+identity.
+
+The production CLIs and test assertions run as the ordinary hosted-runner
+user. Setup evidence must show a real device, a real mount point, and separate
+setup and test authority. The workflow fails closed when a fixture is absent
+or differs. It does not use a privileged container or give production code
+elevated authority.
+
+A post-checkout step creates the evidence directory before toolchain setup.
+The upload-safety check is separate from the job result. It retains bounded,
+allowlisted regular logs and reports after an early failure or cleanup failure.
+It rejects links, special files, unexpected names, and oversized files. It
+never uploads fixture trees. Retained failure evidence does not become a pass,
+a semantic decision, or release authority.
+
+This policy does not make a transitive dependency safe.
+It does not exempt a changed, extra, ambiguous, linked, tracked, or workspace-owned Rust file.
 
 ## Operator Obligations
 

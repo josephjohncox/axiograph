@@ -1456,7 +1456,8 @@ fn render_quasi_rag_preview(
     options: ToolLoopOptions,
 ) -> String {
     // Treat the tool loop as a quasi-RAG system:
-    // - do deterministic retrieval first (token-hash ANN; optionally embeddings),
+    // - do deterministic retrieval first (exhaustive token-hash ranking, with
+    //   optional exhaustive scoring of snapshot-scoped model embeddings),
     // - keep the prompt compact,
     // - and let the model call tools for deeper inspection.
     let query = truncate_preview(question, 420);
@@ -2831,6 +2832,13 @@ instance FamilyInst of Family:
         )
         .expect("semantic_search");
 
+        assert_eq!(
+            out["version"].as_str(),
+            Some(super::SEMANTIC_SEARCH_RESPONSE_VERSION_V2)
+        );
+        assert_eq!(out["authority"].as_str(), Some("evidence_only"));
+        assert_eq!(out["methods"]["ann_used"].as_bool(), Some(false));
+
         let entities = out["entity_hits"].as_array().expect("entity_hits array");
         assert!(
             entities
@@ -2838,6 +2846,13 @@ instance FamilyInst of Family:
                 .any(|e| e["entity"]["name"].as_str() == Some("Alice")),
             "expected Alice in entity_hits: {out}"
         );
+        assert!(entities.iter().all(|hit| {
+            hit["scores"]["token"]["method"].as_str()
+                == Some("normalized_token_hash_dot_exhaustive_v1")
+                && hit["scores"]["embedding"].is_null()
+                && hit.get("similarity").is_none()
+                && hit.get("similarity_ollama").is_none()
+        }));
 
         let chunks = out["chunk_hits"].as_array().expect("chunk_hits array");
         assert!(
@@ -2846,6 +2861,296 @@ instance FamilyInst of Family:
                 .any(|c| c["chunk_id"].as_str() == Some("chunk_0")),
             "expected chunk_0 in chunk_hits: {out}"
         );
+    }
+
+    #[test]
+    fn semantic_search_rejects_query_without_a_normalized_token_vector() {
+        let mut db = axiograph_pathdb::PathDB::new();
+        db.add_entity("Person", vec![("name", "Alice")]);
+        db.build_indexes();
+
+        let error = super::tool_semantic_search(
+            &db,
+            &json!({"query": "!!!", "entity_limit": 1, "chunk_limit": 1}),
+            "semantic_search_zero_norm_token_query",
+            super::ToolLoopOptions::default(),
+            None,
+            None,
+        )
+        .expect_err("a tokenless nonempty query must fail before score serialization");
+        assert!(error
+            .to_string()
+            .contains("query must produce a finite non-zero token-hash vector"));
+    }
+
+    #[test]
+    fn semantic_search_v2_rejects_legacy_and_malformed_score_ambiguity() {
+        let mut db = axiograph_pathdb::PathDB::new();
+        db.add_entity("Person", vec![("name", "Alice")]);
+        db.build_indexes();
+        let output = super::tool_semantic_search(
+            &db,
+            &json!({"query": "alice", "entity_limit": 1, "chunk_limit": 1}),
+            "semantic_search_v2_strict_wire",
+            super::ToolLoopOptions::default(),
+            None,
+            None,
+        )
+        .expect("semantic search output");
+        serde_json::from_value::<super::SemanticSearchResponseV2>(output.clone())
+            .expect("current response must satisfy the typed v2 wire contract");
+
+        let mut legacy_version = output.clone();
+        legacy_version["version"] = json!("axiograph_semantic_search_response_v1");
+        assert!(serde_json::from_value::<super::SemanticSearchResponseV2>(legacy_version).is_err());
+
+        let mut legacy_score = output.clone();
+        legacy_score["entity_hits"][0]["similarity_ollama"] = json!(0.9);
+        assert!(serde_json::from_value::<super::SemanticSearchResponseV2>(legacy_score).is_err());
+
+        let mut unknown_method = output.clone();
+        unknown_method["entity_hits"][0]["scores"]["fusion"]["method"] =
+            json!("provider_similarity");
+        assert!(serde_json::from_value::<super::SemanticSearchResponseV2>(unknown_method).is_err());
+
+        let mut token_uses_fusion_method = output.clone();
+        token_uses_fusion_method["entity_hits"][0]["scores"]["token"]["method"] =
+            json!("max_available_fusion_v1");
+        assert!(serde_json::from_value::<super::SemanticSearchResponseV2>(
+            token_uses_fusion_method
+        )
+        .is_err());
+
+        let mut fusion_uses_token_method = output.clone();
+        fusion_uses_token_method["entity_hits"][0]["scores"]["fusion"]["method"] =
+            json!("normalized_token_hash_dot_exhaustive_v1");
+        assert!(serde_json::from_value::<super::SemanticSearchResponseV2>(
+            fusion_uses_token_method
+        )
+        .is_err());
+
+        let mut embedding_uses_token_method = output.clone();
+        embedding_uses_token_method["entity_hits"][0]["scores"]["embedding"] = json!({
+            "value": 0.5,
+            "method": "normalized_token_hash_dot_exhaustive_v1",
+            "source": {"backend": "openai", "model": "fixture"}
+        });
+        assert!(serde_json::from_value::<super::SemanticSearchResponseV2>(
+            embedding_uses_token_method
+        )
+        .is_err());
+
+        let mut contradictory_scan = output.clone();
+        contradictory_scan["methods"]["token"] = contradictory_scan["methods"]["embedding"].clone();
+        assert!(
+            serde_json::from_value::<super::SemanticSearchResponseV2>(contradictory_scan).is_err()
+        );
+
+        let mut ann_claim = output.clone();
+        ann_claim["methods"]["ann_used"] = json!(true);
+        assert!(serde_json::from_value::<super::SemanticSearchResponseV2>(ann_claim).is_err());
+
+        let mut elevated_authority = output;
+        elevated_authority["authority"] = json!("accepted");
+        assert!(
+            serde_json::from_value::<super::SemanticSearchResponseV2>(elevated_authority).is_err()
+        );
+    }
+
+    #[cfg(all(feature = "llm-ollama", feature = "llm-openai"))]
+    #[test]
+    fn semantic_search_provider_sources_are_neutral_and_ties_are_deterministic() {
+        use crate::embeddings::{
+            EmbeddingItemV1, EmbeddingKeyV1, EmbeddingTargetKindV1, EmbeddingsFileV1,
+            ResolvedEmbeddingsIndexV1, EMBEDDINGS_FILE_VERSION_V1,
+        };
+        use std::collections::HashMap;
+
+        let mut db = axiograph_pathdb::PathDB::new();
+        let alice = db.add_entity("Person", vec![("name", "Alice")]);
+        let bob = db.add_entity("Person", vec![("name", "Bob")]);
+        let chunk_a = db.add_entity(
+            "DocChunk",
+            vec![("chunk_id", "chunk_a"), ("text", "alpha evidence")],
+        );
+        let chunk_b = db.add_entity(
+            "DocChunk",
+            vec![("chunk_id", "chunk_b"), ("text", "beta evidence")],
+        );
+        let chunk_without_token_terms = db.add_entity(
+            "DocChunk",
+            vec![("chunk_id", "chunk_without_token_terms"), ("text", "!!!")],
+        );
+        db.build_indexes();
+
+        let file = |backend: &str, target, items| EmbeddingsFileV1 {
+            version: EMBEDDINGS_FILE_VERSION_V1.to_string(),
+            created_at_unix_secs: 1,
+            backend: backend.to_string(),
+            model: format!("{backend}-test-model"),
+            dim: 2,
+            target,
+            items,
+            metadata: HashMap::new(),
+        };
+        let mut index = ResolvedEmbeddingsIndexV1::default();
+        index
+            .resolve_and_set(
+                &db,
+                file(
+                    "openai",
+                    EmbeddingTargetKindV1::Entities,
+                    vec![
+                        EmbeddingItemV1 {
+                            key: EmbeddingKeyV1::Entity {
+                                entity_type: "Person".to_string(),
+                                name: "Alice".to_string(),
+                            },
+                            vector: vec![0.0, 1.0],
+                            text_digest: None,
+                        },
+                        EmbeddingItemV1 {
+                            key: EmbeddingKeyV1::Entity {
+                                entity_type: "Person".to_string(),
+                                name: "Bob".to_string(),
+                            },
+                            vector: vec![1.0, 0.0],
+                            text_digest: None,
+                        },
+                    ],
+                ),
+            )
+            .expect("resolve OpenAI entity vectors");
+        index
+            .resolve_and_set(
+                &db,
+                file(
+                    "ollama",
+                    EmbeddingTargetKindV1::DocChunks,
+                    vec![
+                        EmbeddingItemV1 {
+                            key: EmbeddingKeyV1::DocChunk {
+                                chunk_id: "chunk_a".to_string(),
+                            },
+                            vector: vec![1.0, 0.0],
+                            text_digest: None,
+                        },
+                        EmbeddingItemV1 {
+                            key: EmbeddingKeyV1::DocChunk {
+                                chunk_id: "chunk_b".to_string(),
+                            },
+                            vector: vec![1.0, 0.0],
+                            text_digest: None,
+                        },
+                        EmbeddingItemV1 {
+                            key: EmbeddingKeyV1::DocChunk {
+                                chunk_id: "chunk_without_token_terms".to_string(),
+                            },
+                            vector: vec![1.0, 0.0],
+                            text_digest: None,
+                        },
+                    ],
+                ),
+            )
+            .expect("resolve Ollama chunk vectors");
+
+        let output = super::tool_semantic_search_with_embedder(
+            &db,
+            &json!({"query": "unseen-token", "entity_limit": 2, "chunk_limit": 2}),
+            "semantic_search_provider_neutral_ties",
+            super::ToolLoopOptions::default(),
+            Some(&index),
+            Some("http://127.0.0.1:1"),
+            |backend, host, model, texts, _timeout| {
+                assert!(matches!(backend, "openai" | "ollama"));
+                assert_eq!(host.is_some(), backend == "ollama");
+                assert_eq!(model, format!("{backend}-test-model"));
+                assert_eq!(texts, &["unseen-token".to_string()]);
+                Ok(vec![vec![1.0, 0.0]])
+            },
+        )
+        .expect("provider-neutral semantic search without a live credential or request");
+
+        let entities = output["entity_hits"].as_array().expect("entity hits");
+        assert_eq!(entities.len(), 2);
+        assert_eq!(entities[0]["entity"]["id"].as_u64(), Some(bob as u64));
+        assert_eq!(entities[1]["entity"]["id"].as_u64(), Some(alice as u64));
+        for hit in entities {
+            assert_eq!(
+                hit["scores"]["embedding"]["source"]["backend"].as_str(),
+                Some("openai")
+            );
+            assert_eq!(
+                hit["scores"]["embedding"]["method"].as_str(),
+                Some("normalized_embedding_cosine_exhaustive_v1")
+            );
+            assert!(hit.get("similarity_ollama").is_none());
+        }
+
+        let chunks = output["chunk_hits"].as_array().expect("chunk hits");
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0]["id"].as_u64(), Some(chunk_a as u64));
+        assert_eq!(chunks[1]["id"].as_u64(), Some(chunk_b as u64));
+        assert!(chunks.iter().all(|hit| {
+            hit["scores"]["embedding"]["source"]["backend"].as_str() == Some("ollama")
+        }));
+        assert_eq!(output["methods"]["ann_used"].as_bool(), Some(false));
+        assert_eq!(output["authority"].as_str(), Some("evidence_only"));
+
+        let bounded = super::tool_semantic_search_with_embedder(
+            &db,
+            &json!({"query": "unseen-token", "entity_limit": 1, "chunk_limit": 3}),
+            "semantic_search_complete_components",
+            super::ToolLoopOptions::default(),
+            Some(&index),
+            Some("http://127.0.0.1:1"),
+            |_backend, _host, _model, _texts, _timeout| Ok(vec![vec![1.0, 0.0]]),
+        )
+        .expect("bounded union result");
+        let hit = &bounded["entity_hits"][0];
+        assert_eq!(hit["entity"]["id"].as_u64(), Some(bob as u64));
+        assert!(hit["scores"]["token"].is_object());
+        assert!(hit["scores"]["embedding"].is_object());
+
+        let unscored_token_hit = bounded["chunk_hits"]
+            .as_array()
+            .expect("chunk hits")
+            .iter()
+            .find(|hit| hit["id"].as_u64() == Some(chunk_without_token_terms as u64))
+            .expect("embedding-scored chunk without token terms");
+        assert!(unscored_token_hit["scores"]["token"].is_null());
+        assert!(unscored_token_hit["scores"]["embedding"].is_object());
+
+        let zero_query_error = super::tool_semantic_search_with_embedder(
+            &db,
+            &json!({"query": "unseen-token", "entity_limit": 1, "chunk_limit": 1}),
+            "semantic_search_zero_norm_provider_vector",
+            super::ToolLoopOptions::default(),
+            Some(&index),
+            Some("http://127.0.0.1:1"),
+            |_backend, _host, _model, _texts, _timeout| Ok(vec![vec![0.0, 0.0]]),
+        )
+        .expect_err("zero-norm provider query vector must fail closed");
+        assert!(zero_query_error
+            .to_string()
+            .contains("query embedding must have a finite non-zero norm"));
+
+        index.entities.as_mut().expect("entity target").rows[0]
+            .vector
+            .fill(0.0);
+        let zero_stored_error = super::tool_semantic_search_with_embedder(
+            &db,
+            &json!({"query": "unseen-token", "entity_limit": 1, "chunk_limit": 1}),
+            "semantic_search_mutated_zero_norm_stored_vector",
+            super::ToolLoopOptions::default(),
+            Some(&index),
+            Some("http://127.0.0.1:1"),
+            |_backend, _host, _model, _texts, _timeout| Ok(vec![vec![1.0, 0.0]]),
+        )
+        .expect_err("a zero-norm stored row must fail before score serialization");
+        assert!(zero_stored_error
+            .to_string()
+            .contains("stored embedding must have a finite non-zero norm"));
     }
 
     #[test]
@@ -4834,7 +5139,7 @@ pub(crate) fn tool_loop_tools_schema(predictive_proposal_enabled: bool) -> Vec<T
         },
         ToolSpecV1 {
             name: "semantic_search".to_string(),
-            description: "Hybrid semantic-ish retrieval over the current snapshot: returns candidate entities and DocChunks relevant to a free-text query (approximate; untrusted).".to_string(),
+            description: "Advisory retrieval over the current snapshot. It exhaustively ranks normalized token-hash vectors and, when configured, snapshot-scoped provider embedding vectors; it does not use ANN or establish semantic truth.".to_string(),
             args_schema: serde_json::json!({
                 "type": "object",
                 "required": ["query"],
@@ -6760,7 +7065,7 @@ fn tool_db_summary(db: &PathDB, args: &serde_json::Value) -> Result<serde_json::
 }
 
 // ============================================================================
-// Deterministic retrieval (token-hash embeddings + exact in-memory index)
+// Deterministic retrieval (token-hash vectors + exact exhaustive scan)
 // ============================================================================
 
 const TOKEN_HASH_DIM: usize = 128;
@@ -6778,7 +7083,7 @@ fn token_hash_v2(s: &str) -> Result<u64> {
         .map_err(|error| anyhow!("AXIOGRAPH-ID digest prefix is not hexadecimal: {error}"))
 }
 
-fn token_hash_embed_text(text: &str) -> Result<[f32; TOKEN_HASH_DIM]> {
+fn token_hash_embed_text(text: &str) -> Result<Option<[f32; TOKEN_HASH_DIM]>> {
     let tokens = axiograph_pathdb::tokenize_fts_query(text);
     let mut v = [0.0f32; TOKEN_HASH_DIM];
     for t in tokens {
@@ -6787,18 +7092,18 @@ fn token_hash_embed_text(text: &str) -> Result<[f32; TOKEN_HASH_DIM]> {
         let sign = if ((h >> 32) & 1) == 0 { 1.0 } else { -1.0 };
         v[idx] += sign;
     }
-    // Normalize.
-    let mut norm2 = 0.0f32;
-    for x in v {
-        norm2 += x * x;
+    let norm2 = v.iter().map(|component| component * component).sum::<f32>();
+    if !norm2.is_finite() {
+        return Err(anyhow!("token-hash vector norm must be finite"));
     }
-    if norm2 > 0.0 {
-        let inv = 1.0f32 / norm2.sqrt();
-        for x in v.iter_mut() {
-            *x *= inv;
-        }
+    if norm2 <= 0.0 {
+        return Ok(None);
     }
-    Ok(v)
+    let inv = 1.0f32 / norm2.sqrt();
+    for component in &mut v {
+        *component *= inv;
+    }
+    Ok(Some(v))
 }
 
 fn token_hash_dot(a: &[f32; TOKEN_HASH_DIM], b: &[f32; TOKEN_HASH_DIM]) -> f32 {
@@ -6909,8 +7214,11 @@ fn get_or_build_token_hash_exact_index(
         let Some(text) = build_entity_graph_text_for_token_hash(db, id) else {
             continue;
         };
+        let Some(vector) = token_hash_embed_text(&text)? else {
+            continue;
+        };
         entity_ids.push(id);
-        entity_vecs.push(token_hash_embed_text(&text)?);
+        entity_vecs.push(vector);
     }
     let entities = build_exact_index(entity_ids, entity_vecs);
 
@@ -6921,8 +7229,11 @@ fn get_or_build_token_hash_exact_index(
             let Some(text) = build_docchunk_text_for_token_hash(db, id) else {
                 continue;
             };
+            let Some(vector) = token_hash_embed_text(&text)? else {
+                continue;
+            };
             ids.push(id);
-            vectors.push(token_hash_embed_text(&text)?);
+            vectors.push(vector);
         }
         (!ids.is_empty()).then(|| build_exact_index(ids, vectors))
     } else {
@@ -6943,6 +7254,196 @@ fn get_or_build_token_hash_exact_index(
     Ok(built)
 }
 
+const SEMANTIC_SEARCH_RESPONSE_VERSION_V2: &str = "axiograph_semantic_search_response_v2";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+enum SemanticSearchResponseVersionV2 {
+    #[serde(rename = "axiograph_semantic_search_response_v2")]
+    V2,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum SemanticSearchAuthorityV2 {
+    EvidenceOnly,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum SemanticSearchTokenScoreMethodV2 {
+    NormalizedTokenHashDotExhaustiveV1,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum SemanticSearchEmbeddingScoreMethodV2 {
+    NormalizedEmbeddingCosineExhaustiveV1,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum SemanticSearchFusionScoreMethodV2 {
+    MaxAvailableFusionV1,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SemanticSearchTokenScoreV2 {
+    value: f32,
+    method: SemanticSearchTokenScoreMethodV2,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SemanticSearchFusionScoreV2 {
+    value: f32,
+    method: SemanticSearchFusionScoreMethodV2,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SemanticSearchEmbeddingSourceV2 {
+    backend: String,
+    model: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SemanticSearchEmbeddingScoreV2 {
+    value: f32,
+    method: SemanticSearchEmbeddingScoreMethodV2,
+    source: SemanticSearchEmbeddingSourceV2,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SemanticSearchScoresV2 {
+    fusion: SemanticSearchFusionScoreV2,
+    token: Option<SemanticSearchTokenScoreV2>,
+    embedding: Option<SemanticSearchEmbeddingScoreV2>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SemanticSearchEntityHitV2 {
+    entity: EntityViewV1,
+    scores: SemanticSearchScoresV2,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SemanticSearchChunkHitV2 {
+    id: u32,
+    chunk_id: String,
+    document_id: String,
+    span_id: String,
+    snippet: String,
+    scores: SemanticSearchScoresV2,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+enum SemanticSearchTokenScanV2 {
+    #[serde(rename = "normalized token-hash dot score over an exhaustive snapshot-local scan")]
+    ExhaustiveSnapshotLocal,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+enum SemanticSearchEmbeddingScanV2 {
+    #[serde(rename = "Axiograph-local cosine score over an exhaustive snapshot-local scan")]
+    ExhaustiveSnapshotLocal,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+enum SemanticSearchFusionV2 {
+    #[serde(rename = "maximum available token or embedding score; scores are not calibrated")]
+    MaxAvailableUncalibrated,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "bool", into = "bool")]
+struct SemanticSearchAnnNotUsedV2;
+
+impl TryFrom<bool> for SemanticSearchAnnNotUsedV2 {
+    type Error = &'static str;
+
+    fn try_from(value: bool) -> std::result::Result<Self, Self::Error> {
+        if value {
+            Err("semantic search V2 requires ann_used=false")
+        } else {
+            Ok(Self)
+        }
+    }
+}
+
+impl From<SemanticSearchAnnNotUsedV2> for bool {
+    fn from(_: SemanticSearchAnnNotUsedV2) -> Self {
+        false
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SemanticSearchMethodsV2 {
+    token: SemanticSearchTokenScanV2,
+    embedding: SemanticSearchEmbeddingScanV2,
+    fusion: SemanticSearchFusionV2,
+    ann_used: SemanticSearchAnnNotUsedV2,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SemanticSearchResponseV2 {
+    version: SemanticSearchResponseVersionV2,
+    query: String,
+    methods: SemanticSearchMethodsV2,
+    authority: SemanticSearchAuthorityV2,
+    entity_hits: Vec<SemanticSearchEntityHitV2>,
+    chunk_hits: Vec<SemanticSearchChunkHitV2>,
+    notes: Vec<String>,
+    note: String,
+}
+
+fn semantic_search_scores_v2(
+    fusion: f32,
+    token: Option<f32>,
+    embedding: Option<f32>,
+    embedding_source: Option<&SemanticSearchEmbeddingSourceV2>,
+) -> Result<SemanticSearchScoresV2> {
+    for (field, value) in [
+        ("fusion", Some(fusion)),
+        ("token", token),
+        ("embedding", embedding),
+    ] {
+        if value.is_some_and(|score| !score.is_finite()) {
+            return Err(anyhow!("semantic_search: {field} score must be finite"));
+        }
+    }
+    let embedding = match (embedding, embedding_source) {
+        (Some(value), Some(source)) => Some(SemanticSearchEmbeddingScoreV2 {
+            value,
+            method: SemanticSearchEmbeddingScoreMethodV2::NormalizedEmbeddingCosineExhaustiveV1,
+            source: source.clone(),
+        }),
+        (Some(_), None) => {
+            return Err(anyhow!(
+                "semantic_search: embedding score is missing its backend/model source"
+            ))
+        }
+        (None, _) => None,
+    };
+    Ok(SemanticSearchScoresV2 {
+        fusion: SemanticSearchFusionScoreV2 {
+            value: fusion,
+            method: SemanticSearchFusionScoreMethodV2::MaxAvailableFusionV1,
+        },
+        token: token.map(|value| SemanticSearchTokenScoreV2 {
+            value,
+            method: SemanticSearchTokenScoreMethodV2::NormalizedTokenHashDotExhaustiveV1,
+        }),
+        embedding,
+    })
+}
+
 fn tool_semantic_search(
     db: &PathDB,
     args: &serde_json::Value,
@@ -6951,6 +7452,64 @@ fn tool_semantic_search(
     embeddings: Option<&crate::embeddings::ResolvedEmbeddingsIndexV1>,
     ollama_embed_host: Option<&str>,
 ) -> Result<serde_json::Value> {
+    tool_semantic_search_with_embedder(
+        db,
+        args,
+        snapshot_key,
+        options,
+        embeddings,
+        ollama_embed_host,
+        |backend, host, model, texts, timeout| match backend {
+            "ollama" => {
+                #[cfg(feature = "llm-ollama")]
+                {
+                    let host = host
+                        .ok_or_else(|| anyhow!("ollama host not configured for this tool-loop"))?;
+                    ollama_embed_texts_with_timeout(host, model, texts, timeout)
+                }
+                #[cfg(not(feature = "llm-ollama"))]
+                {
+                    let _ = (host, model, texts, timeout);
+                    Err(anyhow!("compiled without `llm-ollama`"))
+                }
+            }
+            "openai" => {
+                #[cfg(feature = "llm-openai")]
+                {
+                    let _ = host;
+                    openai_embed_texts_with_timeout(
+                        &default_openai_base_url(),
+                        model,
+                        texts,
+                        timeout,
+                    )
+                }
+                #[cfg(not(feature = "llm-openai"))]
+                {
+                    let _ = (host, model, texts, timeout);
+                    Err(anyhow!("compiled without `llm-openai`"))
+                }
+            }
+            other => Err(anyhow!("unsupported embedding backend {other}")),
+        },
+    )
+}
+
+fn tool_semantic_search_with_embedder<F>(
+    db: &PathDB,
+    args: &serde_json::Value,
+    snapshot_key: &str,
+    options: ToolLoopOptions,
+    embeddings: Option<&crate::embeddings::ResolvedEmbeddingsIndexV1>,
+    ollama_embed_host: Option<&str>,
+    mut embed_texts: F,
+) -> Result<serde_json::Value>
+where
+    F: FnMut(&str, Option<&str>, &str, &[String], Option<Duration>) -> Result<Vec<Vec<f32>>>,
+{
+    #[cfg(not(any(feature = "llm-ollama", feature = "llm-openai")))]
+    let _ = &mut embed_texts;
+
     #[derive(Deserialize)]
     struct Args {
         query: String,
@@ -6980,8 +7539,11 @@ fn tool_semantic_search(
         "semantic_search.chunk_limit",
     )?;
 
-    // Deterministic token-hash retrieval (always-on).
-    let qv = token_hash_embed_text(query)?;
+    // Deterministic token-hash retrieval (always-on). The normalized score
+    // method is unavailable when a nonempty query produces no token vector.
+    let qv = token_hash_embed_text(query)?.ok_or_else(|| {
+        anyhow!("semantic_search: query must produce a finite non-zero token-hash vector")
+    })?;
 
     let mut det_entity_scores: Vec<(f32, u32)> = Vec::new();
     let mut det_chunk_scores: Vec<(f32, u32)> = Vec::new();
@@ -6995,24 +7557,11 @@ fn tool_semantic_search(
         let similarity = token_hash_dot(&qv, &exact.entities.vectors[index]);
         det_entity_scores.push((similarity, id));
     }
-    det_entity_scores.sort_by(|(left_score, left_id), (right_score, right_id)| {
-        right_score
-            .total_cmp(left_score)
-            .then_with(|| left_id.cmp(right_id))
-    });
-    det_entity_scores.truncate(entity_limit);
-
     if let Some(chunks) = exact.docchunks.as_ref() {
         for (index, id) in chunks.ids.iter().copied().enumerate() {
             let similarity = token_hash_dot(&qv, &chunks.vectors[index]);
             det_chunk_scores.push((similarity, id));
         }
-        det_chunk_scores.sort_by(|(left_score, left_id), (right_score, right_id)| {
-            right_score
-                .total_cmp(left_score)
-                .then_with(|| left_id.cmp(right_id))
-        });
-        det_chunk_scores.truncate(chunk_limit);
     }
 
     // Optional: model embedding retrieval (requires snapshot-scoped embeddings).
@@ -7024,33 +7573,73 @@ fn tool_semantic_search(
         if let Err(e) = idx.assert_in_db(db) {
             notes.push(format!("embeddings skipped: {e}"));
         } else {
-            fn normalize_vec(v: &mut [f32]) {
-                let mut norm2 = 0.0f32;
-                for x in v.iter() {
-                    norm2 += x * x;
+            fn normalize_query_embedding(v: &mut [f32]) -> Result<()> {
+                let mut norm2 = 0.0f64;
+                for (index, component) in v.iter().copied().enumerate() {
+                    if !component.is_finite() {
+                        return Err(anyhow!(
+                            "semantic_search: non-finite query embedding component at {index}"
+                        ));
+                    }
+                    norm2 += f64::from(component) * f64::from(component);
                 }
-                if norm2 <= 0.0 {
-                    return;
+                if !norm2.is_finite() || norm2 <= 0.0 {
+                    return Err(anyhow!(
+                        "semantic_search: query embedding must have a finite non-zero norm"
+                    ));
                 }
-                let inv = 1.0f32 / norm2.sqrt();
-                for x in v.iter_mut() {
-                    *x *= inv;
+                let inv = 1.0f64 / norm2.sqrt();
+                for component in v.iter_mut() {
+                    *component = (f64::from(*component) * inv) as f32;
                 }
+                Ok(())
             }
 
-            fn dot_vec(a: &[f32], b: &[f32]) -> f32 {
-                let mut s = 0.0f32;
-                let n = a.len().min(b.len());
-                for i in 0..n {
-                    s += a[i] * b[i];
+            fn exact_cosine_from_vectors(query: &[f32], stored: &[f32]) -> Result<f32> {
+                if query.len() != stored.len() {
+                    return Err(anyhow!(
+                        "semantic_search: embedding dimensions differ: query={} stored={}",
+                        query.len(),
+                        stored.len()
+                    ));
                 }
-                s
+                let mut dot = 0.0f64;
+                let mut query_norm2 = 0.0f64;
+                let mut stored_norm2 = 0.0f64;
+                for (index, (left, right)) in query.iter().zip(stored).enumerate() {
+                    if !left.is_finite() || !right.is_finite() {
+                        return Err(anyhow!(
+                            "semantic_search: non-finite embedding component at {index}"
+                        ));
+                    }
+                    let left = f64::from(*left);
+                    let right = f64::from(*right);
+                    dot += left * right;
+                    query_norm2 += left * left;
+                    stored_norm2 += right * right;
+                }
+                if !query_norm2.is_finite() || query_norm2 <= 0.0 {
+                    return Err(anyhow!(
+                        "semantic_search: query embedding must have a finite non-zero norm"
+                    ));
+                }
+                if !stored_norm2.is_finite() || stored_norm2 <= 0.0 {
+                    return Err(anyhow!(
+                        "semantic_search: stored embedding must have a finite non-zero norm"
+                    ));
+                }
+                let score = dot / (query_norm2.sqrt() * stored_norm2.sqrt());
+                if !score.is_finite() {
+                    return Err(anyhow!("semantic_search: non-finite embedding score"));
+                }
+                Ok((score as f32).clamp(-1.0, 1.0))
             }
 
             #[cfg(any(feature = "llm-ollama", feature = "llm-openai"))]
             let timeout = llm_timeout(None)?;
 
-            // Entities.
+            // Entities: obtain one provider vector, then exhaustively score every
+            // stored row locally. No provider supplies or names the score.
             if let Some(t) = idx.entities.as_ref() {
                 match t.backend.as_str() {
                     "ollama" => {
@@ -7058,19 +7647,17 @@ fn tool_semantic_search(
                             #[cfg(feature = "llm-ollama")]
                             {
                                 let q = vec![query.to_string()];
-                                match ollama_embed_texts_with_timeout(host, &t.model, &q, timeout) {
+                                match embed_texts("ollama", Some(host), &t.model, &q, timeout) {
                                 Ok(mut qv) if qv.len() == 1 => {
                                     let mut qv = qv.remove(0);
-                                    normalize_vec(&mut qv);
+                                    normalize_query_embedding(&mut qv)?;
                                     if qv.len() == t.dim {
                                         for row in &t.rows {
-                                            embed_entity_scores
-                                                .push((dot_vec(&qv, &row.vector), row.id));
+                                            embed_entity_scores.push((
+                                                exact_cosine_from_vectors(&qv, &row.vector)?,
+                                                row.id,
+                                            ));
                                         }
-                                        embed_entity_scores.sort_by(|(sa, ia), (sb, ib)| {
-                                            sb.total_cmp(sa).then_with(|| ia.cmp(ib))
-                                        });
-                                        embed_entity_scores.truncate(entity_limit);
                                         notes.push(format!(
                                             "embeddings: backend=ollama target=entities n={} model={}",
                                             t.rows.len(),
@@ -7109,21 +7696,18 @@ fn tool_semantic_search(
                     "openai" => {
                         #[cfg(feature = "llm-openai")]
                         {
-                            let base_url = default_openai_base_url();
                             let q = vec![query.to_string()];
-                            match openai_embed_texts_with_timeout(&base_url, &t.model, &q, timeout) {
+                            match embed_texts("openai", None, &t.model, &q, timeout) {
                             Ok(mut qv) if qv.len() == 1 => {
                                 let mut qv = qv.remove(0);
-                                normalize_vec(&mut qv);
+                                normalize_query_embedding(&mut qv)?;
                                 if qv.len() == t.dim {
                                     for row in &t.rows {
-                                        embed_entity_scores
-                                            .push((dot_vec(&qv, &row.vector), row.id));
+                                        embed_entity_scores.push((
+                                            exact_cosine_from_vectors(&qv, &row.vector)?,
+                                            row.id,
+                                        ));
                                     }
-                                    embed_entity_scores.sort_by(|(sa, ia), (sb, ib)| {
-                                        sb.total_cmp(sa).then_with(|| ia.cmp(ib))
-                                    });
-                                    embed_entity_scores.truncate(entity_limit);
                                     notes.push(format!(
                                         "embeddings: backend=openai target=entities n={} model={}",
                                         t.rows.len(),
@@ -7156,7 +7740,7 @@ fn tool_semantic_search(
                 }
             }
 
-            // DocChunks.
+            // DocChunks use the same exact local cosine scan.
             if let Some(t) = idx.docchunks.as_ref() {
                 match t.backend.as_str() {
                     "ollama" => {
@@ -7164,19 +7748,17 @@ fn tool_semantic_search(
                             #[cfg(feature = "llm-ollama")]
                             {
                                 let q = vec![query.to_string()];
-                                match ollama_embed_texts_with_timeout(host, &t.model, &q, timeout) {
+                                match embed_texts("ollama", Some(host), &t.model, &q, timeout) {
                                 Ok(mut qv) if qv.len() == 1 => {
                                     let mut qv = qv.remove(0);
-                                    normalize_vec(&mut qv);
+                                    normalize_query_embedding(&mut qv)?;
                                     if qv.len() == t.dim {
                                         for row in &t.rows {
-                                            embed_chunk_scores
-                                                .push((dot_vec(&qv, &row.vector), row.id));
+                                            embed_chunk_scores.push((
+                                                exact_cosine_from_vectors(&qv, &row.vector)?,
+                                                row.id,
+                                            ));
                                         }
-                                        embed_chunk_scores.sort_by(|(sa, ia), (sb, ib)| {
-                                            sb.total_cmp(sa).then_with(|| ia.cmp(ib))
-                                        });
-                                        embed_chunk_scores.truncate(chunk_limit);
                                         notes.push(format!(
                                             "embeddings: backend=ollama target=docchunks n={} model={}",
                                             t.rows.len(),
@@ -7215,21 +7797,18 @@ fn tool_semantic_search(
                     "openai" => {
                         #[cfg(feature = "llm-openai")]
                         {
-                            let base_url = default_openai_base_url();
                             let q = vec![query.to_string()];
-                            match openai_embed_texts_with_timeout(&base_url, &t.model, &q, timeout) {
+                            match embed_texts("openai", None, &t.model, &q, timeout) {
                             Ok(mut qv) if qv.len() == 1 => {
                                 let mut qv = qv.remove(0);
-                                normalize_vec(&mut qv);
+                                normalize_query_embedding(&mut qv)?;
                                 if qv.len() == t.dim {
                                     for row in &t.rows {
-                                        embed_chunk_scores
-                                            .push((dot_vec(&qv, &row.vector), row.id));
+                                        embed_chunk_scores.push((
+                                            exact_cosine_from_vectors(&qv, &row.vector)?,
+                                            row.id,
+                                        ));
                                     }
-                                    embed_chunk_scores.sort_by(|(sa, ia), (sb, ib)| {
-                                        sb.total_cmp(sa).then_with(|| ia.cmp(ib))
-                                    });
-                                    embed_chunk_scores.truncate(chunk_limit);
                                     notes.push(format!(
                                         "embeddings: backend=openai target=docchunks n={} model={}",
                                         t.rows.len(),
@@ -7264,97 +7843,133 @@ fn tool_semantic_search(
         }
     }
 
-    // Merge entity hits (token-hash + optional embeddings) by taking the best similarity per id.
+    // Fusion is deliberately simple: the maximum available local score. Token
+    // and embedding scores remain separate because they are not calibrated or
+    // interchangeable, even though the current fusion uses both as inputs.
+    let entity_embedding_source =
+        embeddings
+            .and_then(|index| index.entities.as_ref())
+            .map(|target| SemanticSearchEmbeddingSourceV2 {
+                backend: target.backend.clone(),
+                model: target.model.clone(),
+            });
+    let chunk_embedding_source =
+        embeddings
+            .and_then(|index| index.docchunks.as_ref())
+            .map(|target| SemanticSearchEmbeddingSourceV2 {
+                backend: target.backend.clone(),
+                model: target.model.clone(),
+            });
+
     let mut entity_scores: std::collections::HashMap<u32, (Option<f32>, Option<f32>)> =
         std::collections::HashMap::new();
-    for (sim, id) in det_entity_scores {
-        entity_scores.insert(id, (Some(sim), None));
+    for (score, id) in det_entity_scores {
+        entity_scores.insert(id, (Some(score), None));
     }
-    for (sim, id) in embed_entity_scores {
+    for (score, id) in embed_entity_scores {
         entity_scores
             .entry(id)
-            .and_modify(|e| e.1 = Some(sim))
-            .or_insert((None, Some(sim)));
+            .and_modify(|entry| entry.1 = Some(score))
+            .or_insert((None, Some(score)));
     }
 
     let mut entity_ranked: Vec<(f32, u32, Option<f32>, Option<f32>)> = Vec::new();
-    for (id, (tok, emb)) in entity_scores {
-        let combined = match (tok, emb) {
-            (Some(a), Some(b)) => a.max(b),
-            (Some(a), None) => a,
-            (None, Some(b)) => b,
+    for (id, (token, embedding)) in entity_scores {
+        let fusion = match (token, embedding) {
+            (Some(left), Some(right)) => left.max(right),
+            (Some(score), None) | (None, Some(score)) => score,
             (None, None) => continue,
         };
-        entity_ranked.push((combined, id, tok, emb));
+        entity_ranked.push((fusion, id, token, embedding));
     }
-    entity_ranked.sort_by(|a, b| b.0.total_cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
-
+    entity_ranked.sort_by(|left, right| {
+        right
+            .0
+            .total_cmp(&left.0)
+            .then_with(|| left.1.cmp(&right.1))
+    });
     let entity_hits = entity_ranked
         .into_iter()
         .take(entity_limit)
-        .map(|(sim, id, tok, emb)| {
-            serde_json::json!({
-                "entity": EntityViewV1::from_id(db, id),
-                "similarity": sim,
-                "similarity_token_hash": tok,
-                "similarity_ollama": emb
+        .map(|(fusion, id, token, embedding)| {
+            Ok(SemanticSearchEntityHitV2 {
+                entity: EntityViewV1::from_id(db, id),
+                scores: semantic_search_scores_v2(
+                    fusion,
+                    token,
+                    embedding,
+                    entity_embedding_source.as_ref(),
+                )?,
             })
         })
-        .collect::<Vec<_>>();
+        .collect::<Result<Vec<_>>>()?;
 
-    // DocChunk token-hash scores come from the deterministic ANN retrieval (and fallback scan).
-
-    // Merge chunk hits (token-hash + optional ollama embeddings) by taking the best similarity per id.
+    // DocChunk token-hash ranking is the same exhaustive scan used for entities.
     let mut chunk_scores: std::collections::HashMap<u32, (Option<f32>, Option<f32>)> =
         std::collections::HashMap::new();
-    for (sim, id) in det_chunk_scores {
-        chunk_scores.insert(id, (Some(sim), None));
+    for (score, id) in det_chunk_scores {
+        chunk_scores.insert(id, (Some(score), None));
     }
-    for (sim, id) in embed_chunk_scores {
+    for (score, id) in embed_chunk_scores {
         chunk_scores
             .entry(id)
-            .and_modify(|e| e.1 = Some(sim))
-            .or_insert((None, Some(sim)));
+            .and_modify(|entry| entry.1 = Some(score))
+            .or_insert((None, Some(score)));
     }
 
     let mut chunk_ranked: Vec<(f32, u32, Option<f32>, Option<f32>)> = Vec::new();
-    for (id, (tok, emb)) in chunk_scores {
-        let combined = match (tok, emb) {
-            (Some(a), Some(b)) => a.max(b),
-            (Some(a), None) => a,
-            (None, Some(b)) => b,
+    for (id, (token, embedding)) in chunk_scores {
+        let fusion = match (token, embedding) {
+            (Some(left), Some(right)) => left.max(right),
+            (Some(score), None) | (None, Some(score)) => score,
             (None, None) => continue,
         };
-        chunk_ranked.push((combined, id, tok, emb));
+        chunk_ranked.push((fusion, id, token, embedding));
     }
-    chunk_ranked.sort_by(|a, b| b.0.total_cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+    chunk_ranked.sort_by(|left, right| {
+        right
+            .0
+            .total_cmp(&left.0)
+            .then_with(|| left.1.cmp(&right.1))
+    });
 
-    let mut chunk_hits: Vec<serde_json::Value> = Vec::new();
-    for (sim, id, tok, emb) in chunk_ranked.into_iter().take(chunk_limit) {
+    let mut chunk_hits = Vec::new();
+    for (fusion, id, token, embedding) in chunk_ranked.into_iter().take(chunk_limit) {
         let chunk_id = db_entity_attr_string(db, id, "chunk_id").unwrap_or_else(|| id.to_string());
-        let doc = db_entity_attr_string(db, id, "document_id").unwrap_or_default();
-        let span = db_entity_attr_string(db, id, "span_id").unwrap_or_default();
+        let document_id = db_entity_attr_string(db, id, "document_id").unwrap_or_default();
+        let span_id = db_entity_attr_string(db, id, "span_id").unwrap_or_default();
         let text = db_entity_attr_string(db, id, "text").unwrap_or_default();
-        let snippet = truncate_preview(&text, options.max_doc_chars);
-        chunk_hits.push(serde_json::json!({
-            "id": id,
-            "chunk_id": chunk_id,
-            "document_id": doc,
-            "span_id": span,
-            "snippet": snippet,
-            "similarity": sim,
-            "similarity_token_hash": tok,
-            "similarity_ollama": emb
-        }));
+        chunk_hits.push(SemanticSearchChunkHitV2 {
+            id,
+            chunk_id,
+            document_id,
+            span_id,
+            snippet: truncate_preview(&text, options.max_doc_chars),
+            scores: semantic_search_scores_v2(
+                fusion,
+                token,
+                embedding,
+                chunk_embedding_source.as_ref(),
+            )?,
+        });
     }
 
-    Ok(serde_json::json!({
-        "query": query,
-        "entity_hits": entity_hits,
-        "chunk_hits": chunk_hits,
-        "notes": notes,
-        "note": "semantic_search is an extension-layer heuristic (token-hash + optional ollama embeddings); validate answers via axql_run / describe_entity"
-    }))
+    serde_json::to_value(SemanticSearchResponseV2 {
+        version: SemanticSearchResponseVersionV2::V2,
+        query: query.to_string(),
+        methods: SemanticSearchMethodsV2 {
+            token: SemanticSearchTokenScanV2::ExhaustiveSnapshotLocal,
+            embedding: SemanticSearchEmbeddingScanV2::ExhaustiveSnapshotLocal,
+            fusion: SemanticSearchFusionV2::MaxAvailableUncalibrated,
+            ann_used: SemanticSearchAnnNotUsedV2,
+        },
+        authority: SemanticSearchAuthorityV2::EvidenceOnly,
+        entity_hits,
+        chunk_hits,
+        notes,
+        note: "semantic_search returns advisory retrieval evidence only; validate with typed Axiograph queries and normal review/promotion gates".to_string(),
+    })
+    .map_err(Into::into)
 }
 
 fn tool_fts_chunks(

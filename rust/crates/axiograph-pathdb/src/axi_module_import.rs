@@ -1087,7 +1087,7 @@ impl<'a> InstanceImportContext<'a> {
             return Ok(());
         }
 
-        // Only upgrade when it gets strictly more specific: Preferred <: Actual.
+        // Only upgrade when it gets strictly more specific: Preferred < Actual.
         if !self.schema_index.is_subtype(preferred_type, &actual_type) {
             return Ok(());
         }

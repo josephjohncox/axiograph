@@ -1,9 +1,52 @@
-// @ts-nocheck
+import { entityTypeDisplayLabel, kindDisplayLabel, type RelationSignature } from "../util/labels";
+import type { AttributeCategories } from "../util/attrs";
+import { element as el, muted, type DomChild } from "./dom";
+import {
+  isRecord,
+  type EdgeMap,
+  type GraphAttributes,
+  type GraphEdge,
+  type GraphNode,
+  type GraphPayload,
+  type NodeMap,
+  type VizUiState,
+} from "../types";
 
-import { entityTypeDisplayLabel, kindDisplayLabel } from "../util/labels";
-import { element as el, muted } from "./dom";
+interface DetailRendererContext {
+  graph: GraphPayload;
+  ui: VizUiState;
+  nodeById: NodeMap;
+  outEdgesBySource: EdgeMap;
+  inEdgesByTarget: EdgeMap;
+  isEdgeVisible: (edge: GraphEdge) => boolean;
+  detailEl: HTMLElement;
+  nodeDisplayName: (node: GraphNode) => string;
+  effectiveTypeLabel: (node: GraphNode) => string;
+  nodeTitle: (node: GraphNode) => string;
+  nodeShortLabel: (node: GraphNode | null | undefined) => string;
+  isTupleLike: (node: GraphNode | null | undefined) => boolean;
+  parseRelationSignature: (signature: unknown) => RelationSignature | null;
+  factSummary: (node: GraphNode | null | undefined) => string | null;
+  morphismSummary: (node: GraphNode | null | undefined) => string | null;
+  homotopySummary: (node: GraphNode | null | undefined) => string | null;
+  proposalRunSummary: (node: GraphNode | null | undefined) => string | null;
+  documentSummary: (node: GraphNode | null | undefined) => string | null;
+  docChunkSummary: (node: GraphNode | null | undefined) => string | null;
+  categorizeAttrs: (attrs: GraphAttributes) => AttributeCategories;
+  setActiveDetailTab: (name: string) => void;
+  firstOutTargetId: (sourceId: number, edgeLabel: string) => number | null;
+  shortenHash: (value: unknown) => string;
+  isServerMode: () => boolean;
+  selectNode: (id: number, shiftKey: boolean) => void;
+}
 
-export function makeDetailRenderer(ctx) {
+interface TargetGroupOptions {
+  limit: number;
+  title: string;
+  empty: string;
+}
+
+export function makeDetailRenderer(ctx: DetailRendererContext) {
   const {
     graph,
     ui,
@@ -32,16 +75,16 @@ export function makeDetailRenderer(ctx) {
     selectNode,
   } = ctx;
 
-  function code(text) {
+  function code(text: unknown): HTMLElement {
     return el("code", {}, String(text));
   }
-  function span(text) {
+  function span(text: string): HTMLElement {
     return el("span", { className: "muted" }, text);
   }
-  function heading(text, marginTop = "") {
+  function heading(text: string, marginTop = ""): HTMLElement {
     return el("h3", { style: { marginTop } }, text);
   }
-  function pre(text, height) {
+  function pre(text: string, height: string): HTMLElement {
     return el(
       "pre",
       {
@@ -55,7 +98,7 @@ export function makeDetailRenderer(ctx) {
       text,
     );
   }
-  function table(headers, rows, marginTop = "") {
+  function table(headers: DomChild[], rows: DomChild[], marginTop = ""): HTMLElement {
     return el(
       "table",
       { style: { marginTop } },
@@ -65,10 +108,15 @@ export function makeDetailRenderer(ctx) {
       el("tbody", {}, ...rows),
     );
   }
-  function row(...cells) {
+  function row(...cells: DomChild[]): HTMLElement {
     return el("tr", {}, ...cells.map((c) => el("td", {}, c)));
   }
-  function group(summary, children, open = true, marginTop = "10px") {
+  function group(
+    summary: DomChild[],
+    children: DomChild[],
+    open = true,
+    marginTop = "10px",
+  ): HTMLDetailsElement {
     const details = el(
       "details",
       { style: { marginTop } },
@@ -81,7 +129,7 @@ export function makeDetailRenderer(ctx) {
 
   // These links never accept a model URL. Local selection uses the original ID;
   // server navigation accepts only numeric graph IDs and changes a query field.
-  function link(id, text, focus = false) {
+  function link(id: number, text: string, focus = false): HTMLAnchorElement {
     const a = el(
       "a",
       {
@@ -107,19 +155,23 @@ export function makeDetailRenderer(ctx) {
     return a;
   }
 
-  function renderEdgesGrouped(edges, dir) {
-    const byLabel = new Map();
+  function renderEdgesGrouped(
+    edges: GraphEdge[],
+    dir: "out" | "in",
+  ): HTMLElement[] {
+    const byLabel = new Map<string, GraphEdge[]>();
     for (const e of edges) {
       const label = String(e.label || "");
-      if (!byLabel.has(label)) byLabel.set(label, []);
-      byLabel.get(label).push(e);
+      const group = byLabel.get(label) ?? [];
+      group.push(e);
+      byLabel.set(label, group);
     }
     const labels = Array.from(byLabel.keys()).sort((a, b) =>
       a.localeCompare(b),
     );
     if (!labels.length) return [muted("(none)")];
     return labels.map((label) => {
-      const edges = byLabel.get(label);
+      const edges = byLabel.get(label) ?? [];
       edges.sort((a, b) =>
         dir === "out" ? a.target - b.target : a.source - b.source,
       );
@@ -144,16 +196,24 @@ export function makeDetailRenderer(ctx) {
     });
   }
 
-  function renderTargetsGrouped(ids, { limit, title, empty }) {
-    const nodes = ids.map((id) => nodeById.get(id)).filter(Boolean);
+  function renderTargetsGrouped(
+    ids: number[],
+    { limit, title, empty }: TargetGroupOptions,
+  ): HTMLElement[] {
+    const nodes = ids
+      .map((id) => nodeById.get(id))
+      .filter((node): node is GraphNode => node !== undefined);
     if (!nodes.length) return [muted(empty)];
-    const groups = new Map();
+    const groups = new Map<
+      string,
+      { kind: string; entityType: string; nodes: GraphNode[] }
+    >();
     for (const n of nodes) {
       const kind = n.kind || "entity";
       const entityType = effectiveTypeLabel(n);
       const key = `${kind}::${entityType}`;
       if (!groups.has(key)) groups.set(key, { kind, entityType, nodes: [] });
-      groups.get(key).nodes.push(n);
+      groups.get(key)?.nodes.push(n);
     }
     const kindOrder = new Map([
       ["entity", 0],
@@ -200,14 +260,14 @@ export function makeDetailRenderer(ctx) {
     ];
   }
 
-  function kvTable(pairs) {
+  function kvTable(pairs: Array<[string, unknown]>): HTMLElement {
     const rows = pairs
       .filter(([, v]) => v != null && String(v).trim())
       .map(([k, v]) => row(code(k), String(v)));
     return rows.length ? table([], rows) : muted("(no details)");
   }
 
-  function renderFactFieldsTable(n) {
+  function renderFactFieldsTable(n: GraphNode): HTMLElement {
     const parsed = parseRelationSignature(
       n.attrs && n.attrs.axi_overlay_relation_signature,
     );
@@ -224,7 +284,8 @@ export function makeDetailRenderer(ctx) {
     if (!edges.length) return muted("(no fields)");
     edges.sort(
       (a, b) =>
-        (ranks.get(a.label) ?? 10000) - (ranks.get(b.label) ?? 10000) ||
+        (ranks.get(String(a.label)) ?? 10000) -
+          (ranks.get(String(b.label)) ?? 10000) ||
         String(a.label).localeCompare(String(b.label)),
     );
     return table(
@@ -233,14 +294,22 @@ export function makeDetailRenderer(ctx) {
         const target = nodeById.get(e.target);
         return row(
           code(e.label),
-          types.get(e.label) ? span(types.get(e.label)) : "",
+          types.get(String(e.label))
+            ? span(types.get(String(e.label)) ?? "")
+            : "",
           target ? link(e.target, nodeShortLabel(target)) : String(e.target),
         );
       }),
     );
   }
 
-  function renderMentions(n, attrs, outgoing, incoming, tupleSummary) {
+  function renderMentions(
+    n: GraphNode,
+    attrs: GraphAttributes,
+    outgoing: GraphEdge[],
+    incoming: GraphEdge[],
+    tupleSummary: string | null,
+  ): DomChild[] {
     if (n.entity_type === "ProposalRun" || n.entity_type === "Document") {
       const run = n.entity_type === "ProposalRun";
       const ids = outgoing
@@ -277,7 +346,7 @@ export function makeDetailRenderer(ctx) {
       ]) {
         const id = firstOutTargetId(n.id, relation);
         const target = id == null ? null : nodeById.get(id);
-        if (target)
+        if (target && id !== null)
           parts.push(
             el(
               "div",
@@ -296,7 +365,7 @@ export function makeDetailRenderer(ctx) {
       return parts;
     }
     if (isTupleLike(n)) {
-      const parts = [
+      const parts: DomChild[] = [
         el(
           "div",
           { style: { marginBottom: "10px" } },
@@ -326,21 +395,26 @@ export function makeDetailRenderer(ctx) {
       }
       return [...parts, renderFactFieldsTable(n)];
     }
-    const groups = new Map();
+    const groups = new Map<
+      string,
+      Array<{ field: string; fact: GraphNode }>
+    >();
     for (const e of incoming) {
       const fact = nodeById.get(e.source);
       if (!fact || !isTupleLike(fact)) continue;
       const rel = String(
         fact.attrs?.axi_relation || fact.entity_type || "Fact",
       );
-      if (!groups.has(rel)) groups.set(rel, []);
-      groups.get(rel).push({ field: String(e.label || ""), fact });
+      const mentions = groups.get(rel) ?? [];
+      mentions.push({ field: String(e.label || ""), fact });
+      groups.set(rel, mentions);
     }
     if (!groups.size) return [muted("(no fact nodes mention this)")];
     return Array.from(groups.keys())
       .sort((a, b) => a.localeCompare(b))
       .map((rel) => {
-        const items = groups.get(rel).sort((a, b) => a.fact.id - b.fact.id);
+        const items = groups.get(rel) ?? [];
+        items.sort((a, b) => a.fact.id - b.fact.id);
         return group(
           [el("strong", {}, rel), " ", span(`(${items.length})`)],
           [
@@ -359,7 +433,7 @@ export function makeDetailRenderer(ctx) {
       });
   }
 
-  function renderDbDescribe(id) {
+  function renderDbDescribe(id: number): HTMLElement[] {
     if (!isServerMode())
       return [
         el(
@@ -379,18 +453,22 @@ export function makeDetailRenderer(ctx) {
           "340px",
         ),
       ];
-    const payload = entry.data?.result || entry.data;
+    const rawPayload = entry.data?.result ?? entry.data;
+    const payload = isRecord(rawPayload) ? rawPayload : null;
     if (!payload) return [muted("(no data)")];
-    function entityLink(ev) {
-      if (!ev || ev.id == null) return "";
-      const name = String(ev.name || ev.id);
+    function entityLink(value: unknown): DomChild {
+      if (!isRecord(value) || value.id == null) return "";
+      const name = String(value.name || value.id);
       // Do not turn blank strings, booleans, or injected values into navigation.
-      const id = ev.id;
+      const id = value.id;
       if (typeof id !== "number" || !Number.isSafeInteger(id) || id < 0)
         return name;
       return link(id, name, !nodeById.has(id));
     }
-    function list(values, render) {
+    function list(
+      values: unknown[],
+      render: (value: unknown) => DomChild[],
+    ): HTMLElement {
       return values.length
         ? el(
             "ul",
@@ -399,12 +477,13 @@ export function makeDetailRenderer(ctx) {
           )
         : muted("(none)");
     }
-    function groups(values) {
+    function groups(values: unknown[]): HTMLElement[] {
       if (!values.length) return [muted("(none)")];
-      return values.filter(Boolean).map((g) => {
+      return values.filter(isRecord).map((g) => {
         const edges = Array.isArray(g.edges) ? g.edges : [];
-        const rows = edges.map((e) =>
-          el(
+        const rows = edges.map((edge) => {
+          const e = isRecord(edge) ? edge : null;
+          return el(
             "li",
             {},
             code(
@@ -412,8 +491,8 @@ export function makeDetailRenderer(ctx) {
             ),
             " ",
             entityLink(e?.entity),
-          ),
-        );
+          );
+        });
         return group(
           [code(String(g.rel || "")), " ", span(`(${Number(g.count || 0)})`)],
           [
@@ -436,17 +515,20 @@ export function makeDetailRenderer(ctx) {
         "Full-snapshot details (on-demand; not limited to this neighborhood view).",
       ),
       heading("Contexts"),
-      list(Array.isArray(payload.contexts) ? payload.contexts : [], (c) => [
-        entityLink(c),
+      list(Array.isArray(payload.contexts) ? payload.contexts : [], (context) => [
+        entityLink(context),
       ]),
       heading("Equivalences", "14px"),
       list(
         Array.isArray(payload.equivalences) ? payload.equivalences : [],
-        (e) => [
-          entityLink(e?.other),
-          " ",
-          e?.kind ? span(`(${e.kind})`) : null,
-        ],
+        (value) => {
+          const equivalence = isRecord(value) ? value : null;
+          return [
+            entityLink(equivalence?.other),
+            " ",
+            equivalence?.kind ? span(`(${String(equivalence.kind)})`) : null,
+          ];
+        },
       ),
       heading("Outgoing", "14px"),
       ...groups(Array.isArray(payload.outgoing) ? payload.outgoing : []),
@@ -455,8 +537,8 @@ export function makeDetailRenderer(ctx) {
     ];
   }
 
-  function renderAttrs(cats) {
-    function rows(pairs) {
+  function renderAttrs(cats: AttributeCategories): HTMLElement[] {
+    function rows(pairs: Array<[string, unknown]>): HTMLElement[] {
       return pairs.map(([k, v]) =>
         row(
           code(k),
@@ -466,15 +548,18 @@ export function makeDetailRenderer(ctx) {
         ),
       );
     }
+    const sections: Array<
+      [string, Array<[string, unknown]>, boolean]
+    > = [
+      ["Other attributes", cats.other, Boolean(cats.other.length)],
+      ["Axi metadata", cats.axi, false],
+      ["Overlay attributes", cats.overlay, false],
+    ];
     return [
       ...(cats.content.length
         ? [heading("Content"), table([], rows(cats.content))]
         : [muted("(no content fields)")]),
-      ...[
-        ["Other attributes", cats.other, !!cats.other.length],
-        ["Axi metadata", cats.axi, false],
-        ["Overlay attributes", cats.overlay, false],
-      ].map(([title, pairs, open]) =>
+      ...sections.map(([title, pairs, open]) =>
         group(
           [title, " ", span(`(${pairs.length})`)],
           [
@@ -491,7 +576,11 @@ export function makeDetailRenderer(ctx) {
     ];
   }
 
-  function overviewExtra(n, attrs, outgoing) {
+  function overviewExtra(
+    n: GraphNode,
+    attrs: GraphAttributes,
+    outgoing: GraphEdge[],
+  ): HTMLElement | null {
     if (n.entity_type === "ProposalRun")
       return kvTable([
         ["schema_hint", attrs.schema_hint],
@@ -528,8 +617,11 @@ export function makeDetailRenderer(ctx) {
     const blocks = outgoing
       .filter((e) => e.label === "axi_theory_has_constraint")
       .map((e) => nodeById.get(e.target))
-      .filter((n) => n?.attrs?.axi_constraint_kind === "named_block");
-    const name = (b) =>
+      .filter(
+        (node): node is GraphNode =>
+          node?.attrs?.axi_constraint_kind === "named_block",
+      );
+    const name = (b: GraphNode) =>
       String(b.attrs?.axi_constraint_name || b.display_name || "");
     blocks.sort((a, b) => name(a).localeCompare(name(b)));
     if (!blocks.length)
@@ -549,9 +641,14 @@ export function makeDetailRenderer(ctx) {
     );
   }
 
-  function renderOverview(n, attrs, outgoing, summary) {
+  function renderOverview(
+    n: GraphNode,
+    attrs: GraphAttributes,
+    outgoing: GraphEdge[],
+    summary: string | null,
+  ): DomChild[] {
     const plane = n.plane ? String(n.plane) : "";
-    const parts = [
+    const parts: DomChild[] = [
       el(
         "div",
         { style: { marginBottom: "10px" } },
@@ -607,7 +704,7 @@ export function makeDetailRenderer(ctx) {
     ];
   }
 
-  function renderDetail(id) {
+  function renderDetail(id: number): void {
     const n = nodeById.get(id);
     if (!n) {
       detailEl.replaceChildren();
@@ -651,7 +748,7 @@ export function makeDetailRenderer(ctx) {
       button.addEventListener("click", () => setActiveDetailTab(tab));
       return button;
     });
-    const panel = (tab, children) =>
+    const panel = (tab: string, children: DomChild[]) =>
       el(
         "div",
         { className: "detailtabpanel", dataset: { dtab: tab } },

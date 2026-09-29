@@ -72,7 +72,7 @@ private def gatherCoreConstraints (m : Axiograph.Axi.AxiV1.AxiV1Module) : Array 
         | .functional rel src dst =>
             out := out.push (.functional th.schema rel src dst)
         | .atMost rel src dst max params =>
-            out := out.push (.atMost th.schema rel src dst max params)
+            out := out.push (.atMost th.schema rel src dst max.toNat params)
         | .symmetric rel carriers params =>
             out := out.push (.symmetric th.schema rel carriers params)
         | .symmetricWhereIn rel field values carriers params =>

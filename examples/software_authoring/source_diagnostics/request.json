@@ -1,0 +1,8 @@
+{
+  "version": "authoring_workspace_request_v1",
+  "operation": "validate",
+  "axi_path": "Root.axi",
+  "presentation": {
+    "detail": "full"
+  }
+}

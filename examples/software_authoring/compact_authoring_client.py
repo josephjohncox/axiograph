@@ -5,11 +5,21 @@ Run from the repository root with `axiograph authoring serve --workspace .`.
 This is an executable wire-contract example, not an embedding SDK or proof client.
 """
 import argparse
+import hashlib
 import http.client
 import json
 from urllib.parse import urlsplit
 
 MAX_RESPONSE_BYTES = 16 * 1024 * 1024
+NESTED_VERSION = "authoring-nested-page-v1"
+
+
+def canonical_json_bytes(value):
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+
+
+def digest_json(value):
+    return hashlib.sha256(canonical_json_bytes(value)).hexdigest()
 
 
 def post(endpoint, payload):
@@ -73,11 +83,96 @@ def main():
     if len(items) != section["total"]:
         raise ValueError("follow-up unavailable: inspect compilation diagnostics with a fresh request")
     print(f"Retrieved {len(items)} stable runtime references in canonical order.")
+
+    # Fetch the production report's largest nested runtime family without asking
+    # for the indivisible validation artifact. Each entry is exact canonical JSON
+    # behind a closed, source-bound envelope and two independent resource bounds.
+    nested_items = []
+    nested_item_identities = []
+    seen_nested_item_identities = set()
+    nested_collection_identity = None
+    nested_cursor = None
+    while True:
+        request["presentation"] = {
+            "detail": "summary",
+            "nested": {
+                "collection": "runtime_closure_steps",
+                "limit": 7,
+                "byte_limit": 262144,
+                **({"cursor": nested_cursor} if nested_cursor is not None else {}),
+            },
+        }
+        response = post(args.endpoint, request)
+        if response["input_identity"] != summary["input_identity"]:
+            raise ValueError("source/request changed during nested pagination")
+        page = response["nested_page"]
+        if page["input_identity"] != response["input_identity"]:
+            raise ValueError("nested page source binding mismatch")
+        if page["collection"] != "runtime_closure_steps":
+            raise ValueError("nested page collection type mismatch")
+        if nested_collection_identity is None:
+            nested_collection_identity = page["collection_identity"]
+        elif page["collection_identity"] != nested_collection_identity:
+            raise ValueError("nested collection changed during pagination")
+        if page["offset"] != len(nested_items) or page["returned_bytes"] > page["byte_limit"]:
+            raise ValueError("inconsistent nested page bounds")
+        if page["returned"] != len(page["items"]):
+            raise ValueError("nested returned count mismatch")
+        if page["returned_bytes"] != sum(len(canonical_json_bytes(item)) for item in page["items"]):
+            raise ValueError("nested returned byte count mismatch")
+        for item in page["items"]:
+            raw = item["canonical_item_json"].encode("utf-8")
+            if len(raw) != item["canonical_item_bytes"]:
+                raise ValueError("nested canonical byte count mismatch")
+            if hashlib.sha256(raw).hexdigest() != item["canonical_item_sha256"]:
+                raise ValueError("nested canonical digest mismatch")
+            if item["version"] != NESTED_VERSION or item["collection"] != page["collection"]:
+                raise ValueError("nested item type binding mismatch")
+            if item["ordinal"] != len(nested_items):
+                raise ValueError("nested item order binding mismatch")
+            expected_item_identity = digest_json([
+                NESTED_VERSION,
+                response["input_identity"],
+                page["collection"],
+                item["parent_identity"],
+                item["ordinal"],
+                item["canonical_item_sha256"],
+            ])
+            if item["item_identity"] != expected_item_identity:
+                raise ValueError("nested item identity binding mismatch")
+            if item["item_identity"] in seen_nested_item_identities:
+                raise ValueError("duplicate nested item identity")
+            seen_nested_item_identities.add(item["item_identity"])
+            nested_item_identities.append(item["item_identity"])
+            nested_items.append(json.loads(item["canonical_item_json"]))
+        nested_cursor = page["next_cursor"]
+        if nested_cursor is None:
+            if len(nested_items) != page["total"]:
+                raise ValueError("nested page union is incomplete")
+            expected_collection_identity = digest_json([
+                NESTED_VERSION,
+                response["input_identity"],
+                page["collection"],
+                nested_item_identities,
+            ])
+            if nested_collection_identity != expected_collection_identity:
+                raise ValueError("nested collection identity binding mismatch")
+            break
+        if not page["items"]:
+            raise ValueError("non-progressing nested page")
+    print(f"Retrieved {len(nested_items)} runtime closure steps in canonical order.")
     if args.check_full:
         request["presentation"] = {"detail": "full"}
         full = post(args.endpoint, request)
         if full["stable_runtime_refs"] != items:
             raise ValueError("page union differs from explicit full report")
+        full_steps = [
+            step
+            for report in full.get("validation", {}).get("runtime_theory", {}).get("reports", [])
+            for step in report.get("admissibility_scan", {}).get("steps", [])
+        ]
+        if full_steps != nested_items:
+            raise ValueError("nested page union differs from explicit full report")
         for field in ("source", "trust", "promotion", "ok"):
             if full.get(field) != summary[field]:
                 raise ValueError(f"full/summary mismatch: {field}")

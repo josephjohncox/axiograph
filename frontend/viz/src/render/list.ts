@@ -1,7 +1,25 @@
-// @ts-nocheck
-
 import { kindDisplayLabel } from "../util/labels";
 import { element, muted } from "./dom";
+import type { GraphNode, GraphPayload, VizUiState } from "../types";
+
+interface NodeListContext {
+  graph: GraphPayload;
+  ui: VizUiState;
+  nodesEl: HTMLElement;
+  isNodeVisible: (node: GraphNode) => boolean;
+  nodeDisplayName: (node: GraphNode) => string;
+  effectiveTypeLabel: (node: GraphNode) => string;
+  selectNode: (id: number, shiftKey: boolean) => void;
+  selectedIdRef: () => number | null;
+}
+
+interface NodeListItem {
+  node: GraphNode;
+  disp: string;
+  kind: string;
+  kindLabel: string;
+  entityType: string;
+}
 
 function appendNodeLabel(
   parent: HTMLElement,
@@ -25,7 +43,7 @@ function appendNodeLabel(
   );
 }
 
-export function renderNodeList(ctx: any, filter: string) {
+export function renderNodeList(ctx: NodeListContext, filter: string): void {
   const {
     graph,
     ui,
@@ -41,7 +59,7 @@ export function renderNodeList(ctx: any, filter: string) {
   nodesEl.classList.remove("node-list-virtual");
   const f = (filter || "").trim().toLowerCase();
 
-  const items = [];
+  const items: NodeListItem[] = [];
   for (const n of graph.nodes) {
     if (!isNodeVisible(n)) continue;
     const disp = nodeDisplayName(n);
@@ -72,9 +90,9 @@ export function renderNodeList(ctx: any, filter: string) {
     ["meta", 4],
   ]);
 
-  function compareItems(a, b) {
-    const ka = kindOrder.has(a.kind) ? kindOrder.get(a.kind) : 99;
-    const kb = kindOrder.has(b.kind) ? kindOrder.get(b.kind) : 99;
+  function compareItems(a: NodeListItem, b: NodeListItem): number {
+    const ka = kindOrder.get(a.kind) ?? 99;
+    const kb = kindOrder.get(b.kind) ?? 99;
     if (ka !== kb) return ka - kb;
     if (a.entityType !== b.entityType)
       return a.entityType.localeCompare(b.entityType);
@@ -140,7 +158,7 @@ export function renderNodeList(ctx: any, filter: string) {
       }
     }
 
-    let raf = null;
+    let raf: number | null = null;
     scroller.addEventListener("scroll", () => {
       if (raf) cancelAnimationFrame(raf);
       raf = requestAnimationFrame(renderSlice);
@@ -149,7 +167,10 @@ export function renderNodeList(ctx: any, filter: string) {
     return;
   }
 
-  const groups = new Map(); // key -> { kind, entityType, nodes: [] }
+  const groups = new Map<
+    string,
+    { kind: string; entityType: string; nodes: GraphNode[] }
+  >(); // key -> { kind, entityType, nodes: [] }
   for (const item of items) {
     const key = `${item.kind}::${item.entityType}`;
     if (!groups.has(key))
@@ -158,12 +179,12 @@ export function renderNodeList(ctx: any, filter: string) {
         entityType: item.entityType,
         nodes: [],
       });
-    groups.get(key).nodes.push(item.node);
+    groups.get(key)?.nodes.push(item.node);
   }
 
   const sortedGroups = Array.from(groups.values()).sort((a, b) => {
-    const ka = kindOrder.has(a.kind) ? kindOrder.get(a.kind) : 99;
-    const kb = kindOrder.has(b.kind) ? kindOrder.get(b.kind) : 99;
+    const ka = kindOrder.get(a.kind) ?? 99;
+    const kb = kindOrder.get(b.kind) ?? 99;
     if (ka !== kb) return ka - kb;
     return a.entityType.localeCompare(b.entityType);
   });
@@ -177,12 +198,14 @@ export function renderNodeList(ctx: any, filter: string) {
           node: a,
           disp: nodeDisplayName(a),
           kind: a.kind || "entity",
+          kindLabel: kindDisplayLabel(a.kind || "entity"),
           entityType: effectiveTypeLabel(a),
         },
         {
           node: b,
           disp: nodeDisplayName(b),
           kind: b.kind || "entity",
+          kindLabel: kindDisplayLabel(b.kind || "entity"),
           entityType: effectiveTypeLabel(b),
         },
       ),

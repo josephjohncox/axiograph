@@ -1,6 +1,34 @@
-// @ts-nocheck
+import type { GraphEdge, GraphNode, GraphPayload, NodeMap, VizUiState } from "../types";
 
-export function initVisibility(ctx) {
+interface VisibilityContext {
+  ui: VizUiState;
+  graph: GraphPayload;
+  nodeById: NodeMap;
+  runOnlyEl: HTMLInputElement;
+  contextFilterEl: HTMLSelectElement;
+  show_plane_accepted: HTMLInputElement;
+  show_plane_evidence: HTMLInputElement;
+  show_plane_data: HTMLInputElement;
+  show_entity: HTMLInputElement;
+  show_fact: HTMLInputElement;
+  show_morphism: HTMLInputElement;
+  show_homotopy: HTMLInputElement;
+  show_meta: HTMLInputElement;
+  show_edge_relation: HTMLInputElement;
+  show_edge_equivalence: HTMLInputElement;
+  show_edge_meta: HTMLInputElement;
+  minConfidenceEl: HTMLInputElement;
+  minConfidenceValEl: HTMLElement;
+  opacityByConfidenceEl: HTMLInputElement;
+  rerender: () => void;
+  factContexts: ReadonlyMap<number, ReadonlySet<number>>;
+  isTupleLike: (node: GraphNode | null | undefined) => boolean;
+  runIdForNode: (node: GraphNode | null | undefined) => string;
+  clamp01: (value: number) => number;
+  updateContextBadge?: () => void;
+}
+
+export function initVisibility(ctx: VisibilityContext) {
   const {
     ui,
     graph,
@@ -38,19 +66,19 @@ export function initVisibility(ctx) {
     minConfidenceValEl.textContent = currentMinConfidence().toFixed(2);
   }
 
-  function edgeConfidence(e) {
+  function edgeConfidence(e: GraphEdge): number {
     if (e.confidence == null) return 1.0;
     return clamp01(Number(e.confidence));
   }
 
-  function edgeClass(e) {
+  function edgeClass(e: GraphEdge | null | undefined): string {
     if (!e) return "relation";
     if (e.kind === "equivalence") return "equivalence";
     if (typeof e.kind === "string" && e.kind.startsWith("meta")) return "meta";
     return "relation";
   }
 
-  function isNodeVisible(n) {
+  function isNodeVisible(n: GraphNode | null | undefined): boolean {
     if (!n) return false;
 
     const plane = n.plane ? String(n.plane) : "";
@@ -87,7 +115,7 @@ export function initVisibility(ctx) {
     return true;
   }
 
-  function isEdgeVisible(e) {
+  function isEdgeVisible(e: GraphEdge): boolean {
     const cls = edgeClass(e);
     if (cls === "equivalence" && !show_edge_equivalence.checked) return false;
     if (cls === "meta" && !show_edge_meta.checked) return false;
@@ -100,20 +128,12 @@ export function initVisibility(ctx) {
   }
 
   function visibleEdgeIdxsAll() {
-    const idxs = [];
+    const idxs: number[] = [];
     for (let i = 0; i < graph.edges.length; i++) {
       if (isEdgeVisible(graph.edges[i])) idxs.push(i);
     }
     return idxs;
   }
-
-  Object.assign(ctx, {
-    edgeConfidence,
-    isNodeVisible,
-    isEdgeVisible,
-    visibleEdgeIdxsAll,
-    updateMinConfidenceLabel,
-  });
 
   if (minConfidenceEl) {
     minConfidenceEl.addEventListener("input", () => { updateMinConfidenceLabel(); rerender(); });
@@ -136,4 +156,12 @@ export function initVisibility(ctx) {
     if (ctx.updateContextBadge) ctx.updateContextBadge();
     rerender();
   });
+
+  return {
+    edgeConfidence,
+    isNodeVisible,
+    isEdgeVisible,
+    visibleEdgeIdxsAll,
+    updateMinConfidenceLabel,
+  };
 }

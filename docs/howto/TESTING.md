@@ -54,25 +54,29 @@ curl -i -H 'content-type: application/json' http://127.0.0.1:7878/query \
 IR editor directly; Rust owns path parsing, name resolution, typing and execution.
 Local graph/context selections are not implicitly sent. The shared transport
 profile is `frontend/viz/src/server/read-only-api.json`, consumed by Rust discovery
-and the strict TypeScript boundary. The nested QueryIr schema is **descriptive**:
-its explicit-object branches are regression-checked, but it is not complete
-serde/semantic equivalence. For example serde permits omitted versions and some
-extra inner fields that the documented profile rejects; the browser requires an
-explicit version but delegates atom validation to Rust. This is not a complete
-OpenAPI description, generated SDK or browser query compiler.
+and the strict TypeScript boundary. The QueryIr schema and Rust DTO now reject
+omitted versions and unknown fields at every nested object. The browser applies
+the same closed transport shape before sending a request. Rust still owns name
+resolution, path parsing, typing, and execution semantics. This profile is not an
+OpenAPI description, generated SDK, proof object, or browser query compiler.
 
 The client validates closed capability/status/result/trust envelopes, integer
 counts/u32 rows, row-variable consistency, runtime claims and required non-claims.
-Receipt internals and the descriptive schema remain explicitly opaque; nested
-semantic summary strings are shape-checked, not reinterpreted as checked refs.
-It rejects unknown versions/fields, bounds streamed JSON to 16 MiB, input to 1 MiB,
-and response structure to depth 64 / 500,000 visited values, with a 30-second
-request timeout. Superseded replies/editor changes cannot replace current output;
-failures visibly retain only the labelled previous successful output. Fixed
-same-origin API paths and redirect rejection prevent capability-supplied URLs.
-The older optional offline `?data=` graph loader is outside this API boundary;
-whole graph JSON validation remains open. No graph is relabeled authenticated
-from sampled status, and no remote query/evidence IDs are highlighted locally.
+Receipt internals and checker metadata remain explicitly opaque; nested semantic
+summary strings are shape-checked, not reinterpreted as checked refs. It rejects
+unknown versions/fields, bounds streamed JSON to 16 MiB, input to 1 MiB, and
+response structure to depth 64 / 500,000 visited values, with a 30-second request
+timeout. Superseded replies/editor changes and failed rediscovery cannot replace
+previous validated state or successful output. Fixed same-origin API paths and
+redirect rejection prevent capability-supplied URLs.
+
+Offline embedded and same-origin `?data=` graphs use the closed
+`axiograph_viz_graph_v1` envelope. The frontend bounds them to 4 MiB, depth 16,
+100,000 JSON values, 1,000 nodes, 4,000 edges, 16,384 attributes, 8 KiB per
+string, and 1 MiB aggregate string bytes. It rejects duplicate or non-u32 IDs,
+unknown endpoints/contexts, noncanonical tuple keys, and unknown fields before
+initializing UI state. No graph is relabeled authenticated from sampled status,
+and no remote query/evidence ID-to-graph highlighting adapter exists.
 
 Unsupported controls are disabled with CLI guidance, and their programmatic
 callbacks also deny remote requests. Existing local draft/graph inspection is
@@ -172,6 +176,54 @@ semantic gates' checker results do not confer proof authority on the HTTP UI.
 Independent final review and parent verification remain required. EQ-02/EQ-05
 remain partial; global diagnostic cleanliness and the historical inconclusive
 gitleaks timeout are not resolved by this integration.
+
+## Canonical `.axi` Contract
+
+Run the bounded deterministic differential gate:
+
+```bash
+make verify-axi-contract-differential
+```
+
+The gate runs 16 byte-pinned hand cases and 24 generated cases. The hand cases include positive and rejected dependent roles, refinements, rewrite scopes, and equations. Rust and Lean independently parse, typecheck, and hash exact source bytes. Rust formation does not create a Lean proof. An accepted opaque equation is not a claim that Lean certified it.
+
+The generator binds its seed, bounds, order, grammar trace, and digest in `fixtures/canonical/contract/corpus.json`. A bounded delta debugger minimizes and replays a generated failure. Hand-case probes check the named contract sections. The gate runs twice and requires byte-identical reports.
+
+The import corpus in `fixtures/canonical/contract/imports/` checks seven ordered multi-file outcomes. It covers a valid dependent instance, missing and duplicate modules, a cycle, an ambiguous schema, and an unreachable module. An imported equation compiles, but V3 category-certificate export rejects it. The current certificate binds one defining module, not an import closure. A CLI test accepts 1,024 import overlay entries and rejects 1,025. That test does not exercise a 1,024-module filesystem closure.
+
+The limits corpus in `fixtures/canonical/contract/limits/` checks real Rust and Lean parser entry points and Lean `axiograph_verify` file mode. The 15 cases cover depth 64/65, 4 MiB/4 MiB plus one byte, 16/17 anchors, and 32/33 verifier inputs. They also cover duplicate and missing anchors, malformed UTF-8, CRLF, Unicode, and comments. Equal parsed ASTs can have distinct exact-byte revision digests. A Rust compiler test accepts 64 finite-category object declarations and blocks category-certificate export at 65. The 65-object `.axi` module still compiles.
+
+Each child has a 30-second limit, and each runner has a 600-second limit. The runner limits standard output to 1 MiB and standard error to 256 KiB. Timeout, overflow, malformed output, zero cases, duplicate IDs, and unknown classes cause failure.
+
+Run the full finite parser and exact-byte contract gate:
+
+```bash
+make verify-axi-v1-contract
+```
+
+The full gate includes the differential gate. It compares all current Rust and Lean AST declarations with the
+versioned contract. The Python checker checks parser, standalone typecheck,
+exact-byte, and cross-language fixtures. It does not interpret fixture formation
+fields. The Make target runs separate Rust compiler tests for current formation
+cases. It also runs the immutable 1,107-case adversarial matrix
+in `fixtures/canonical/contract/axi_v1_adversarial_matrix.json`. The matrix has
+73 focused cases and 1,034 Cartesian boundary cells generated by the checker.
+The checker rejects omitted, duplicated, relabeled, or edited Cartesian cells
+or axes. The object-declaration axis accepts exactly one ASCII space after
+`object`, compares the accepted normalized AST, and rejects an additional
+space or HT through both ordinary parse and normalized-AST entry points.
+Every accepted matrix parse compares independently normalized Rust and Lean
+ASTs and runs both standalone typecheckers. For each rejection, the checker
+classifies the actual Rust and Lean process exit and diagnostic at the observed
+stage. Both stage/class values must agree with the expected class. For the
+source-prioritized lexical, alias, numeric, and list classes, each diagnostic
+must also match the source-specific reason family. Mutation tests reject an
+unrelated same-stage diagnostic or a cross-language reason mismatch for every
+one of these classes. Every class in the closed cross-language rejection
+taxonomy must have runtime evidence.
+
+The normalized AST JSON is a test view. It is not accepted source or Lean input.
+See [Canonical `.axi` V1 Contract](../reference/CANONICAL_AXI_V1_CONTRACT.md).
 
 ## Overview
 
@@ -277,6 +329,85 @@ cargo run -p axiograph-cli --release -- tools perf axql --entities 200000 --edge
 cargo run -p axiograph-cli --release -- tools perf scenario --scenario proto_api --scale 10000 --index-depth 3
 ```
 
+## Bounded source diagnostics
+
+Run the production collector, adapter, LSP, and CLI-example regressions:
+
+```bash
+cargo test --manifest-path rust/Cargo.toml --locked --offline \
+  -p axiograph-kernel diagnostic_collector
+cargo test --manifest-path rust/Cargo.toml --locked --offline \
+  -p axiograph-cli --bin axiograph authoring_diagnostics
+cargo test --manifest-path rust/Cargo.toml --locked --offline \
+  -p axiograph-cli --test source_diagnostics_cli
+bash examples/software_authoring/run_source_diagnostics.sh
+```
+
+The example uses checked-in `.axi.source` inputs copied to a temporary workspace.
+It emits three independent type errors in canonical import-closure and source
+order. The collector retains at most 64 errors, 64 KiB of message text, and
+65,536 work units. Its report makes omitted errors and exhausted work explicit.
+A truncated or paged report remains `ok=false`; canonical validation and
+promotion stay blocked. Parse and import subjects remain syntactic, and an
+invalid role does not receive a checked kernel ref. Suggestions are bounded,
+namespace-local, unique, advisory values. These tests do not write accepted
+source, issue a checker receipt, or call AxiStore.
+
+## Nested authoring drilldown
+
+The focused production projection regressions cover every nested collection,
+lossless full/page unions, deterministic ordering, empty and singleton
+collections, N/N+1 entry limits, exact byte boundaries, oversized items,
+malformed and cross-workspace cursors, changed imports, hidden compilation
+failures, closed response schemas, and CLI/MCP/HTTP/LSP parity:
+
+```bash
+cargo test --manifest-path rust/Cargo.toml --locked --offline \
+  -p axiograph-cli --bin axiograph authoring_workspace::projection::tests
+```
+
+Measure the two checked-in packages through the production CLI. Generate the
+high-cardinality input under `build/` so it cannot become accepted source:
+
+```bash
+python3 examples/software_authoring/generate_high_cardinality_authoring.py \
+  --out-dir build/authoring-high-cardinality --relations 180
+cargo run --manifest-path rust/Cargo.toml --locked --offline -p axiograph-cli -- \
+  authoring workspace --workspace . \
+  --request examples/software_authoring/authoring_workspace_request.json \
+  --detail full --out build/software-authoring-full.json
+cargo run --manifest-path rust/Cargo.toml --locked --offline -p axiograph-cli -- \
+  authoring workspace --workspace . \
+  --request examples/regulated_shipment/authoring_request.json \
+  --detail full --out build/regulated-shipment-full.json
+cargo run --manifest-path rust/Cargo.toml --locked --offline -p axiograph-cli -- \
+  authoring workspace --workspace . \
+  --request build/authoring-high-cardinality/high_cardinality_request.json \
+  --detail summary --nested-collection competency_evaluations \
+  --nested-limit 20 --nested-byte-limit 1048576 \
+  --out build/high-cardinality-cq-page.json
+```
+
+Use `wc -c` and a JSON parser for measurement; do not infer capacity from a
+teaching fixture or from HTTP's 16 MiB rejection. The generated 180-family input
+is a bounded stress fixture, not an ontology-completeness or peak-memory claim.
+For real HTTP client parity, start the documented read-only authoring server and
+run:
+
+```bash
+python3 examples/software_authoring/compact_authoring_client.py \
+  --request examples/software_authoring/authoring_workspace_request.json \
+  --check-full
+```
+
+The client checks top-level references and nested runtime closure steps against
+an explicit full report. It verifies byte counts, SHA-256 identities,
+source/collection/parent/item/order bindings, offsets, totals, and source identity
+on every page. The generated 180-family measurement remains `ok=false` with its
+finite-bound diagnostics and promotion blockers; treat it as failure evidence,
+not a successful capacity result. The client does not mint receipts or mutate
+accepted state.
+
 ## Required Query-Library Selections
 
 These named gates use `scripts/run_required_query_tests.py` against
@@ -364,13 +495,201 @@ selections. See the [engineering-quality integration record](../roadmaps/ROADMAP
 for exact logs, real adapter checks, preservation evidence and open review scope.
 This is not broader diagnostic/LSP completion or a release-gate result.
 
+## No-unsafe ownership gate
+
+The scanner walks the filesystem. Git does not select the Rust input set.
+The scan includes ignored, untracked, unattached, and disabled Rust source.
+It prunes only `.codebase-index`, `.git`, `.lake`, `.pi-subagents`, `node_modules`, and `target` on ordinary branches.
+
+Two fixed Kani 0.67.0 library caches have a narrow ownership exception.
+`scripts/no_unsafe_external_cache_manifest_v1.json` pins every directory, file size, and file SHA-256.
+The scanner removes the exception if Git or Cargo owns any candidate path.
+It also removes the exception for a missing, extra, changed, linked, or special object.
+A matching cache proves distribution identity only. It does not prove vendor safety.
+
+The scanner uses Linux type-first file access.
+It opens metadata with `O_PATH` and no-follow flags before it opens file data.
+It does not data-open a FIFO, socket, device, link, or other rejected type.
+It then opens only the held regular inode through `/proc/self/fd` with `O_NONBLOCK`.
+Directory reads use bounded incremental `getdents64` batches. Repository and candidate
+counters are charged before names enter a sortable buffer. An exact byte budget permits
+one EOF observation; the next nonempty batch fails before it yields a name. Declared
+candidate and source bytes are charged before data allocation or read. The generator
+limits an output-parent read to 65,536 bytes and stops at the first non-dot entry.
+The scanner and generator fail closed with their family-specific unsupported code if
+the host cannot provide these operations.
+
+Run the focused tests before the full gate:
+
+```bash
+python3 -m unittest scripts.tests.test_check_no_unsafe \
+  scripts.tests.test_no_unsafe_policy
+AXIOGRAPH_RUN_OFFICIAL_KANI_ARCHIVE=1 \
+  python3 -m unittest \
+  scripts.tests.test_no_unsafe_policy.OfficialGeneratorCliTests
+make check-no-unsafe
+```
+
+The second command reads the preserved 137,826,806-byte official archive.
+It uses the production bounded gzip and tar parser.
+
+### Hosted capability fixtures
+
+`.github/workflows/no-unsafe-capability-tests.yml` runs only on pushes to
+`ci/no-unsafe-capability-tests-*`. It uses the standard GitHub-hosted
+`ubuntu-24.04` and `ubuntu-24.04-arm` runners. The workflow downloads the pinned
+Kani ARM64 archive with a 137,826,806-byte transfer ceiling, then verifies its
+exact size and SHA-256 identity. It never executes an archive payload.
+
+The ordinary runner user prepares isolated repositories and runs exact-byte
+copies of the production scanner and generator. The scanner fixture has a
+minimal Cargo workspace, an offline lockfile, and an owned Git baseline. The
+candidate cache stays untracked.
+
+`sudo` runs only two fixture helper commands. The setup command creates one
+mode `000` character device with identity `1:3`. It also creates one read-only
+`nosuid,nodev,noexec` bind mount. The cleanup command unmounts the recorded
+mount and removes the recorded device. The production CLIs never use `sudo`.
+
+The setup command records each observed identity before it starts the next
+privileged operation. Mount hardening validates and preserves the pre-mount
+target identity in the persisted ready state. It rolls back the mount before
+the device after a setup failure. Cleanup checks the mount ID, mount root,
+backing device, and directory identities. It also checks the device inode and
+device identity. Cleanup
+refuses an unknown or replaced object. These checks cover observed operations
+only. They do not give crash-atomic cleanup or authority over a future object
+at the same path.
+
+The tests fail unless setup and test UIDs differ. They also require a real
+device and a real hardened bind mount. The production CLIs must report the
+exact TYPE-05 and CHECK-03 leaf causes.
+
+A post-checkout step creates the evidence directory before the Rust action.
+Thus, a toolchain setup failure can retain cleanup evidence. An `always()` step
+copies only allowlisted, nonsymlink regular evidence files to a new upload
+directory. Each input has a 1 MiB limit. Missing success files and a failed
+cleanup remain visible in the evidence manifest. Upload safety does not change
+the job result or claim semantic success. The upload never contains a fixture
+tree.
+
+Local unprivileged contract tests do not substitute for those hosted results:
+
+```bash
+python3 -m unittest scripts.tests.test_hosted_no_unsafe_capabilities
+```
+
+A hosted pass proves only real-device TYPE-05 and real-mount-crossing CHECK-03
+behavior for the exact tested commit, fixture, and runner architectures. It is
+not a full no-unsafe suite, roadmap acceptance, or a release decision.
+It compares the result with the checked-in manifest and writes to a fresh empty directory.
+Synthetic archive tests use the production parser for parser limits and extension-header accounting.
+They also test path grammar, kind and size precedence, special kinds, framing, and inventory rejection.
+A persistent global PAX `path` applies to each later ordinary member.
+A local PAX `path` overrides the global value for one ordinary member only.
+The next ordinary member uses the persistent global value again. The
+`test_persistent_global_pax_path_and_local_override` has two discriminating
+subtests. The first gives distinct raw names to two members under one global
+path and requires a duplicate, so ignoring global persistence fails. The
+second gives both members the same raw name, applies a local path to the first,
+and requires distinct local/global effective paths. Ignoring either the local
+override or the persistent global path produces a duplicate instead. A global
+comment-only header is not used as a substitute for this path behavior.
+The parser accepts only the supported `path` key and the inert `comment` key.
+It rejects PAX `size`, `linkpath`, unknown semantic keys, and sparse keys instead of ignoring them.
+
+The row evidence runner reads `scripts/no_unsafe_row_cases_v5.json`.
+The map is a closed, digest-pinned contract for all 81 rows in the pinned
+regression matrix. Each local case pins the selected test method and source
+hash, the exact test or subtest parameters, the reviewed execution level, and
+one stable assertion-site occurrence with exact argument positions and values
+for each predicate. A `normative_cause` value, when present, must occur in the
+pinned source argument and match an exact or wildcard cause in that row of the
+matrix. Each invocation is also bound to its normative row purpose. The runner
+records every assertion call in order, including repeated calls at the same
+source site. It does not collapse duplicate observations. One observation
+occurrence can satisfy only one predicate in the complete map. The map
+validator and evidence validator both reject occurrence reuse. Redundant
+predicates with the same source, stimulus, and pinned arguments are removed
+when the finite map is generated.
+
+The runner executes each unique row-bound invocation and derives case records
+only from observed passing assertions. It records the exact command, working
+directory, allowlisted environment, exit, standard output, standard error,
+method binding, stimulus, and matched occurrence identities. It rejects a
+changed matrix or map, wrong methods, unrelated assertions, wrong stimuli,
+wrong causes, wrong windows, wrong levels, duplicate reuse, wrong occurrences,
+and missing, unknown, or unexecuted cases.
+
+TYPE-05 and CHECK-03 do not run a local privileged substitute. TYPE-05 binds
+local production-CLI FIFO and socket cases, whole-home denial, and a direct
+zero-target-data-open observation, plus the hosted real-device case. CHECK-03
+binds local production-CLI parent link, non-directory, and escape cases with
+exact cause exclusions, plus the hosted real-mount case. The hosted cases cite
+run `34669241286`, attempt 1, jobs `103487307180` and `103487307334`, and commit
+`3824a36c266b8819b79fea391eeb4dc17f70e49e`. The receipt records the sole exact
+`E_FS_NONREGULAR` leaf with incomplete coverage and the sole exact
+`E_REGEN_CONFINEMENT` leaf with `Errno 18` on both native architectures. The
+`test_generator_cli_first_output_verification_mismatch_is_exact` regression
+uses syscall stops to replace the output after its created descriptor closes
+and before the first verification opens it. It requires ordered
+`E_REGEN_RACE`, `E_REGEN_RESIDUE`, the first-verification detail, and exclusion
+of the final-name detail.
+
+Use a new output path for each run because the runner uses exclusive creation:
+
+```bash
+python3 scripts/run_no_unsafe_row_evidence.py \
+  --case-map scripts/no_unsafe_row_cases_v5.json \
+  --output build/engineering-quality/no-unsafe-row-evidence/run-01.json
+python3 scripts/verify_no_unsafe_row_evidence.py \
+  --case-map scripts/no_unsafe_row_cases_v5.json \
+  --evidence build/engineering-quality/no-unsafe-row-evidence/run-01.json \
+  --negative-checks
+```
+
+The separate verifier reads without rewriting the evidence package. Generator
+total-cause regressions assert the exact `(primary, additional)` pair for
+checked-manifest and archive original/observation closes, output verification
+and fixed-name probe closes, and parent cleanup after parent-open failure.
+This validator checks a finite, reviewed operational contract. It does not
+prove arbitrary Python semantics or the authenticity of an otherwise exact
+fabricated transcript. Counts, callable test names, free-form labels, and copied
+success fields are not requirement evidence. The optional negative checks
+mutate actual executed evidence and require rejection of missing rows, cases,
+and invocations; unknown or unexecuted cases; copied or fabricated outcomes;
+duplicate observation reuse; wrong occurrence identities; wrong methods,
+levels, stimuli, causes, and windows; unrelated assertion sites; and a changed
+normative matrix. The wrong-cause check disables fixed-map digest enforcement
+and changes one source-bound cause to a different cause that is also normative
+for the same row. The changed map must pass structural and normative-cause
+validation, then fail against the executed source observation. A separate
+mutation proves that a fabricated cause cannot claim normative binding. Thus
+rejection tests source arguments, normative causes, and executed observations,
+not only the map digest.
+
+Use the offline generator only with its three fixed absolute paths:
+
+```bash
+mkdir -p build/engineering-quality/no-unsafe-regeneration/manual-run
+python3 scripts/generate_no_unsafe_external_cache_manifest.py \
+  --archive "$PWD/build/engineering-quality/release-roadmap/prepare-compatible-release-20260908T035930Z/tools/kani-home/kani-0.67.0-aarch64-unknown-linux-gnu.tar.gz" \
+  --out "$PWD/build/engineering-quality/no-unsafe-regeneration/manual-run/regenerated-kani-library-inventory.json" \
+  --check-manifest "$PWD/scripts/no_unsafe_external_cache_manifest_v1.json"
+```
+
+The output directory must exist and must be empty.
+The generator uses exclusive creation and never replaces or deletes an object.
+Remove a failed-run residue only after a person inspects it.
+The generator has no network, install, extraction, or tracked-manifest write mode.
+
 ## Choosing The Right Gate
 
 | Gate | Use it for | Notes |
 | --- | --- | --- |
 | `make release-gate` | The only binary/container publication decision | Requires rustc 1.98.0, Node.js 26.8.1, npm 11.19.0, cargo-audit 0.22.2, `nightly-2026-09-01` with Miri and `rust-src`, `cargo-fuzz 0.13.2`, and `cargo-kani 0.67.0` exactly; then runs catalog validation, Rust formatting, the no-unsafe and no-panic gates, full locked workspace tests, the CLI feature matrix, locked frontend and RustSec advisory audits, bounded fuzz targets, pure identity-kernel Miri tests, the Loom child-limiter model, the Kani fixed-point-constructor proof, `make verify-semantics` (including the regulated-shipment fixture), and `git diff --check`. Publication workflows must depend on this result. |
 | `make verify-regulated-shipment` | Primary usefulness and CI fixture | Compiles baseline/candidate canonical modules; checks runtime theory, CQ, evolution, behavior/codegen, TypeDB/PathDB projections, VerifyMain type/constraint/category certificates; runs `axiograph check finite-query` for baseline and candidate; binds the accepted exact-answer receipt into each reviewed trust gate; materializes a reviewed typed merge; reopens authenticated SQLite/PathDB state; builds accepted-derived grounding bound to the reopened receipt and exact query; compiles the generated Rust test; and requires adversarial reviewer, path, query, placeholder-receipt, explanation, and materialization cases to reject. |
-| `make check-no-unsafe` | First-party Rust safety policy | Verifies every workspace package inherits `unsafe_code = "forbid"`, scans every checked-in Rust source file for the `unsafe` keyword outside comments and literals, then checks all targets and features with the compiler lint enabled. |
+| `make check-no-unsafe` | First-party Rust safety policy | Verifies workspace `unsafe_code = "forbid"` inheritance. Scans ordinary filesystem Rust, including ignored and untracked files. Exempts only two exact unowned Kani cache inventories. Then checks all locked targets and features with the compiler lint. |
 | `make check-no-panics` | First-party production panic policy | Runs Clippy over every workspace library and binary with all features and rejects `unwrap`, `expect`, `panic!`, and `unreachable!`. Three closed, resource-impossible or serializer-infallible invariants carry local reviewed lint exceptions; test-only assertion paths are outside this production target. |
 | `make verify-viz` | Frontend dependency, typecheck, test, and build gate | Requires Node.js 26.8.1 and npm 11.19.0 from `.node-version` and `.npm-version`, installs only `package-lock.json` with lifecycle scripts disabled, rejects moderate-or-higher npm advisories, runs typechecks and Node regression tests, then builds debug and production bundles (production last). Both build scripts also typecheck before invoking Vite. Current pins are Vite 8.2.2, TypeScript 7.0.2, esbuild 0.28.2, PostCSS 8.5.26, and Rolldown 1.2.4; obsolete vulnerable Rollup is absent. |
 | `make book` | Published documentation gate | Downloads the pinned mdBook 0.5.4 binary for the current host, verifies the platform-specific SHA-256 digest, validates the curated chapter graph, builds the static site, and rejects broken rendered links or missing search/theme artifacts. Pull requests build the same book; pushes to `main` publish it through immutable GitHub Pages actions. |
@@ -422,11 +741,11 @@ make verify-viz                     # requires the exact Node/npm pins
 ```
 
 The Node built-in runner imports production TypeScript using Node's native type
-stripping; this is not typechecking. `npm run typecheck` separately checks `src`
-and applies strict checking to the migrated context, DOM builder, status and
-selection modules through `tsconfig.context.json`. Existing unchecked/non-strict frontend modules remain
-an [EQ-02](../roadmaps/ROADMAP_ENGINEERING_QUALITY.md#eq-02-frontend-contracts-safe-rendering-and-regression-coverage)
-gap; this gate is not a claim of whole-frontend strict typing or JSON validation.
+stripping; this is not typechecking. `npm run typecheck` checks all files below
+`src` with `strict: true`. It then runs the smaller `tsconfig.context.json` check
+for compatibility with the accepted focused gate. No production module uses a
+TypeScript suppression directive. This is whole-frontend strict type coverage,
+not complete JSON validation.
 
 `context.test.mjs` checks numeric ordering, cross-fact deduplication, empty sets,
 re-enabling controls, selection/name/badge consistency, and hostile labels. It
@@ -435,15 +754,120 @@ sinks and check literal `textContent`; no browser emulator or duplicate context
 logic is involved. Browser rendering, keyboard/accessibility, review, query, and
 promotion flows still need their own integration coverage.
 
-`typecheck-gate.test.mjs` copies the real sources, scripts, and configuration into
-a temporary directory, first checks valid sources, then injects invalid numeric
-and context-map assignments. The actual `typecheck`, `build`, and `build:debug`
-scripts must fail with TypeScript diagnostics without touching a bundle sentinel.
-The test cleans up its temporary directory and never alters checkout sources.
-Local results with different Node/npm versions are development evidence only;
-do not override the exact-toolchain check to claim `make verify-viz` passed.
+`typecheck-gate.test.mjs` checks the whole-source include and rejects suppression
+or explicit `any` boundaries. It copies the real sources, scripts, and
+configuration into a temporary directory, checks valid sources, and then injects
+invalid graph-node, graph-edge, UI, context-map, DOM, and read-only draft state.
+The actual `typecheck`, `build`, and `build:debug` scripts must fail with
+TypeScript diagnostics without touching a bundle sentinel. The test cleans up its
+temporary directory and never alters checkout sources. Local results with
+different Node/npm versions are development evidence only; do not override the
+exact-toolchain check to claim `make verify-viz` passed.
+
+### Whole-frontend strict migration (pending parent review)
+
+The production state contract is in `src/types.ts`. It gives graph nodes and
+edges numeric identities and gives review, draft, layout, path, component, run,
+and local describe state explicit types. Review and draft state uses an
+`empty`/`loaded` discriminant, so selected proposals cannot exist without a
+validated overlay. `src/dom.ts` binds each required static
+control to its actual HTML or SVG element type and fails when the document omits
+one. App context extensions use typed staged composition instead of unchecked
+object casts. Embedded, fetched, and stored graph or draft values must pass the
+production boundary predicates before they enter typed state.
+
+`types.test.mjs` covers accepted and rejected graph and draft boundary values.
+The source-policy regression also rejects unparameterized empty `Map` and `Set`
+construction because their default type arguments can reintroduce `any` inside a
+strict build. All app-context collection constructors now state their key and
+value types. Unknown values remain only at JSON, storage, callback, and rendering
+boundaries and must be narrowed before typed state uses them. The staged context
+assertion is paired with `Object.assign`; production code has no assertion cast.
+
+The existing rendering, query, status, draft-selection, and read-only tests still
+exercise production functions. Strict typing alone did not validate every nested
+wire payload; the separate JSON-boundary section below records that validation.
+This migration does not provide browser layout or accessibility evidence. Those
+EQ-02 items remain separate. The documentation checks for this work are
+`make book-validate` and `make book`: they validate the curated chapter graph,
+build with pinned mdBook, and check rendered links and required artifacts. There
+is no `lint-docs` target or `scripts/lint_docs.py`; those names are not project
+gates. This implementation is pending parent review; it does not close a roadmap
+marker or authorize accepted mutation.
+
+## Frontend JSON Boundary Regressions
+
+```bash
+cd frontend/viz
+node --test tests/json-boundary.test.mjs tests/types.test.mjs \
+  tests/read-only-client.test.mjs tests/rendering.test.mjs
+npm run typecheck
+cd ../..
+cargo test --locked --offline --manifest-path rust/Cargo.toml \
+  -p axiograph-cli --test db_server_e2e
+cargo test --locked --offline --manifest-path rust/Cargo.toml \
+  -p axiograph-cli --bin axiograph db_server::tests
+```
+
+`src/json-boundary.ts` applies byte and lexical-depth checks before `JSON.parse`,
+then applies value, container-fanout, per-string, aggregate-string, finite-number,
+and cycle checks. Array length rejects before indexed traversal. Object property
+enumeration stops at the first entry above the fanout limit, before that entry's
+value is read. The tests exercise exact N/N+1 byte, depth, value, fanout, graph
+count, draft count, query count, and u32 boundaries through production
+validators. They also use a maximum-length sparse array and accessor-backed wide
+object to check that fanout rejection does not traverse attacker-sized values.
+
+`axiograph_viz_graph_v1` is a closed graph envelope. Nodes, edges, summaries,
+contexts, and tuple-context membership reject unknown fields. Edge endpoints and
+focus IDs must belong to the same graph image. Query results remain
+server-image-local. The frontend has no adapter that converts query or evidence
+IDs into graph highlights, so no unreviewed cross-image binding is implied.
+
+Draft overlays validate the closed Proposals V1, evidence-pointer, and chunk
+shapes before local storage or review state changes. The validator returns a
+detached value, including nested proposal, chunk, summary, validation, attribute,
+and metadata records. A caller cannot mutate its input after validation to
+change loaded UI state. Draft JSON is limited to 1 MiB, depth 32, 100,000 values,
+1,000 proposals, and 1,000 chunks. Validation and summary report internals are
+bounded opaque metadata. A displayed `ok` value is an evidence-plane hint only
+and cannot enable HTTP mutation. Persisted LLM history uses the closed
+`axiograph_llm_history_v1` envelope and does not read the removed unversioned-array
+cache shape.
+
+The localhost e2e starts the production server over a newly published temporary
+AxiStore materialization. It checks the genuine repository-bound receipt path,
+closed query requests, the production graph format, and absent mutation, LLM,
+proposal, evidence, certificate, context, and snapshot routes. This is HTTP and
+production-validator coverage, not a real-browser, layout, keyboard, or
+accessibility pass. It does not turn an AxiStore receipt into a Lean checker
+receipt or make an ontology-completeness claim. This implementation remains
+pending parent review and does not authorize acceptance or publication.
 
 ## Frontend Rendering And Draft Selection Regressions
+
+### Remaining rendering-sink data-flow closure (EQ-02-U03)
+
+```bash
+cd frontend/viz
+node --test tests/html-sink-inventory.test.mjs
+```
+
+This closes the EQ-02 rendering-sink inventory begun by the DOM-spy traps in
+`rendering.test.mjs`/`context.test.mjs`. It enumerates every `*.ts` file under
+`src/render`, `src/core`, `src/tabs`, and `src/dom.ts`, and fails if any file
+outside three already-reviewed call sites still touches `innerHTML`,
+`outerHTML`, or `insertAdjacentHTML`: the SVG-rebuild clear and static
+arrowhead-marker markup in `render/graph.ts`, the run-filter clear in
+`core/run_filter.ts`, and the two context-menu clears in `core/context_menu.ts`.
+Each reviewed call site is asserted to be either a bare empty-string literal
+clear or non-interpolated static markup with no `${...}` expression, so no
+production data flow (node/edge labels, evidence text, model/source locators)
+can ever reach it; a separate full-tree sweep fails if any other file in `src`
+gains a new sink. No custom HTML parser, blanket scanner waiver, or sanitizer
+dependency was introduced: every remaining sink is either eliminated by
+explicit DOM construction already in place or is provably non-interpolated
+fixed markup, so no maintained sanitizer was required for this closure.
 
 ```bash
 cd frontend/viz
@@ -494,14 +918,15 @@ DocChunk lookup) did not match the backend; mocked responses were not successful
 live workflows. The read-only client lane now removes/disables these remote paths
 rather than restoring unsupported endpoints.
 
-The context strict configuration also checks `render/dom.ts`, `core/status.ts`
-and `core/draft-selection.ts`. The negative gate tests reject mutation of the
-read-only selection and object-shaped fake DOM/text values in addition to the
-existing numeric context failures. The remaining legacy `@ts-nocheck` modules,
-whole-frontend strictness, full JSON validation, real browser interactions,
-keyboard focus, screen-reader labels/roles, layout/scrolling and accessibility
-remain open under EQ-02. Available Node 26.1.0/npm 11.13.0 runs do not satisfy the
-pinned Node 26.8.1/npm 11.19.0 frontend or release gate.
+The compatibility context configuration still checks `render/dom.ts`,
+`core/status.ts`, and `core/draft-selection.ts`. The whole-source configuration
+now strict-checks every production module. The negative gate tests reject
+mutation of the read-only selection, object-shaped fake DOM/text values, and
+string graph, path, and context identities. Real browser interactions, keyboard
+focus, screen-reader labels/roles,
+layout/scrolling, and accessibility remain open under EQ-02. Only runs with the
+pinned Node 26.8.1 and npm 11.19.0 satisfy this frontend source gate; they do not
+constitute a new release gate or release.
 
 To inspect the resulting offline UI manually after a production build:
 

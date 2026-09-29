@@ -2,6 +2,7 @@ use axiograph_dsl::axi_v1::parse_axi_v1;
 use axiograph_pathdb::axi_module_typecheck::{
     review_axi_v1_module, validate_axi_v1_module, Module, ReviewStamp,
 };
+use axiograph_pathdb::kernel_ir::{derive_runtime_schema_index, derive_runtime_theory_index};
 use axiograph_pathdb::{
     Reviewed, RuntimeTheoryObligationFragmentStatusV1, RuntimeTheoryObligationTrustClassV1,
     TheoryObligationRefIr, Validated, RUNTIME_THEORY_FRAGMENT_SUMMARY_VERSION_V1,
@@ -52,6 +53,59 @@ instance I of S:
 }
 
 #[test]
+fn typecheck_rejects_object_relation_name_collisions() {
+    let axi = r#"
+module Demo
+
+schema S:
+  object Shared
+  relation Shared(value: Shared)
+"#;
+
+    let module = parse_axi_v1(axi).expect("parse");
+    let error = validate_axi_v1_module(module).expect_err("colliding declarations must fail");
+    assert!(error
+        .to_string()
+        .contains("declares both object and relation `Shared`"));
+}
+
+#[test]
+fn typecheck_rejects_repeated_subtype_edges() {
+    let axi = r#"
+module Demo
+
+schema S:
+  object Child
+  object Parent
+  subtype Child < Parent
+  subtype Child < Parent
+"#;
+
+    let module = parse_axi_v1(axi).expect("parse");
+    let error = validate_axi_v1_module(module).expect_err("repeated subtype must fail");
+    assert!(error
+        .to_string()
+        .contains("repeats subtype `Child < Parent`"));
+}
+
+#[test]
+fn typecheck_rejects_self_subtype_cycles() {
+    let axi = r#"
+module Demo
+
+schema S:
+  object Node
+  subtype Node < Node
+"#;
+
+    let module = parse_axi_v1(axi).expect("parse");
+    let error = validate_axi_v1_module(module).expect_err("self subtype must fail");
+    assert!(error
+        .to_string()
+        .contains("has a subtype cycle involving `Node` and `Node`"));
+}
+
+#[test]
 fn typecheck_rejects_relation_fields_with_undeclared_object_types() {
     let axi = r#"
 module Demo
@@ -66,6 +120,58 @@ schema S:
     assert!(err
         .to_string()
         .contains("field `value` references unknown value type `Missing`"));
+}
+
+#[test]
+fn typecheck_rejects_unknown_or_non_earlier_dependent_role_indexes() {
+    let axi = r#"
+module Demo
+
+schema S:
+  object Entity
+  relation Broken(first: Entity, dependent: indexed(Entity; future), future: Entity)
+"#;
+
+    let module = parse_axi_v1(axi).expect("dependent-role syntax parses");
+    let error = validate_axi_v1_module(module).expect_err("future role is not earlier");
+    assert!(error
+        .to_string()
+        .contains("role `dependent` indexes unknown or non-earlier role `future`"));
+}
+
+#[test]
+fn typecheck_rejects_unsupported_refinement_predicates() {
+    let axi = r#"
+module Demo
+
+schema S:
+  object Entity
+  relation Broken(value: refined(Entity; predicate(custom_check|argument)))
+"#;
+
+    let module = parse_axi_v1(axi).expect("refinement syntax parses");
+    let error = validate_axi_v1_module(module).expect_err("unsupported predicate must fail");
+    assert!(error
+        .to_string()
+        .contains("role `value` uses unsupported predicate `custom_check`"));
+}
+
+#[test]
+fn typecheck_accepts_valid_dependent_roles_and_supported_refinement_predicates() {
+    let axi = r#"
+module Demo
+
+schema S:
+  object Entity
+  relation Valid(
+    first: Entity,
+    dependent: indexed(Entity; first),
+    refined_value: refined(Entity; predicate(non_empty); key(first))
+  )
+"#;
+
+    let module = parse_axi_v1(axi).expect("dependent/refinement syntax parses");
+    validate_axi_v1_module(module).expect("valid conservative role types typecheck");
 }
 
 #[test]
@@ -402,6 +508,121 @@ theory T on S:
     let err = validate_axi_v1_module(module).expect_err("unknown rewrite relation");
     assert!(err.to_string().contains("rewrite rule `bad` lhs ill-typed"));
     assert!(err.to_string().contains("unknown relation `NoSuchRel`"));
+}
+
+#[test]
+fn typecheck_rejects_invalid_checked_equations_and_duplicate_names() {
+    let unknown_relation = r#"
+module Demo
+schema S:
+  object A
+  relation Edge(from: A, to: A)
+theory T on S:
+  equation bad:
+    step(x, Missing, y) = refl(x)
+"#;
+    let module = parse_axi_v1(unknown_relation).expect("equation syntax parses");
+    let error = validate_axi_v1_module(module).expect_err("unknown equation relation must fail");
+    assert!(error.to_string().contains("unknown relation `Missing`"));
+
+    let bad_composition = r#"
+module Demo
+schema S:
+  object A
+  relation Edge(from: A, to: A)
+theory T on S:
+  equation bad:
+    trans(step(x, Edge, y), step(z, Edge, w)) = step(x, Edge, w)
+"#;
+    let module = parse_axi_v1(bad_composition).expect("equation syntax parses");
+    let error = validate_axi_v1_module(module).expect_err("non-composable equation must fail");
+    assert!(error.to_string().contains("cannot compose paths"));
+
+    let mismatched_endpoints = r#"
+module Demo
+schema S:
+  object A
+  relation Edge(from: A, to: A)
+theory T on S:
+  equation bad:
+    step(x, Edge, y) = refl(x)
+"#;
+    let module = parse_axi_v1(mismatched_endpoints).expect("equation syntax parses");
+    let error = validate_axi_v1_module(module).expect_err("unequal equation endpoints must fail");
+    assert!(error.to_string().contains("mismatched path endpoints"));
+
+    let duplicate_name = r#"
+module Demo
+schema S:
+  object A
+theory T on S:
+  equation duplicate:
+    opaque(x) = opaque(x)
+  equation duplicate:
+    other(x) = other(x)
+"#;
+    let module = parse_axi_v1(duplicate_name).expect("opaque equation syntax parses");
+    let error = validate_axi_v1_module(module).expect_err("duplicate equation name must fail");
+    assert!(error.to_string().contains("duplicate equation `duplicate`"));
+}
+
+#[test]
+fn equation_relation_object_carriers_match_initial_and_runtime_typechecking() {
+    let axi = r#"
+module Demo
+schema S
+  object Node
+  relation Edge(from: Node, to: Node)
+  relation Pair(left: relation(Edge), right: relation(Edge))
+theory T on S
+  equation relation_carrier
+    step(x, Pair, y) = step(x, Pair, y)
+"#;
+    let module = parse_axi_v1(axi).expect("parse relation-carrier equation");
+    validate_axi_v1_module(module.clone()).expect("initial typecheck accepts relation values");
+    let schema = derive_runtime_schema_index(&module.schemas[0]);
+    derive_runtime_theory_index(&schema, &module.theories[0])
+        .expect("runtime typecheck accepts the same relation values");
+}
+
+#[test]
+fn typecheck_rejects_duplicate_generator_fields_in_all_orders() {
+    for tuple in [
+        "source=a, source=b, target=c",
+        "source=a, target=b, target=c",
+        "target=c, source=a, source=b",
+    ] {
+        let axi = format!(
+            "module Demo\nschema S\n  object A\n  function F: A -> A\ninstance I of S\n  F = {{({tuple})}}\n"
+        );
+        let module = parse_axi_v1(&axi).expect("duplicate tuple fields remain visible in the AST");
+        let error = validate_axi_v1_module(module)
+            .expect_err("duplicate generator tuple fields must reject before map insertion");
+        assert!(error.to_string().contains("repeats field"));
+    }
+}
+
+#[test]
+fn rewrite_variable_names_are_unique_before_path_endpoint_resolution() {
+    for vars in [
+        "x: A, y: A, p: A, p: A",
+        "x: A, y: A, p: A, p: Path(x,y)",
+        "x: A, y: A, p: Path(x,y), p: A",
+        "x: A, y: A, p: Path(x,y), p: Path(x,y)",
+    ] {
+        let axi = format!(
+            "module Demo\nschema S\n  object A\ntheory T on S\n  rewrite duplicate\n    vars: {vars}\n    lhs: refl(x)\n    rhs: refl(x)\n"
+        );
+        let module = parse_axi_v1(&axi).expect("duplicate rewrite variables remain in the AST");
+        let initial_error = validate_axi_v1_module(module.clone())
+            .expect_err("initial typechecking must reject every duplicate namespace order");
+        assert!(initial_error.to_string().contains("duplicate variable `p`"));
+
+        let schema = derive_runtime_schema_index(&module.schemas[0]);
+        let runtime_error = derive_runtime_theory_index(&schema, &module.theories[0])
+            .expect_err("runtime IR typechecking must reject every duplicate namespace order");
+        assert!(runtime_error.contains("reuses variable name `p`"));
+    }
 }
 
 #[test]

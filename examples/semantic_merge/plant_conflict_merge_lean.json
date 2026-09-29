@@ -34,7 +34,7 @@
       },
       {
         "kind": "subtype_inclusion",
-        "id": "PlantProcurement.CertifiedIncomingLot <: PlantOps.MaterialLot"
+        "id": "PlantProcurement.CertifiedIncomingLot < PlantOps.MaterialLot"
       },
       {
         "kind": "theory_obligation",
