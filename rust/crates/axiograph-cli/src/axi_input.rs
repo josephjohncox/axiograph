@@ -951,6 +951,57 @@ schema R:
     }
 
     #[test]
+    fn import_overlay_count_accepts_n_and_rejects_n_plus_one() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root_path = temp.path().join("Root.axi");
+        let root = b"module Root\nimport Base\n";
+        crate::security::write_output_bounded(&root_path, root, "CLI output").expect("write root");
+        let mut overlays = BTreeMap::new();
+        overlays.insert(
+            temp.path().join("Base.axi"),
+            b"module Base\nschema S:\n  object A\n".to_vec(),
+        );
+        for index in 0..MAX_AXI_IMPORT_MODULES - 1 {
+            overlays.insert(
+                temp.path().join(format!("Unused{index:04}.axi")),
+                format!("module Unused{index:04}\n").into_bytes(),
+            );
+        }
+        assert_eq!(overlays.len(), MAX_AXI_IMPORT_MODULES);
+        let package = compile_canonical_axi_path_with_overlays_collecting(
+            &root_path,
+            root.to_vec(),
+            &[],
+            &overlays,
+        )
+        .expect("exact-N overlay entries preserve a real imported closure");
+        let names = package
+            .snapshot()
+            .ir()
+            .ordered_module_closure()
+            .iter()
+            .map(|module| module.module_name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(names, ["Base", "Root"]);
+
+        overlays.insert(
+            temp.path().join("Unused1023.axi"),
+            b"module Unused1023\n".to_vec(),
+        );
+        assert_eq!(overlays.len(), MAX_AXI_IMPORT_MODULES + 1);
+        let error = compile_canonical_axi_path_with_overlays_collecting(
+            &root_path,
+            root.to_vec(),
+            &[],
+            &overlays,
+        )
+        .expect_err("N+1 overlay entries must fail before import loading");
+        assert!(error
+            .to_string()
+            .contains("import overlays exceed 1024 entries"));
+    }
+
+    #[test]
     fn canonical_package_rejects_oversized_root_and_search_root_fanout() {
         let temp = tempfile::tempdir().expect("tempdir");
         let root_path = temp.path().join("Root.axi");

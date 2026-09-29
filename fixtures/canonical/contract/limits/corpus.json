@@ -1,0 +1,31 @@
+{
+  "schema": "axiograph.axi_v1_trusted_file_boundary_corpus",
+  "version": 1,
+  "limits": {
+    "module_bytes": 4194304,
+    "syntax_depth": 64,
+    "anchor_modules": 16,
+    "file_inputs": 32
+  },
+  "generated_sha256": {
+    "module_n": "979cb82668d52e1e0e1c639f99bd0355eec108b8124e2a4c7f5146000ab94bef",
+    "module_n_plus_one": "de2a7155d1b95c528a93f246ada35c29ba0276e8b922c9f65f91f20bfeb47d82",
+    "depth_n": "a4f4193688cede4a510ae50b97c0b3675af2811678b14fb857ffed679a5d3ec5",
+    "depth_n_plus_one": "d52b74dd1424d4b3b87364e5820feb2a42ad9a64131227801b004d6588421a32",
+    "invalid_utf8": "f5c39e26606836e95f13a09347b7c07ea6f9dc39322db5c0952fc50d8c67b0c3",
+    "identity_lf": "d3d3fb00db5fc06a0a779dbfb2738f3f54918087cb640adf231d65709f82c8d3",
+    "identity_crlf_unicode": "0882a04553c2fe11697eaa1808fe10c7fa0cf64aa5fce5161ae53715ba3853a1",
+    "anchor_bundle_n": "af8c1d53e802e52ae4bee562df5f1c1167e7ca6d6590c41d242d778d380ccd01",
+    "anchor_bundle_n_plus_one": "37ae65d90fc1ce1fff6c756ea60e9ee8a869a5c4d21b54f38b931fd0ef6d10e0"
+  },
+  "missing_anchor_certificate": {
+    "path": "rust/fuzz/corpus/certificate_json/typecheck_v2.json",
+    "sha256": "4dd0574886a26a4f561eac24f829da50d1ac32e50ebe03b5405c89f511706e10"
+  },
+  "execution_bounds": {
+    "per_process_timeout_seconds": 30,
+    "total_timeout_seconds": 600,
+    "max_stdout_bytes": 1048576,
+    "max_stderr_bytes": 262144
+  }
+}

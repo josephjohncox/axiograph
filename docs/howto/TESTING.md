@@ -185,11 +185,15 @@ Run the bounded deterministic differential gate:
 make verify-axi-contract-differential
 ```
 
-This gate runs eight hand-authored cases and 24 generated cases. It compares independent Rust and Lean parse, AST, digest, and typecheck results. It also checks Rust canonical formation without treating that result as a Lean proof.
+The gate runs 16 byte-pinned hand cases and 24 generated cases. The hand cases include positive and rejected dependent roles, refinements, rewrite scopes, and equations. Rust and Lean independently parse, typecheck, and hash exact source bytes. Rust formation does not create a Lean proof. An accepted opaque equation is not a claim that Lean certified it.
 
-The generator uses the version, seed, bounds, order, grammar trace, and digest in `fixtures/canonical/contract/corpus.json`. Seeded grammar permutations vary the selected family order. A bounded delta debugger minimizes and replays a generated failure. Mechanically validated hand-case probes cover each required contract section, including exact-N execution and an N+1 runner rejection. The gate runs twice and requires byte-identical reports.
+The generator binds its seed, bounds, order, grammar trace, and digest in `fixtures/canonical/contract/corpus.json`. A bounded delta debugger minimizes and replays a generated failure. Hand-case probes check the named contract sections. The gate runs twice and requires byte-identical reports.
 
-The commands use a 30-second limit for each child and a 600-second total limit. They limit standard output to 1 MiB and standard error to 256 KiB. Timeout, overflow, malformed or non-closed nested output, zero cases, duplicate IDs, and unknown classes cause failure.
+The import corpus in `fixtures/canonical/contract/imports/` checks seven ordered multi-file outcomes. It covers a valid dependent instance, missing and duplicate modules, a cycle, an ambiguous schema, and an unreachable module. An imported equation compiles, but V3 category-certificate export rejects it. The current certificate binds one defining module, not an import closure. A CLI test accepts 1,024 import overlay entries and rejects 1,025. That test does not exercise a 1,024-module filesystem closure.
+
+The limits corpus in `fixtures/canonical/contract/limits/` checks real Rust and Lean parser entry points and Lean `axiograph_verify` file mode. The 15 cases cover depth 64/65, 4 MiB/4 MiB plus one byte, 16/17 anchors, and 32/33 verifier inputs. They also cover duplicate and missing anchors, malformed UTF-8, CRLF, Unicode, and comments. Equal parsed ASTs can have distinct exact-byte revision digests. A Rust compiler test accepts 64 finite-category object declarations and blocks category-certificate export at 65. The 65-object `.axi` module still compiles.
+
+Each child has a 30-second limit, and each runner has a 600-second limit. The runner limits standard output to 1 MiB and standard error to 256 KiB. Timeout, overflow, malformed output, zero cases, duplicate IDs, and unknown classes cause failure.
 
 Run the full finite parser and exact-byte contract gate:
 

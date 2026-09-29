@@ -485,11 +485,19 @@ verify-regulated-shipment: dirs
 
 verify-axi-contract-differential: dirs
 	@echo "━━━ Bounded deterministic axi_v1 Rust ↔ Lean differential runner ━━━"
-	python3 -m unittest scripts.tests.test_axi_contract_conformance
+	python3 -m unittest scripts.tests.test_axi_contract_conformance scripts.tests.test_axi_trusted_file_boundaries
 	cd $(RUST_DIR) && $(CARGO) build \
 		-p axiograph-dsl --bin axiograph_parse_axi_v1 \
 		-p axiograph-pathdb --bin axiograph_typecheck_axi \
 		-p axiograph-kernel --bin axiograph_revision_digest --bin axiograph_form_axi_v1
+	cd $(RUST_DIR) && $(CARGO) test --locked -p axiograph-kernel \
+		--test canonical_compiler_properties \
+		exact_multifile_import_corpus_checks_closure_and_failure_classes -- --exact
+	cd $(RUST_DIR) && $(CARGO) test --locked -p axiograph-kernel \
+		--test canonical_compiler_properties \
+		finite_category_object_declaration_count_accepts_n_and_blocks_n_plus_one -- --exact
+	cd $(RUST_DIR) && $(CARGO) test --locked -p axiograph-cli --bin axiograph \
+		axi_input::tests::import_overlay_count_accepts_n_and_rejects_n_plus_one -- --exact
 	cd $(LEAN_DIR) && $(LEAN_ENV) $(LAKE) build axiograph_axi_v1_parse axiograph_axi_v1_typecheck axiograph_verify
 	@set -eu; \
 		run_dir="$$(mktemp -d "$(BUILD_DIR)/axi-v1-differential.XXXXXX")"; \
@@ -517,6 +525,20 @@ verify-axi-contract-differential: dirs
 		cmp "$$run_dir/report-1.json" "$$run_dir/report-2.json"; \
 		cat "$$run_dir/report-1.json"
 	@echo "✓ deterministic differential reports matched byte-for-byte"
+	@set -eu; \
+		run_dir="$$(mktemp -d "$(BUILD_DIR)/axi-v1-file-boundaries.XXXXXX")"; \
+		trap 'rm -rf "$$run_dir"' EXIT; \
+		for attempt in 1 2; do \
+			python3 -m scripts.check_axi_trusted_file_boundaries \
+				--root "$(CURDIR)" \
+				--rust-parse "$(CURDIR)/$(RUST_DIR)/target/debug/axiograph_parse_axi_v1" \
+				--lean-parse "$(CURDIR)/$(LEAN_DIR)/.lake/build/bin/axiograph_axi_v1_parse" \
+				--rust-digest "$(CURDIR)/$(RUST_DIR)/target/debug/axiograph_revision_digest" \
+				--lean-verify "$(CURDIR)/$(LEAN_DIR)/.lake/build/bin/axiograph_verify" \
+				--report "$$run_dir/boundary-$$attempt.json"; \
+		done; \
+		cmp "$$run_dir/boundary-1.json" "$$run_dir/boundary-2.json"
+	@echo "✓ trusted file-mode boundary reports matched byte-for-byte"
 
 verify-axi-v1-contract: verify-axi-contract-differential dirs
 	@echo "━━━ Canonical axi_v1 AST and exact-byte contract ━━━"

@@ -1,0 +1,27 @@
+{
+  "schema": "axiograph.axi_v1_import_closure_corpus",
+  "version": 1,
+  "files": [
+    {"name": "ambiguous_left.axi", "sha256": "154e6bc74d01f1b36d138ac046f7bfa0b70101df46e48b2dc57e73133ddd9e98"},
+    {"name": "ambiguous_right.axi", "sha256": "dcc88be1a7689e7f2d1e3fb0473c636b3096ca3739c7ee07669d2abc4f4ccda7"},
+    {"name": "base.axi", "sha256": "f7fb6815b6dc89787a9f430084bf94822749966c97780cf403f892d1c29111da"},
+    {"name": "base_duplicate.axi", "sha256": "77004bb9cbc11cadf59ed39accc5d1db4b1fb0e45da662b11729960490c95b44"},
+    {"name": "cycle_a.axi", "sha256": "8bd91c006f93d756d997b48e89e167666848bfe0f3debdc8818bf1ac18d5790a"},
+    {"name": "cycle_b.axi", "sha256": "3867ee8a1326bb370aa7a13774144ccc95fb59ba72ed6641b076a5fce5939e34"},
+    {"name": "equation_base.axi", "sha256": "d2faffed9b5c3249ae02ce04e66c4c036b26dac6438dcbeb2b618a6217be5a9a"},
+    {"name": "equation_extension.axi", "sha256": "fe5033e6c5b751ecc6f67f5d28a1a407aba3ff90e869e12c469cd224c927e364"},
+    {"name": "other.axi", "sha256": "211ae8e8305196772a351d290266a77cdaffa4816da155e8e9d75a5dd9605fe3"},
+    {"name": "root_ambiguous.axi", "sha256": "416be483ceb39e0071cf3ba91a4019e3f943976ad8c5f7f9bcc3aa2323ef120b"},
+    {"name": "root_missing.axi", "sha256": "5fa7aed072a4dd8d5d01f563cfa0a27f9f6089c15d28ec5b6477621bbce16530"},
+    {"name": "root_ordered.axi", "sha256": "4e658f6499d14599d6ae13f4ac6985f5d79b45c56e95f9a92025a5cc777612e9"}
+  ],
+  "cases": [
+    {"id": "ordered_imported_instance", "root": "Root", "modules": ["root_ordered.axi", "base.axi", "other.axi"], "expect": "accepted", "ordered_modules": ["Other", "Base", "Root"]},
+    {"id": "missing_import", "root": "MissingRoot", "modules": ["root_missing.axi"], "expect": "unknown_import", "ordered_modules": []},
+    {"id": "duplicate_module", "root": "Root", "modules": ["root_ordered.axi", "base.axi", "base_duplicate.axi", "other.axi"], "expect": "duplicate_module", "ordered_modules": []},
+    {"id": "cyclic_import", "root": "CycleA", "modules": ["cycle_a.axi", "cycle_b.axi"], "expect": "import_cycle", "ordered_modules": []},
+    {"id": "ambiguous_imported_schema", "root": "Ambiguous", "modules": ["root_ambiguous.axi", "ambiguous_left.axi", "ambiguous_right.axi"], "expect": "ambiguous_visible_schema", "ordered_modules": []},
+    {"id": "unreachable_input", "root": "Root", "modules": ["root_ordered.axi", "base.axi", "other.axi", "ambiguous_left.axi"], "expect": "unreachable_module", "ordered_modules": []},
+    {"id": "imported_equation_certificate_blocked", "root": "Extension", "modules": ["equation_extension.axi", "equation_base.axi"], "expect": "category_export_blocked", "ordered_modules": ["Base", "Extension"]}
+  ]
+}
